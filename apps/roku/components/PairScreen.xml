@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!-- Pair with your phone: the same flow as the Samsung and LG apps, drawn with SceneGraph nodes. -->
+<component name="PairScreen" extends="Group">
+  <interface>
+    <field id="active" type="boolean" value="false" onChange="onActive" />
+    <field id="paired" type="assocarray" />
+    <field id="closed" type="boolean" alwaysNotify="true" />
+  </interface>
+  <script type="text/brightscript" uri="PairScreen.brs" />
+  <children>
+    <Rectangle width="1920" height="1080" color="0x0E0D18FF" />
+    <Rectangle id="qrCard" translation="[200,240]" width="560" height="560" color="0xFFFFFFFF">
+      <Group id="qr" />
+    </Rectangle>
+    <Group translation="[860,250]">
+      <Label text="PAIR WITH YOUR PHONE" color="0xAB73EFFF" font="font:SmallBoldSystemFont" />
+      <Label translation="[0,50]" text="Scan to connect this Roku" color="0xFFFFFFFF" font="font:LargeBoldSystemFont" />
+      <Label translation="[0,140]" width="860" wrap="true" lineSpacing="10" color="0xCFCBE0FF" font="font:MediumSystemFont"
+        text="1. Point your phone's camera at the code.&#10;2. Sign in with your LumaNest TV line login.&#10;3. Tap Connect my TV. Your channels load here automatically." />
+      <Label translation="[0,330]" text="No camera? Go to lumanest.tv/pair and enter:" color="0xCFCBE0FF" font="font:MediumSystemFont" />
+      <Label id="code" translation="[0,390]" text="····-····" color="0xFFFFFFFF" font="font:LargeBoldSystemFont" />
+      <Label id="status" translation="[0,480]" width="860" wrap="true" text="Getting a code…" color="0xAB73EFFF" font="font:SmallSystemFont" />
+      <Label translation="[0,580]" text="OK  New code      Back  Cancel" color="0x8F8AA8FF" font="font:SmallSystemFont" />
+    </Group>
+  </children>
+</component>

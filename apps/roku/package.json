@@ -1,0 +1,18 @@
+{
+  "name": "lumanest-roku-tv",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LumaNest TV Roku channel and packaging tools",
+  "scripts": {
+    "check": "node tools/check.js",
+    "test": "node --test",
+    "build": "node tools/build.js"
+  },
+  "devDependencies": {
+    "brighterscript": "0.73.5",
+    "brs-node": "2.6.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

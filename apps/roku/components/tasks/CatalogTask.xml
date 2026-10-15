@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  Loads one section ("live" or "movies") from the saved playlist and returns a ContentNode tree:
+  root > category > item. Building the nodes here keeps the remote responsive on large lineups.
+-->
+<component name="CatalogTask" extends="Task">
+  <interface>
+    <field id="source" type="assocarray" />
+    <field id="section" type="string" value="live" />
+    <field id="content" type="node" />
+    <field id="error" type="string" />
+  </interface>
+  <script type="text/brightscript" uri="pkg:/components/common/Util.brs" />
+  <script type="text/brightscript" uri="CatalogTask.brs" />
+</component>

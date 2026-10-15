@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<!--
+  Tuner for Roku. Live TV and Movies come from the customer's own playlist (Xtream line login or M3U link),
+  added by pairing with a phone or by typing it in Settings. Nothing about the account is packaged.
+-->
+<component name="MainScene" extends="Scene">
+  <interface>
+    <field id="exitApp" type="boolean" value="false" />
+  </interface>
+  <script type="text/brightscript" uri="pkg:/components/common/Util.brs" />
+  <script type="text/brightscript" uri="MainScene.brs" />
+  <children>
+    <Rectangle width="1920" height="1080" color="0x0E0D18FF" />
+    <Poster translation="[80,48]" width="330" height="85" uri="pkg:/images/header_logo.png" />
+
+    <Group id="tabs" translation="[520,70]">
+      <Label id="tab0" text="Live TV" font="font:MediumBoldSystemFont" />
+      <Label id="tab1" translation="[220,0]" text="Movies" font="font:MediumBoldSystemFont" />
+      <Label id="tab2" translation="[420,0]" text="Settings" font="font:MediumBoldSystemFont" />
+      <Rectangle id="tabBar" translation="[0,52]" width="140" height="5" color="0x7C3AEDFF" />
+    </Group>
+
+    <Group id="browse">
+      <LabelList id="cats" translation="[80,190]" itemSize="[520,68]" numRows="12"
+        vertFocusAnimationStyle="floatingFocus" color="0xCFCBE0FF" focusedColor="0xFFFFFFFF"
+        focusBitmapBlendColor="0x7C3AEDFF" font="font:MediumSystemFont" focusedFont="font:MediumBoldSystemFont" />
+      <MarkupList id="items" translation="[660,190]" itemComponentName="ChannelItem" itemSize="[1180,96]"
+        itemSpacing="[0,6]" numRows="8" vertFocusAnimationStyle="floatingFocus" focusBitmapBlendColor="0x7C3AEDFF" />
+      <Label id="message" translation="[660,200]" width="1180" wrap="true" color="0xCFCBE0FF" font="font:MediumSystemFont" />
+    </Group>
+
+    <Group id="settings" visible="false">
+      <Label id="account" translation="[80,200]" width="1700" wrap="true" color="0xCFCBE0FF" font="font:MediumSystemFont" />
+      <LabelList id="settingsList" translation="[80,300]" itemSize="[900,72]" numRows="8"
+        vertFocusAnimationStyle="floatingFocus" color="0xCFCBE0FF" focusedColor="0xFFFFFFFF"
+        focusBitmapBlendColor="0x7C3AEDFF" font="font:MediumSystemFont" focusedFont="font:MediumBoldSystemFont" />
+      <Label id="version" translation="[80,960]" color="0x8F8AA8FF" font="font:SmallSystemFont" />
+    </Group>
+
+    <PairScreen id="pair" visible="false" />
+
+    <Video id="video" width="1920" height="1080" visible="false" />
+
+    <Group id="banner" visible="false" translation="[0,840]">
+      <Rectangle width="1920" height="240" color="0x0E0D18E6" />
+      <Label id="bannerNumber" translation="[80,40]" width="200" color="0xAB73EFFF" font="font:LargeBoldSystemFont" />
+      <Label id="bannerTitle" translation="[300,40]" width="1540" color="0xFFFFFFFF" font="font:LargeBoldSystemFont" />
+      <Label id="bannerDetail" translation="[300,120]" width="1540" wrap="true" color="0xCFCBE0FF" font="font:SmallSystemFont" />
+    </Group>
+    <Timer id="bannerTimer" duration="5" />
+  </children>
+</component>
