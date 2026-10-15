@@ -2,7 +2,7 @@
 
 The first-party LumaNest TV application: landing page, app downloads and setup, customer checkout and renewals, optional recurring billing, owner console, and browser player. It uses React, Vinext/Vite, Cloudflare Workers, D1, and R2. The `cloudflare/` directory also contains the customer portal PWA overlay and the authenticated stream relay.
 
-This source snapshot does not change the live website or its hosting. GitHub Actions validates changes without deploying, processing payments, renewing lines, or connecting to production accounts. GitHub Pages cannot run this application's server routes, database, or stream proxy.
+GitHub Actions validates changes without deploying, processing payments, renewing lines, or connecting to production accounts. Direct Cloudflare deployment is an explicit operator action described below. GitHub Pages cannot run this application's server routes, database, or stream proxy.
 
 The customer portal and channel selector at the provider's white-label service are external software. Their proprietary source is not included here. The PWA worker adds installation metadata to that existing service; it does not replace it.
 
@@ -61,6 +61,38 @@ The following environment variable names describe the runtime contract. Supply r
 The application expects D1 binding `DB` and R2 binding `BUCKET`. Production D1 contains owner credentials/sessions, order and subscription state, payment deduplication, and rate limits. Its contents are not part of this repository. Recurring PayPal agreements and the merchant catalog are external state as well. Preserve or migrate these privately before a hosting cutover; an empty database is not a working replacement for the current owner account or billing records.
 
 First-time owner setup requires both the original hosting service's trusted bootstrap identity and the `OWNER_SETUP_TOKEN` secret, entered on the setup form. A new standalone deployment still needs a trusted identity source or a private credential migration. Never accept a visitor-supplied identity header as proof of ownership.
+
+## Direct Cloudflare deployment
+
+The main website runs as a Worker with static assets, D1 binding `DB`, and R2 binding `BUCKET`. The Cloudflare preparation step uses the normal production build; it does not modify the managed Sites configuration or create resources. Run from `site/`:
+
+```sh
+npm run build
+npm run cloudflare:prepare -- --database-id D1_UUID
+npm run cloudflare:deploy -- --dry-run
+```
+
+Replace `D1_UUID` with the actual destination database ID. The defaults target Worker `lumanest-tv`, database `lumanest-tv-production`, and bucket `lumanest-tv-downloads` in the LumaNest Cloudflare account. Override these with `--worker-name`, `--database-name`, `--bucket-name`, or `--account-id` when preparing. This creates ignored `dist/server/wrangler-cloudflare.json` and `dist/server/cloudflare-entry.mjs` beside the generated Vinext modules. Always build again after source changes, then repeat preparation.
+
+Preparation without `--production` configures a `workers.dev` address and **no production domain or route**. The website is public at that staging address if deployed; owner/customer authentication remains required for private actions. Version preview URLs are disabled. Review the dry run before `npm run cloudflare:deploy`, which publishes that prepared Worker. Deployment uses `--keep-vars` and does not put runtime secrets into source or generated configuration. Transfer existing runtime variables and secrets privately before functional testing. Leave `ADMIN_USER_ID` and `OWNER_SETUP_TOKEN` unset; the standalone entry strips every `oai-authenticated-*` header and preserves the existing password owner login.
+
+Never point production at a fresh, empty database. Transfer the complete existing database privately, including owner credentials, billing and subscription state, webhook/payment deduplication, and migration history. Verify the imported owner record and table counts without exposing customer rows. Preserve `PLAYER_COOKIE_KEY` exactly: stored recurring-billing credentials depend on it. Preserve the PayPal merchant configuration and the stream relay key pairing. Do not apply the schema's initial migrations again to an imported database. The preparation command only selects a database; it does not import data or certify its contents.
+
+Copy the approved Android APK to R2 object `Tuner-1.5.3.apk` with the checksum and version custom metadata required by `lib/tuner.ts` and content type `application/vnd.android.package-archive`. Keep the approved Android version unchanged unless a separate release is authorized. LG's download is part of the static assets. Native app source remains in the GitHub monorepo; Cloudflare hosts their web services and approved download artifacts.
+
+After staging passes, pause checkout/enrollment writes briefly on the old host and allow in-flight payments to settle. Take the final private database snapshot, import and verify it, then prepare the production domain explicitly:
+
+```sh
+npm run cloudflare:prepare -- --database-id D1_UUID --production
+npm run cloudflare:deploy -- --dry-run
+npm run cloudflare:deploy
+```
+
+`--production` configures only custom domain `lumanest.tv` and disables `workers.dev`. It does not touch `portal.lumanest.tv`, `tv.lumanest.tv`, or `streams.lumanest.tv`. Preserve their existing Workers and provider configuration. Keeping the apex domain also preserves the PayPal webhook/return URLs. Verify `X-LumaNest-Hosting: cloudflare` on a dynamic page, owner sign-in, customer sign-in, renewal options, Android download integrity, and channel switching before reopening checkout. No recurring agreement or paid checkout should be created just to test hosting. No cron trigger is introduced; existing opportunistic cleanup remains available.
+
+Invocation logs and tracing are disabled because their automatic request URLs can include sealed media tokens or payment identifiers. Query strings are also redacted from retained request metadata using Cloudflare's `observability.redact_query_string` API setting. The pinned Wrangler version does not expose that field directly, so the preparation script uses its supported `unsafe.metadata` passthrough to send the complete observability configuration; keep this until Wrangler supports the field directly. The wrapper logs only a fixed failure tag, never URLs, cookies, request bodies, or raw exceptions. Existing app diagnostic logs remain available; do not add request dumps or enable unredacted URL capture while troubleshooting. Static assets retain their generated cache headers.
+
+Keep the managed deployment, private backup, and prior DNS/domain configuration available for rollback until the new host is verified. A rollback after production writes resume requires reconciling or transferring the newer database state first; routing back to an old snapshot alone can lose payment deduplication and billing changes. Restoring the managed domain route must not alter the provider portal or relay routes. GitHub pushes continue to validate only unless a separate Cloudflare deployment workflow is configured.
 
 ## Payment review and housekeeping
 
