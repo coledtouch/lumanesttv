@@ -184,23 +184,24 @@ test('expired, malformed and duplicate session cookies do not authorize the owne
   assert.equal((await admin({Cookie:initial.cookie})).status, 401);
 });
 
-test('IP, global and account throttles enforce atomic limits and return a bounded retry time', async () => {
+test('per-IP throttles enforce atomic limits and return a bounded retry time', async () => {
   await setup();
-  const scopes = ['ip:192.0.2.10','global','account:'+EMAIL];
-  const limits = [10,100,30];
-  for (let index=0; index<scopes.length; index++) {
-    await database.prepare('DELETE FROM owner_auth_attempts').run();
-    await database.prepare('INSERT INTO owner_auth_attempts (id,count,expires) VALUES (?,?,?)').bind(sha('login:'+scopes[index]),limits[index],Date.now()+900000).run();
-    const result = await post('login', {email:EMAIL,password:PASSWORD});
-    assert.equal(result.status, 429);
-    assert.equal(result.data.error.code, 'owner_rate_limit');
-    assert.ok(Number(result.response.headers.get('Retry-After')) > 0);
-    assert.ok(Number(result.response.headers.get('Retry-After')) <= 900);
-  }
-  await database.prepare('DELETE FROM owner_auth_attempts').run();
-  await database.prepare('INSERT INTO owner_auth_attempts (id,count,expires) VALUES (?,?,?)').bind(sha('recover:account:'+EMAIL),10,Date.now()+3600000).run();
-  const result = await post('recover', {email:EMAIL,password:NEXT_PASSWORD,recoveryCode:'invalid'});
+  await database.prepare('INSERT INTO owner_auth_attempts (id,count,expires) VALUES (?,?,?)').bind(sha('login:ip:192.0.2.10'),10,Date.now()+900000).run();
+  const result = await post('login', {email:EMAIL,password:PASSWORD});
   assert.equal(result.status, 429);
+  assert.equal(result.data.error.code, 'owner_rate_limit');
+  assert.ok(Number(result.response.headers.get('Retry-After')) > 0);
+  assert.ok(Number(result.response.headers.get('Retry-After')) <= 900);
+  await database.prepare('DELETE FROM owner_auth_attempts').run();
+  await database.prepare('INSERT INTO owner_auth_attempts (id,count,expires) VALUES (?,?,?)').bind(sha('recover:ip:192.0.2.10'),5,Date.now()+3600000).run();
+  assert.equal((await post('recover', {email:EMAIL,password:NEXT_PASSWORD,recoveryCode:'invalid'})).status, 429);
+});
+
+test('attempts from other clients cannot lock the owner out', async () => {
+  await setup();
+  await database.prepare('DELETE FROM owner_auth_attempts').run();
+  for (const scope of ['global','account:'+EMAIL,'ip:198.51.100.7']) await database.prepare('INSERT INTO owner_auth_attempts (id,count,expires) VALUES (?,?,?)').bind(sha('login:'+scope),1000,Date.now()+900000).run();
+  assert.equal((await post('login', {email:EMAIL,password:PASSWORD})).status, 200);
 });
 
 test('competing setup requests create exactly one credential and one private recovery code', async () => {

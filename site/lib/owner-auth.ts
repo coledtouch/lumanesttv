@@ -160,17 +160,17 @@ async function throttle(req: Request, action: 'login' | 'recover' | 'setup' | 'r
   const now = Date.now();
   const securityAction = action === 'recover' || action === 'recovery-code';
   const period = securityAction ? 60 * 60 * 1000 : 15 * 60 * 1000;
-  const limits = securityAction ? [5, 20, 10] : action === 'setup' ? [10, 30, 20] : [10, 100, 30];
-  const scopes = ['ip:' + (req.headers.get('cf-connecting-ip') || 'unknown'), 'global', 'account:' + OWNER_EMAIL];
-  const statements = scopes.map((scope, index) => database().prepare(`INSERT INTO owner_auth_attempts (id,count,expires) VALUES (?,1,?) ON CONFLICT(id) DO UPDATE SET count=CASE WHEN owner_auth_attempts.expires<=? THEN 1 ELSE owner_auth_attempts.count+1 END, expires=CASE WHEN owner_auth_attempts.expires<=? THEN excluded.expires ELSE owner_auth_attempts.expires END RETURNING count,expires`).bind(hash(action + ':' + scope), now + period, now, now));
-  const results = await storage(() => database().batch<{count: number; expires: number}>(statements));
-  let retryAfter = 0;
-  results.forEach((result, index) => {
-    const row = result.results[0];
-    if (!row || !Number.isSafeInteger(row.count) || !Number.isSafeInteger(row.expires)) throw new ServiceError(503, 'owner_storage_unavailable', 'Owner sign-in is temporarily unavailable. Please try again.');
-    if (row.count > limits[index]) retryAfter = Math.max(retryAfter, Math.max(1, Math.ceil((row.expires - now) / 1000)));
-  });
-  if (retryAfter) throw new ServiceError(429, 'owner_rate_limit', 'Too many attempts. Please wait before trying again.', String(retryAfter));
+  const limit = securityAction ? 5 : 10;
+  // Limit per client only. Shared (global or per-account) buckets let anyone lock the owner out;
+  // the long password, 256-bit recovery code and per-isolate scrypt cap bound distributed guessing.
+  const scope = 'ip:' + (req.headers.get('cf-connecting-ip') || 'unknown');
+  const [, result] = await storage(() => database().batch<{count: number; expires: number}>([
+    database().prepare('DELETE FROM owner_auth_attempts WHERE expires<=?').bind(now),
+    database().prepare(`INSERT INTO owner_auth_attempts (id,count,expires) VALUES (?,1,?) ON CONFLICT(id) DO UPDATE SET count=CASE WHEN owner_auth_attempts.expires<=? THEN 1 ELSE owner_auth_attempts.count+1 END, expires=CASE WHEN owner_auth_attempts.expires<=? THEN excluded.expires ELSE owner_auth_attempts.expires END RETURNING count,expires`).bind(hash(action + ':' + scope), now + period, now, now)
+  ]));
+  const row = result.results[0];
+  if (!row || !Number.isSafeInteger(row.count) || !Number.isSafeInteger(row.expires)) throw new ServiceError(503, 'owner_storage_unavailable', 'Owner sign-in is temporarily unavailable. Please try again.');
+  if (row.count > limit) throw new ServiceError(429, 'owner_rate_limit', 'Too many attempts. Please wait before trying again.', String(Math.max(1, Math.ceil((row.expires - now) / 1000))));
 }
 function sessionInsert(token: string, version: string) {
   return database().prepare('INSERT INTO owner_sessions (token_hash,owner_id,credential_version,expires) SELECT ?,id,version,? FROM owner_credentials WHERE id=? AND version=?').bind(hash(token), Date.now() + SESSION_SECONDS * 1000, OWNER_ID, version);
@@ -187,7 +187,7 @@ export async function loginOwner(req: Request, input: Record<string, unknown>) {
   const matches = await passwordMatches(password, row?.password_hash || DUMMY_HASH);
   if (!row || email !== OWNER_EMAIL || !matches) throw rejectedLogin();
   const token = freshToken();
-  const result = await storage(() => sessionInsert(token, row.version).run());
+  const [, result] = await storage(() => database().batch([database().prepare('DELETE FROM owner_sessions WHERE expires<=?').bind(Date.now()), sessionInsert(token, row.version)]));
   if (result.meta.changes !== 1) throw rejectedLogin();
   return {token};
 }
