@@ -50,6 +50,13 @@
       "when": 1792017277705,
       "tag": "0006_white_deathbird",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1792074417428,
+      "tag": "0007_brave_mordo",
+      "breakpoints": true
     }
   ]
 }
