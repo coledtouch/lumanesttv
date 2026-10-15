@@ -11,6 +11,7 @@ let database;
 const EMAIL = 'support@lumanest.tv';
 const PASSWORD = 'a private long test passphrase';
 const NEXT_PASSWORD = 'another private long test passphrase';
+const SETUP_TOKEN = 'runtime-one-time-owner-setup-token-0123456789';
 const ownerHeaders = {'oai-authenticated-user-id': 'runtime-owner', 'oai-authenticated-user-email': 'unrelated-owner@example.test'};
 const sha = value => createHash('sha256').update(value).digest('hex');
 
@@ -32,6 +33,10 @@ test.before(async () => {
             url.pathname = url.pathname.slice('/second'.length);
             return env.SECOND.fetch(new Request(url,request));
           }
+          if (url.pathname.startsWith('/no-setup-token/')) {
+            url.pathname = url.pathname.slice('/no-setup-token'.length);
+            return env.NO_SETUP_TOKEN.fetch(new Request(url,request));
+          }
           globalThis.__testHeaders = request.headers;
           const path = new URL(request.url).pathname;
           try {
@@ -52,8 +57,9 @@ test.before(async () => {
     }}]
   });
   runtime = new Miniflare({compatibilityDate:'2026-05-15', compatibilityFlags:['nodejs_compat'], cf:false, workers:[
-    {name:'owner-runtime', compatibilityDate:'2026-05-15', compatibilityFlags:['nodejs_compat'], modules:true, script:bundle.outputFiles[0].text, scriptPath:fileURLToPath(new URL('../owner-runtime-worker.js',import.meta.url)), bindings:{ADMIN_USER_ID:'runtime-owner'}, d1Databases:{DB:'owner-auth-test'},serviceBindings:{SECOND:'owner-runtime-second'}},
-    {name:'owner-runtime-second', compatibilityDate:'2026-05-15', compatibilityFlags:['nodejs_compat'], modules:true, script:bundle.outputFiles[0].text, scriptPath:fileURLToPath(new URL('../owner-runtime-worker.js',import.meta.url)), bindings:{ADMIN_USER_ID:'runtime-owner'}, d1Databases:{DB:'owner-auth-test'}},
+    {name:'owner-runtime', compatibilityDate:'2026-05-15', compatibilityFlags:['nodejs_compat'], modules:true, script:bundle.outputFiles[0].text, scriptPath:fileURLToPath(new URL('../owner-runtime-worker.js',import.meta.url)), bindings:{ADMIN_USER_ID:'runtime-owner',OWNER_SETUP_TOKEN:SETUP_TOKEN}, d1Databases:{DB:'owner-auth-test'},serviceBindings:{SECOND:'owner-runtime-second',NO_SETUP_TOKEN:'owner-no-setup-token'}},
+    {name:'owner-runtime-second', compatibilityDate:'2026-05-15', compatibilityFlags:['nodejs_compat'], modules:true, script:bundle.outputFiles[0].text, scriptPath:fileURLToPath(new URL('../owner-runtime-worker.js',import.meta.url)), bindings:{ADMIN_USER_ID:'runtime-owner',OWNER_SETUP_TOKEN:SETUP_TOKEN}, d1Databases:{DB:'owner-auth-test'}},
+    {name:'owner-no-setup-token', compatibilityDate:'2026-05-15', compatibilityFlags:['nodejs_compat'], modules:true, script:bundle.outputFiles[0].text, scriptPath:fileURLToPath(new URL('../owner-runtime-worker.js',import.meta.url)), bindings:{ADMIN_USER_ID:'runtime-owner'}, d1Databases:{DB:'owner-auth-test'}},
     {name:'owner-no-database', compatibilityDate:'2026-05-15', compatibilityFlags:['nodejs_compat'], modules:true, script:bundle.outputFiles[0].text, scriptPath:fileURLToPath(new URL('../owner-runtime-worker.js',import.meta.url)), bindings:{ADMIN_USER_ID:'runtime-owner'}}
   ]});
   database = await runtime.getD1Database('DB', 'owner-runtime');
@@ -82,7 +88,7 @@ async function secondPost(action, input, extraHeaders = {}) {
   return {response, status:response.status,data:await response.json(),cookie:response.headers.get('Set-Cookie')?.split(';')[0]};
 }
 async function setup() {
-  const result = await post('setup', {password:PASSWORD}, ownerHeaders);
+  const result = await post('setup', {password:PASSWORD,setupToken:SETUP_TOKEN}, ownerHeaders);
   assert.equal(result.status, 200, JSON.stringify(result.data));
   return result;
 }
@@ -91,8 +97,8 @@ test('only the exact existing owner can bootstrap, and a missing database fails 
   assert.equal((await admin(ownerHeaders)).status, 200);
   assert.equal((await admin()).status, 401);
   assert.equal((await admin({...ownerHeaders,'oai-authenticated-user-id':'another-owner'})).status, 403);
-  assert.equal((await post('setup', {password:PASSWORD})).status, 401);
-  assert.equal((await post('setup', {password:PASSWORD}, {...ownerHeaders,'oai-authenticated-user-id':'another-owner'})).status, 403);
+  assert.equal((await post('setup', {password:PASSWORD,setupToken:SETUP_TOKEN})).status, 401);
+  assert.equal((await post('setup', {password:PASSWORD,setupToken:SETUP_TOKEN}, {...ownerHeaders,'oai-authenticated-user-id':'another-owner'})).status, 403);
   const worker = await runtime.getWorker('owner-no-database');
   const response = await worker.fetch('https://lumanest.tv/admin', {headers:ownerHeaders});
   assert.equal(response.status, 503);
@@ -110,8 +116,8 @@ test('all owner actions require same-origin JSON and reject oversized or malform
 });
 
 test('setup requires a 16–128 character password and cannot change the server owner email', async () => {
-  for (const password of ['short', 'x'.repeat(129)]) assert.equal((await post('setup', {password}, ownerHeaders)).status, 400);
-  assert.equal((await post('setup', {password:PASSWORD,email:'attacker@example.test'}, ownerHeaders)).status, 400);
+  for (const password of ['short', 'x'.repeat(129)]) assert.equal((await post('setup', {password,setupToken:SETUP_TOKEN}, ownerHeaders)).status, 400);
+  assert.equal((await post('setup', {password:PASSWORD,setupToken:SETUP_TOKEN,email:'attacker@example.test'}, ownerHeaders)).status, 400);
   assert.equal(await database.prepare('SELECT count(*) AS count FROM owner_credentials').first('count'), 0);
 });
 
@@ -135,7 +141,7 @@ test('real workerd scrypt setup stores hashes, sets the secure session, and cuts
   const signedIn = await admin({Cookie:result.cookie});
   assert.equal(signedIn.status, 200);
   assert.deepEqual(signedIn.data, {userId:'owner',email:EMAIL,displayName:'LumaNest owner',method:'password'});
-  assert.equal((await post('setup', {password:NEXT_PASSWORD}, ownerHeaders)).status, 409);
+  assert.equal((await post('setup', {password:NEXT_PASSWORD,setupToken:SETUP_TOKEN}, ownerHeaders)).status, 409);
 });
 
 test('owner login verifies the real password, normalizes email, and returns no credential or recovery code', async () => {
@@ -205,7 +211,7 @@ test('attempts from other clients cannot lock the owner out', async () => {
 });
 
 test('competing setup requests create exactly one credential and one private recovery code', async () => {
-  const results = await Promise.all([post('setup', {password:PASSWORD}, ownerHeaders), post('setup', {password:NEXT_PASSWORD}, ownerHeaders)]);
+  const results = await Promise.all([post('setup', {password:PASSWORD,setupToken:SETUP_TOKEN}, ownerHeaders), post('setup', {password:NEXT_PASSWORD,setupToken:SETUP_TOKEN}, ownerHeaders)]);
   assert.equal(results.filter(result => result.status===200).length, 1, JSON.stringify(results.map(result=>result.data)));
   assert.ok(results.filter(result=>result.status!==200).every(result=>[409,503].includes(result.status)));
   assert.equal(await database.prepare('SELECT count(*) AS count FROM owner_credentials').first('count'), 1);
@@ -214,7 +220,7 @@ test('competing setup requests create exactly one credential and one private rec
 });
 
 test('independent Worker isolates atomically select one setup and one recovery winner in shared D1', async () => {
-  const setupResults = await Promise.all([post('setup', {password:PASSWORD}, ownerHeaders), secondPost('setup', {password:NEXT_PASSWORD}, ownerHeaders)]);
+  const setupResults = await Promise.all([post('setup', {password:PASSWORD,setupToken:SETUP_TOKEN}, ownerHeaders), secondPost('setup', {password:NEXT_PASSWORD,setupToken:SETUP_TOKEN}, ownerHeaders)]);
   assert.deepEqual(setupResults.map(result=>result.status).sort(), [200,409]);
   const initial = setupResults.find(result=>result.status===200);
   assert.equal(await database.prepare('SELECT count(*) AS count FROM owner_credentials').first('count'), 1);
@@ -275,4 +281,19 @@ test('concurrent owner logins either complete in sequence or return the explicit
     assert.equal(busy.data.error.code, 'owner_sign_in_busy');
     assert.equal(busy.response.headers.get('Retry-After'), '3');
   }
+});
+
+test('first-owner setup requires the configured one-time setup token in addition to the trusted identity', async () => {
+  assert.equal((await post('setup', {password:PASSWORD}, ownerHeaders)).status, 400);
+  for (const setupToken of ['', 'wrong-token-'.repeat(4), SETUP_TOKEN + 'x', 42]) {
+    const result = await post('setup', {password:PASSWORD,setupToken}, ownerHeaders);
+    assert.equal(result.status, 403, String(setupToken));
+    assert.equal(result.data.error.code, 'invalid_setup_token');
+  }
+  const disabled = await runtime.dispatchFetch('https://lumanest.tv/no-setup-token/api/owner/setup', {method:'POST', headers:{Origin:'https://lumanest.tv','Content-Type':'application/json','CF-Connecting-IP':'192.0.2.12',...ownerHeaders}, body:JSON.stringify({password:PASSWORD,setupToken:SETUP_TOKEN})});
+  const disabledBody = await disabled.json();
+  assert.equal(disabled.status, 503, JSON.stringify(disabledBody));
+  assert.equal(disabledBody.error.code, 'owner_setup_disabled');
+  assert.equal(await database.prepare('SELECT count(*) AS count FROM owner_credentials').first('count'), 0);
+  assert.equal((await post('setup', {password:PASSWORD,setupToken:'  ' + SETUP_TOKEN + ' '}, ownerHeaders)).status, 200);
 });

@@ -16,7 +16,7 @@ Existing customer/order records and owner password hashes live in D1. App downlo
 
 The live owner console uses LumaNest email/password sign-in at `/manage/login`. Existing owner credentials and recovery information are in the live database. A clean source checkout does not recreate them.
 
-The legacy first-owner bootstrap relies on the managed host's verified identity dispatch. A fresh independent deployment must privately migrate the existing owner credentials or implement and test an alternative secure bootstrap before enabling owner access. Do not accept client-supplied identity headers as authentication. Ordinary owner sign-in remains independent of ChatGPT.
+The legacy first-owner bootstrap relies on the managed host's verified identity dispatch. It also requires a one-time `OWNER_SETUP_TOKEN` secret of at least 32 random characters, which is entered on `/manage/setup`. Without that secret, setup returns 503. Set it only for the first setup, then remove it. A fresh independent deployment must still privately migrate the existing owner credentials or provide a trusted identity source before enabling owner access. Do not accept client-supplied identity headers as authentication. Ordinary owner sign-in remains independent of ChatGPT.
 
 ## TV provider
 
@@ -32,7 +32,7 @@ The Cloudflare configurations omit account IDs. Authenticate to the intended Lum
 
 ## Payments
 
-PayPal order capture, subscription billing and verified webhooks run in server routes. Merchant credentials, webhook registration, product/plan IDs and existing billing agreements are runtime state. Keep them in their existing services when adopting this repository. Automated tests use fixtures and mocked services, without charging a card or spending the reseller wallet.
+PayPal order capture, subscription billing and verified webhooks run in server routes. Webhooks are deduplicated by event ID in D1. Records that need review are reconciled from the owner console instead of with manual database edits. Housekeeping runs without cron triggers; see `site/README.md`. Apply `drizzle/0008_chief_barracuda.sql` before deploying this version. Deploying it also rotates the derived player and renewal token keys, so customers sign in to the web player and renewal pages again. Merchant credentials, webhook registration, product/plan IDs and existing billing agreements are runtime state. Keep them in their existing services when adopting this repository. Automated tests use fixtures and mocked services, without charging a card or spending the reseller wallet.
 
 ## TV applications
 

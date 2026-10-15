@@ -1,6 +1,6 @@
 export type PlaylistChannel = {name: string; group: string; url: string; format: 'hls' | 'mpegts' | 'file'};
-export type PlayerSession = {username: string; password: string; exp: number};
-export type PlayerMedia = {url: string; bind: string; exp: number};
+export type PlayerSession = {username: string; password: string; exp: number; sid: string};
+export type PlayerMedia = {url: string; bind: string; exp: number; root?: 1};
 
 export function normalizeProviderURL(value: string, portal?: string): URL {
   const url = new URL(value);
@@ -16,7 +16,7 @@ export function validSession(value: unknown, now = Date.now()): value is PlayerS
   const item = value as Partial<PlayerSession>;
   return typeof item.username === 'string' && item.username.length > 0 && item.username.length <= 100 &&
     typeof item.password === 'string' && item.password.length > 0 && item.password.length <= 150 &&
-    typeof item.exp === 'number' && Number.isFinite(item.exp) && item.exp > now;
+    typeof item.exp === 'number' && Number.isFinite(item.exp) && item.exp > now && typeof item.sid === 'string' && /^[A-Za-z0-9_-]{16,64}$/.test(item.sid);
 }
 
 export function validMedia(value: unknown, binding: string, now = Date.now()): value is PlayerMedia {

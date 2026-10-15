@@ -4,7 +4,7 @@ import {settings, ServiceError, bunny} from './mybunny.ts';
 import {retailPrice} from './plans.ts';
 import {verifiedOrder, verifiedCapture, liveFulfillment} from './payment-validation.ts';
 
-type Order = {id: string; paypal_id: string; email: string; name: string; kind: string; line_id: number | null; devices: number; months: number; amount: string; state: string; created: number; attempted: number | null};
+export type Order = {id: string; paypal_id: string; email: string; name: string; kind: string; line_id: number | null; devices: number; months: number; amount: string; state: string; created: number; attempted: number | null; capture_id?: string | null; error?: string | null};
 export const PAYPAL_REQUIRED_EVENTS = ['CHECKOUT.ORDER.APPROVED', 'PAYMENT.CAPTURE.COMPLETED', 'BILLING.SUBSCRIPTION.CREATED', 'BILLING.SUBSCRIPTION.ACTIVATED', 'BILLING.SUBSCRIPTION.UPDATED', 'BILLING.SUBSCRIPTION.CANCELLED', 'BILLING.SUBSCRIPTION.SUSPENDED', 'BILLING.SUBSCRIPTION.EXPIRED', 'BILLING.SUBSCRIPTION.PAYMENT.FAILED', 'PAYMENT.SALE.COMPLETED', 'PAYMENT.SALE.REFUNDED', 'PAYMENT.SALE.REVERSED'];
 
 export function db() {
@@ -169,8 +169,8 @@ export async function fulfill(row: Order, paypalOrder: any) {
 }
 
 export async function status(id: string) {
-  const row = await db().prepare('SELECT state,kind FROM orders WHERE id=?').bind(id).first<{state: string; kind: string}>();
-  return {state: row?.state || 'not_found', message: row?.state === 'abandoned' ? 'This unpaid checkout was replaced when you chose auto-renew. No payment was captured by this website.' : row?.state === 'sandbox_paid' ? 'Sandbox payment verified. No live line was created.' : row?.state === 'fulfilled' ? row.kind === 'renew' ? 'Your subscription has been renewed. Your existing line login stays the same. Check your customer hub.' : 'Your subscription is ready. Check your customer hub or invitation email.' : row?.state === 'needs_review' ? 'Your order needs support review. Do not pay again.' : 'Your order is processing. Please check again shortly.'};
+  const row = await db().prepare('SELECT state,kind,error FROM orders WHERE id=?').bind(id).first<{state: string; kind: string; error: string | null}>();
+  return {state: row?.state || 'not_found', message: row?.state === 'abandoned' ? row.error?.startsWith('Replaced') ? 'This unpaid checkout was replaced when you chose auto-renew. No payment was captured by this website.' : 'This checkout was not completed. No payment was captured by this website.' : row?.state === 'resolved' ? 'Support has reviewed this order. Contact support if you have questions.' : row?.state === 'sandbox_paid' ? 'Sandbox payment verified. No live line was created.' : row?.state === 'fulfilled' ? row.kind === 'renew' ? 'Your subscription has been renewed. Your existing line login stays the same. Check your customer hub.' : 'Your subscription is ready. Check your customer hub or invitation email.' : row?.state === 'needs_review' ? 'Your order needs support review. Do not pay again.' : 'Your order is processing. Please check again shortly.'};
 }
 
 export async function captureCheckout(id: string, token: string) {
@@ -213,7 +213,7 @@ export async function captureCheckout(id: string, token: string) {
 export async function webhook(event: any, headers: Headers) {
   const webhookId = settings().PAYPAL_WEBHOOK_ID;
   if (!webhookId) throw new ServiceError(503, 'webhook_not_configured', 'Webhook is not configured.');
-  if (!event?.id || !event?.event_type || ['paypal-auth-algo', 'paypal-cert-url', 'paypal-transmission-id', 'paypal-transmission-sig', 'paypal-transmission-time'].some(header => !headers.get(header))) {
+  if (typeof event?.id !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/.test(event.id) || typeof event?.event_type !== 'string' || !/^[A-Z0-9_.]{1,100}$/.test(event.event_type) || ['paypal-auth-algo', 'paypal-cert-url', 'paypal-transmission-id', 'paypal-transmission-sig', 'paypal-transmission-time'].some(header => !headers.get(header))) {
     throw new ServiceError(403, 'invalid_webhook', 'Webhook verification failed.');
   }
   const verified = await paypal('/v1/notifications/verify-webhook-signature', 'POST', {
@@ -221,12 +221,47 @@ export async function webhook(event: any, headers: Headers) {
     transmission_sig: headers.get('paypal-transmission-sig'), transmission_time: headers.get('paypal-transmission-time'), webhook_id: webhookId, webhook_event: event
   });
   if (verified?.verification_status !== 'SUCCESS') throw new ServiceError(403, 'invalid_webhook', 'Webhook verification failed.');
+  // PayPal redelivers events; each verified event id is processed once. A transient failure releases the claim so the retry runs.
+  const claim = await db().prepare('INSERT OR IGNORE INTO paypal_webhook_events (id,type,received) VALUES (?,?,?)').bind(event.id, event.event_type, Date.now()).run();
+  if (claim.meta.changes !== 1) return {received: true};
+  try {return await processWebhook(event);}
+  catch (error) {
+    // Business conflicts are recorded for owner review and acknowledged so PayPal does not retry them for days.
+    if (businessConflict(error)) {
+      const code = error instanceof ServiceError ? error.code : 'payment_not_verified';
+      try {
+        await reviewWebhookConflict(event, code);
+        console.error('lumanest_paypal_webhook_review', JSON.stringify({type: event.event_type, code}));
+        return {received: true};
+      } catch {}
+    }
+    await db().prepare('DELETE FROM paypal_webhook_events WHERE id=?').bind(event.id).run().catch(() => {});
+    throw error;
+  }
+}
+function businessConflict(error: unknown) {
+  if (error instanceof ServiceError) return error.status >= 400 && error.status < 500 && ![401, 403, 408, 429].includes(error.status);
+  return error instanceof Error && error.constructor === Error && !/D1_|SQLITE/i.test(error.message);
+}
+function webhookOrderId(event: any) {
+  const id = event.event_type === 'CHECKOUT.ORDER.APPROVED' ? event.resource?.id : event.resource?.supplementary_data?.related_ids?.order_id;
+  return typeof id === 'string' && /^[A-Z0-9]{1,36}$/.test(id) ? id : null;
+}
+async function reviewWebhookConflict(event: any, code: string) {
+  if (event.event_type.startsWith('BILLING.SUBSCRIPTION.') || event.event_type.startsWith('PAYMENT.SALE.')) return (await import('./subscriptions.ts')).reviewSubscriptionEvent(event, code);
+  const id = webhookOrderId(event);
+  if (!id) return;
+  await db().prepare("UPDATE orders SET state='needs_review',error=? WHERE paypal_id=? AND attempted IS NULL AND state IN ('created','pending')").bind(code, id).run();
+  // A replaced checkout that reports a capture must never be fulfilled automatically.
+  if (event.event_type === 'PAYMENT.CAPTURE.COMPLETED') await db().prepare("UPDATE orders SET state='needs_review',attempted=?,error=? WHERE paypal_id=? AND state='abandoned'").bind(Date.now(), code, id).run();
+}
+async function processWebhook(event: any) {
   if (event.event_type.startsWith('BILLING.SUBSCRIPTION.') || event.event_type.startsWith('PAYMENT.SALE.')) {
     await (await import('./subscriptions.ts')).subscriptionWebhook(event);
     return {received: true};
   }
-  const id = event.event_type === 'CHECKOUT.ORDER.APPROVED' ? event.resource?.id : event.resource?.supplementary_data?.related_ids?.order_id;
-  if (typeof id === 'string' && /^[A-Z0-9]{1,36}$/.test(id)) {
+  const id = webhookOrderId(event);
+  if (id) {
     const row = await db().prepare('SELECT * FROM orders WHERE paypal_id=?').bind(id).first<Order>();
     if (row && event.event_type === 'CHECKOUT.ORDER.APPROVED') await captureCheckout(row.id, id);
     if (row && event.event_type === 'PAYMENT.CAPTURE.COMPLETED' && row.state === 'abandoned') {

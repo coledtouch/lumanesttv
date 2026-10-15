@@ -57,6 +57,13 @@
       "when": 1792074417428,
       "tag": "0007_brave_mordo",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1792078606378,
+      "tag": "0008_chief_barracuda",
+      "breakpoints": true
     }
   ]
 }

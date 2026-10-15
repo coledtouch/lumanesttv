@@ -7,7 +7,7 @@ import {activatedLineId, renewalOffer, walletCanActivate, portalReady} from './p
 import {ownLine, verifiedRenewalQuote, credentialDigest, lineExpiry, renewalWriteLimit, type RenewalLine} from './renewal.ts';
 
 type CatalogPlan = {sku: string; paypal_plan_id: string | null; product_id: string; devices: number; months: number; amount: string; currency: string; mode: string; state: string; created: number};
-type Agreement = {id: string; paypal_id: string | null; plan_id: string; line_id: number; line_slot: number | null; credential: string; devices: number; months: number; amount: string; currency: string; email: string; name: string; state: string; mode: string; starts_at: string; next_billing_at: string | null; approval_url: string | null; cancel_requested: number; pause_requested: number; pause_confirmed: number; merchant_activation: number; activation_attempted: number | null; created: number; updated: number; error: string | null};
+export type Agreement = {id: string; paypal_id: string | null; plan_id: string; line_id: number; line_slot: number | null; credential: string; devices: number; months: number; amount: string; currency: string; email: string; name: string; state: string; mode: string; starts_at: string; next_billing_at: string | null; approval_url: string | null; cancel_requested: number; pause_requested: number; pause_confirmed: number; merchant_activation: number; activation_attempted: number | null; created: number; updated: number; error: string | null};
 const subscriptionID = /^I-[A-Z0-9]{1,40}$/;
 const planID = /^P-[A-Z0-9]{1,50}$/;
 const paymentID = /^[A-Z0-9]{1,40}$/;
@@ -120,7 +120,7 @@ function canonical(value: any, row: Agreement) {
     !iso(value.start_time) || Math.abs(Date.parse(value.start_time) - Date.parse(row.starts_at)) > 1000 || value.plan_overridden === true) throw invalidPayment();
   return value;
 }
-async function refreshAgreement(row: Agreement) {
+export async function refreshAgreement(row: Agreement) {
   if (!subscriptionID.test(row.paypal_id || '')) throw unavailable();
   const remote = canonical(await paypal('/v1/billing/subscriptions/' + row.paypal_id), row);
   // Retired merchant-controlled drafts can never be activated by a later old approval link.
@@ -327,13 +327,21 @@ async function completedSale(row: Agreement, sale: any) {
     throw error;
   }
 }
-export async function subscriptionWebhook(event: any) {
+async function webhookAgreement(event: any) {
   const paypalID = event.event_type?.startsWith('PAYMENT.SALE.') ? event.resource?.billing_agreement_id : event.resource?.id;
   let row = subscriptionID.test(paypalID || '') ? await db().prepare('SELECT * FROM subscriptions WHERE paypal_id=? AND mode=?').bind(paypalID, mode()).first<Agreement>() : null;
   if (!row && ['PAYMENT.SALE.REFUNDED', 'PAYMENT.SALE.REVERSED'].includes(event.event_type)) {
     const original = event.resource?.sale_id || event.resource?.id;
     if (paymentID.test(original || '')) row = await db().prepare('SELECT s.* FROM subscriptions s JOIN subscription_payments p ON p.subscription_id=s.id WHERE p.sale_id=? AND s.mode=?').bind(original, mode()).first<Agreement>();
   }
+  return row;
+}
+export async function reviewSubscriptionEvent(event: any, reason: string) {
+  const row = await webhookAgreement(event);
+  if (row && row.state !== 'needs_review') await pause(row, reason);
+}
+export async function subscriptionWebhook(event: any) {
+  const row = await webhookAgreement(event);
   if (!row) return;
   if (event.event_type === 'PAYMENT.SALE.COMPLETED') {
     try {

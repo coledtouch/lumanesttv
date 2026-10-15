@@ -121,7 +121,7 @@ export async function ownLine(req: Request, allowIneligible = false): Promise<Re
   const values = (req.headers.get('cookie') || '').split(';').map(value => value.trim()).filter(value => value.startsWith(RENEWAL_COOKIE + '='));
   if (values.length !== 1) throw expiredSession();
   let session: RenewalSession;
-  try {session = await open<RenewalSession>(values[0].slice(RENEWAL_COOKIE.length + 1), secret());}
+  try {session = await open<RenewalSession>(values[0].slice(RENEWAL_COOKIE.length + 1), secret(), 'renewal-session');}
   catch (error) {if (error instanceof ServiceError) throw error; throw expiredSession();}
   if (!session || session.purpose !== 'lumanest-renewal-v1' || !Number.isSafeInteger(session.lineId) || session.lineId <= 0 ||
     typeof session.username !== 'string' || session.username.length < 1 || session.username.length > 100 ||
@@ -155,7 +155,7 @@ export async function quote(line: RenewalLine): Promise<RenewalQuote> {
       expires_at: lineExpiry(line),
       days_left: typeof line.days_left === 'number' && Number.isFinite(line.days_left) ? line.days_left : null},
     offers, quote_token: await seal({purpose: 'lumanest-renewal-quote-v1', lineId: line.id, devices: line.devices,
-      credential: await credentialDigest(line.username, line.password), amounts: offers.map(offer => offer.amount), lineStatus: line.status, expiresAt: lineExpiry(line), exp: Date.now() + QUOTE_SECONDS * 1000} satisfies QuoteSession, secret()),
+      credential: await credentialDigest(line.username, line.password), amounts: offers.map(offer => offer.amount), lineStatus: line.status, expiresAt: lineExpiry(line), exp: Date.now() + QUOTE_SECONDS * 1000} satisfies QuoteSession, secret(), 'renewal-quote'),
     checkout_available: ready,
     message: ready ? null : 'Renewal checkout is temporarily unavailable. Please try again shortly or contact support.'
   };
@@ -186,7 +186,7 @@ async function verifiedLogin(input: {username: string; password: string}, manage
   if (!line || line.id !== found.id || line.username !== input.username || !equalDigest(offered, expected)) throw invalidLogin();
   if (manageSubscription && !await db().prepare('SELECT id FROM subscriptions WHERE line_id=? LIMIT 1').bind(line.id).first()) throw invalidLogin();
   const credentials: RenewalSession = {purpose: 'lumanest-renewal-v1', lineId: line.id, username: line.username, credential: expected, exp: Date.now() + SESSION_SECONDS * 1000};
-  return {quote: await quote(line), cookie: `${RENEWAL_COOKIE}=${await seal(credentials, secret())}; Path=${COOKIE_PATH}; HttpOnly; Secure; SameSite=Strict; Max-Age=${SESSION_SECONDS}`};
+  return {quote: await quote(line), cookie: `${RENEWAL_COOKIE}=${await seal(credentials, secret(), 'renewal-session')}; Path=${COOKIE_PATH}; HttpOnly; Secure; SameSite=Strict; Max-Age=${SESSION_SECONDS}`};
 }
 
 export async function renewalQuote(req: Request) {
@@ -198,7 +198,7 @@ export async function verifiedRenewalQuote(req: Request, quoteToken: string) {
   if (typeof quoteToken !== 'string' || !quoteToken || quoteToken.length > MAX_BODY_BYTES) throw changedQuote();
   const line = await ownLine(req);
   let snapshot: QuoteSession;
-  try {snapshot = await open<QuoteSession>(quoteToken, secret());}
+  try {snapshot = await open<QuoteSession>(quoteToken, secret(), 'renewal-quote');}
   catch (error) {if (error instanceof ServiceError) throw error; throw changedQuote();}
   const now = Date.now();
   if (!snapshot || snapshot.purpose !== 'lumanest-renewal-quote-v1' || snapshot.lineId !== line.id || snapshot.devices !== line.devices ||

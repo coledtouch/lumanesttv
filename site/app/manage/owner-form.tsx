@@ -7,13 +7,13 @@ import styles from './owner-auth.module.css';
 type Mode='login'|'setup'|'recover'|'security';
 type OwnerResponse={ok?:boolean;recoveryCode?:string;error?:{message?:string}};
 
-function PasswordField({name,label,newPassword=false,disabled=false,hint}:{name:string;label:string;newPassword?:boolean;disabled?:boolean;hint?:string}) {
+function PasswordField({name,label,newPassword=false,disabled=false,hint,autoComplete}:{name:string;label:string;newPassword?:boolean;disabled?:boolean;hint?:string;autoComplete?:string}) {
   const id=useId();
   const [visible,setVisible]=useState(false);
   return <div className={styles.field}>
     <label htmlFor={id}>{label}</label>
     <span className={styles.password}>
-      <input id={id} name={name} type={visible?'text':'password'} autoComplete={newPassword?'new-password':'current-password'} required minLength={newPassword?16:undefined} maxLength={128} disabled={disabled} aria-describedby={hint?id+'-hint':undefined}/>
+      <input id={id} name={name} type={visible?'text':'password'} autoComplete={autoComplete||(newPassword?'new-password':'current-password')} required minLength={newPassword?16:undefined} maxLength={128} disabled={disabled} aria-describedby={hint?id+'-hint':undefined}/>
       <button className={styles.visibility} type="button" aria-label={`${visible?'Hide':'Show'} ${label.toLowerCase()}`} aria-pressed={visible} onClick={()=>setVisible(!visible)} disabled={disabled}>{visible?'Hide':'Show'}</button>
     </span>
     {hint&&<small id={id+'-hint'}>{hint}</small>}
@@ -51,7 +51,7 @@ export default function OwnerForm({mode,email,configured=true}:{mode:Mode;email:
     setBusy(true);
     setError('');
     try {
-      const payload=mode==='setup'||mode==='security'?{password}:mode==='recover'?{email:String(data.get('email')??''),password,recoveryCode:String(data.get('recoveryCode')??'')}:{email:String(data.get('email')??''),password};
+      const payload=mode==='setup'?{password,setupToken:String(data.get('setupToken')??'')}:mode==='security'?{password}:mode==='recover'?{email:String(data.get('email')??''),password,recoveryCode:String(data.get('recoveryCode')??'')}:{email:String(data.get('email')??''),password};
       const response=await fetch('/api/owner/'+(mode==='security'?'recovery-code':mode),{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       const result=await response.json().catch(()=>{throw new Error('Owner access is temporarily unavailable. Please try again.');}) as OwnerResponse;
       if(!response.ok||result.ok!==true)throw new Error(result.error?.message||'Unable to complete this request. Please try again.');
@@ -115,6 +115,7 @@ export default function OwnerForm({mode,email,configured=true}:{mode:Mode;email:
         <input id={id+'-code'} name="recoveryCode" type="text" autoComplete="off" autoCapitalize="none" spellCheck={false} required maxLength={128} disabled={busy} aria-describedby={id+'-code-hint'}/>
         <small id={id+'-code-hint'}>Enter the code saved when you set up or last reset owner access.</small>
       </div>}
+      {mode==='setup'&&<PasswordField name="setupToken" label="Setup token" autoComplete="off" disabled={busy} hint="The one-time OWNER_SETUP_TOKEN secret configured for this deployment."/>}
       <PasswordField name="password" label={mode==='login'?'Password':mode==='security'?'Current password':'New password'} newPassword={newPasswordMode} disabled={busy} hint={newPasswordMode?'Use 16–128 characters. A long, unique passphrase works well.':undefined}/>
       {newPasswordMode&&<PasswordField name="confirmPassword" label="Confirm new password" newPassword disabled={busy}/>}
       {error&&<p ref={errorRef} className={styles.error} role="alert" tabIndex={-1}>{error}</p>}
