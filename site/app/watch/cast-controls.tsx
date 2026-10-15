@@ -41,6 +41,8 @@ type CastGlobals = {
   WebKitPlaybackTargetAvailabilityEvent?: unknown;
 };
 type AirPlayVideo = HTMLVideoElement & {webkitShowPlaybackTargetPicker?: () => void};
+// Remote Playback API: Chrome on Android casts a video element's own URL to a Cast device.
+type RemoteVideo = HTMLVideoElement & {remote?: {prompt(): Promise<void>}};
 
 const CAST_SDK = 'https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1';
 let castReady: Promise<boolean> | null = null;
@@ -82,6 +84,7 @@ export default function CastControls({token, name, video}: {token: string; name:
   const [castAvailable, setCastAvailable] = useState(false);
   const [castDevice, setCastDevice] = useState('');
   const [airPlayAvailable, setAirPlayAvailable] = useState(false);
+  const [remoteSupported, setRemoteSupported] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const context = useRef<CastContext | null>(null);
@@ -95,8 +98,10 @@ export default function CastControls({token, name, video}: {token: string; name:
       const instance = framework.CastContext.getInstance();
       instance.setOptions({receiverApplicationId: chromeCast.media.DEFAULT_MEDIA_RECEIVER_APP_ID, autoJoinPolicy: chromeCast.AutoJoinPolicy.ORIGIN_SCOPED});
       context.current = instance;
+      // The button shows as soon as Cast works in this browser. Android finds TVs slowly and may still report
+      // "no devices" here; tapping the button opens Chrome's picker, which keeps looking.
+      setCastAvailable(true);
       const update = () => {
-        setCastAvailable(instance.getCastState() !== framework.CastState.NO_DEVICES_AVAILABLE);
         setCastDevice(instance.getCurrentSession()?.getCastDevice().friendlyName || '');
       };
       instance.addEventListener(framework.CastContextEventType.CAST_STATE_CHANGED, update);
@@ -118,6 +123,14 @@ export default function CastControls({token, name, video}: {token: string; name:
       .catch(error => {sentToken.current = ''; setMessage(error instanceof Error ? error.message : 'Casting failed.');});
   }, [castDevice, token, name, video]);
 
+  // Without the Cast SDK (for example some Chrome builds on Android), the browser's own Remote Playback can cast.
+  useEffect(() => {
+    const element = video.current as RemoteVideo | null;
+    const w = window as unknown as CastGlobals;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- browser support is only known after the video element mounts
+    setRemoteSupported(Boolean(element?.remote && !w.WebKitPlaybackTargetAvailabilityEvent));
+  }, [video, token]);
+
   // Safari announces AirPlay receivers on the video element.
   useEffect(() => {
     const element = video.current;
@@ -128,9 +141,26 @@ export default function CastControls({token, name, video}: {token: string; name:
     return () => element.removeEventListener('webkitplaybacktargetavailabilitychanged', onAvailability);
   }, [video, token]);
 
+  async function startRemote() {
+    const element = video.current as RemoteVideo | null;
+    if (!element?.remote) return;
+    setBusy(true); setMessage('');
+    try {
+      // The TV fetches the stream itself, so the element switches to the cookie-free cast link first.
+      const link = await castLink(token);
+      element.setAttribute('src', link.url);
+      await element.remote.prompt();
+    } catch (error) {
+      const name = error instanceof DOMException ? error.name : '';
+      if (name === 'NotFoundError') setMessage('No TV found. Make sure your TV has Chromecast built in and is on the same Wi-Fi as this phone.');
+      else if (name === 'NotSupportedError') setMessage('This browser can’t cast this channel. Try Chrome on a computer, or the Tuner app on your TV.');
+      else if (name !== 'AbortError') setMessage(error instanceof Error ? error.message : 'Casting failed.');
+    } finally {setBusy(false);}
+  }
+
   async function startCast() {
     const instance = context.current;
-    if (!instance) return;
+    if (!instance) return void startRemote();
     setBusy(true); setMessage('');
     try {
       if (!instance.getCurrentSession()) await instance.requestSession();
@@ -165,13 +195,14 @@ export default function CastControls({token, name, video}: {token: string; name:
     finally {setBusy(false);}
   }
 
-  if (!castAvailable && !airPlayAvailable && !castDevice) return null;
+  const canCast = castAvailable || remoteSupported;
+  if (!canCast && !airPlayAvailable && !castDevice) return null;
   return <div className="watch-cast" aria-live="polite">
     {castDevice ? <>
       <span className="watch-cast-status"><span aria-hidden="true">📺</span> Playing on {castDevice}</span>
       <button type="button" className="small-button" onClick={stopCast}>Stop casting</button>
     </> : <>
-      {castAvailable && <button type="button" className="small-button" disabled={busy} onClick={() => void startCast()}>Cast to TV</button>}
+      {canCast && <button type="button" className="small-button" disabled={busy} onClick={() => void startCast()}>Cast to TV</button>}
       {airPlayAvailable && <button type="button" className="small-button" disabled={busy} onClick={() => void startAirPlay()}>AirPlay</button>}
     </>}
     {message && <span className="watch-cast-error" role="alert">{message}</span>}
