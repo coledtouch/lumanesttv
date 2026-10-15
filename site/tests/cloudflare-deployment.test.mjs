@@ -43,7 +43,7 @@ test('Cloudflare preparation starts without production routes, cron or copied va
   assert.equal(config.compatibility_date, '2026-10-06');
   assert.equal(config.observability.logs.invocation_logs, false);
   assert.equal(config.observability.traces.enabled, false);
-  assert.equal(config.unsafe.metadata.observability.redact_query_string, true);
+  assert.equal(config.unsafe, undefined);
   const serialized = await readFile(new URL('dist/server/wrangler-cloudflare.json', root), 'utf8');
   assert.doesNotMatch(serialized, /private-fixture-value|old\.invalid/);
 });

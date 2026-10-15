@@ -48,8 +48,8 @@ export async function prepareCloudflare(options, root = new URL('../', import.me
     access(new URL('index.js', server)),
     access(new URL('dist/client/', root)),
   ]);
-  // Wrangler 4.149 does not yet expose the API's redact_query_string setting.
-  // Its documented metadata passthrough applies this complete setting last.
+  // Avoid automatic URL capture; API-only query redaction must be set and
+  // verified separately after deployment (see the deployment instructions).
   const observability = {enabled: true, logs: {enabled: true, invocation_logs: false}, traces: {enabled: false}};
   const config = {
     name: options.workerName,
@@ -66,9 +66,8 @@ export async function prepareCloudflare(options, root = new URL('../', import.me
     keep_vars: true,
     workers_dev: !options.production,
     preview_urls: false,
-    // Reduce automatic URL capture and redact query strings in retained metadata.
+    // Do not persist automatic invocation URLs or traces containing media tokens.
     observability,
-    unsafe: {metadata: {observability: {...observability, redact_query_string: true}}},
     ...(options.production ? {routes: [{pattern: 'lumanest.tv', custom_domain: true}]} : {}),
   };
   await copyFile(new URL('./cloudflare-entry.mjs', import.meta.url), new URL('cloudflare-entry.mjs', server));

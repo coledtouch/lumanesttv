@@ -6,17 +6,37 @@
 
 The checked-in `.openai/hosting.json` declares the `DB` and `BUCKET` bindings without an existing hosting project identity. The maintained `site/build/` sources are required by the build. Keep them when copying or deploying the site.
 
-The current managed hosting remains the production host. A GitHub push alone does not deploy this application. Continue using the current hosting workflow until a replacement deployment has been configured and verified.
+Production moved to the independent Cloudflare resources below on October 15, 2026. The complete database, migration history, runtime settings and both Android installers were transferred and verified before the domain switched. The former managed host has no runtime service keys; its APIs are retired and safe legacy links redirect to LumaNest. Its private database remains a recovery copy. A GitHub push alone does not deploy this application.
 
-For a separate Cloudflare deployment, create and bind the D1 database and R2 bucket, apply the SQL migrations in order, provision runtime settings through private environment configuration, and configure the application's domain and PayPal webhook. The generated Worker config is not a complete production environment: its local database identifiers and bucket names are placeholders. Configure real bindings in private deployment configuration.
+| Resource | Configuration |
+| --- | --- |
+| Main website Worker | `lumanest-tv`; production custom domain `lumanest.tv`; `workers.dev` and preview URLs disabled |
+| D1 database | `lumanest-tv-production`, ID `226b9f80-d3c9-471d-b5b4-c4a0c17f9e9d`, binding `DB` |
+| R2 downloads bucket | `lumanest-tv-downloads`, binding `BUCKET` |
+| Portal PWA overlay | Existing `lumanest-app-support` Worker on `portal.lumanest.tv/*` and `tv.lumanest.tv/*` |
+| Stream relay | Existing `lumanest-stream-relay` Worker at `streams.lumanest.tv` |
+
+Run the normal build, then `npm run cloudflare:prepare -- --database-id 226b9f80-d3c9-471d-b5b4-c4a0c17f9e9d` from `site/`. This generates a standalone config beside the built server with real resource bindings and no production route. `npm run cloudflare:deploy -- --dry-run` validates it. Runtime secrets/settings are supplied privately and preserved with `--keep-vars`. The `--production` preparation flag is the explicit step that selects the apex custom domain; it does not change portal or relay routes. See [`site/README.md`](../site/README.md#direct-cloudflare-deployment) for staging, cutover, and rollback commands. The framework's original `dist/server/wrangler.json` remains local/managed build configuration with placeholder bindings; use the separate generated `wrangler-cloudflare.json` for direct hosting.
 
 Existing customer/order records and owner password hashes live in D1. App downloads may live in R2. Neither is included in this repository. Any production data move needs a private backup, restore and verification process. Do not put database exports, payment details or credentials into GitHub.
+
+The approved Android R2 object is `Tuner-1.5.3.apk`, with the size/checksum and custom metadata required by `site/lib/tuner.ts`. Its version remains 1.5.3 during the hosting migration. Historical Android 1.5.2 remains archived in R2. LG's IPK ships with the website's public assets. Native applications continue to run on customers' devices; their full first-party sources remain in `apps/` on GitHub.
+
+## Database transfer and migration bookkeeping
+
+Preserve all imported application tables, the source host's `__appgarden_migrations` journal, and its sequence state. A fresh schema is not a substitute for the existing owner password, recurring-billing credentials, order history, or payment deduplication records. Preserve the existing `PLAYER_COOKIE_KEY` and PayPal merchant configuration; changing the encryption key can make stored billing credentials unreadable.
+
+The imported source journal and Wrangler's migration journal are separate formats. Wrangler defaults to a table named `d1_migrations`, with columns `id INTEGER PRIMARY KEY AUTOINCREMENT`, `name TEXT UNIQUE`, and `applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL`. It recognizes an applied migration by the exact SQL filename relative to `migrations_dir`, including `.sql`. Copying `__appgarden_migrations` alone does not tell Wrangler that the initial schema has already run.
+
+All nine existing SQL files, **0000 through 0008**, were compared with the imported schema and source journal, then adopted into `d1_migrations` without executing their SQL again. The original names and execution timestamps were copied from `__appgarden_migrations`, which remains unchanged as migration evidence. Never mark an unverified migration as applied. The generated direct config points `migrations_dir` to the checkout's `drizzle/` directory. Future changes belong in new migration files; do not edit an already-applied baseline.
+
+After adoption, `wrangler d1 migrations list lumanest-tv-production --remote --config dist/server/wrangler-cloudflare.json` from `site/` should report no pending migration for this baseline. Read the stored migration filenames and inspect schema/index definitions to confirm coverage; compare private table counts and copied journal/sequence values without printing customer rows. Do not run `migrations apply` merely to test the transfer. A temporary deployment artifact outside the source checkout may omit `drizzle/`; use a prepared source checkout when managing future migrations.
 
 ## Owner access
 
 The live owner console uses LumaNest email/password sign-in at `/manage/login`. Existing owner credentials and recovery information are in the live database. A clean source checkout does not recreate them.
 
-The legacy first-owner bootstrap relies on the managed host's verified identity dispatch. It also requires a one-time `OWNER_SETUP_TOKEN` secret of at least 32 random characters, which is entered on `/manage/setup`. Without that secret, setup returns 503. Set it only for the first setup, then remove it. A fresh independent deployment must still privately migrate the existing owner credentials or provide a trusted identity source before enabling owner access. Do not accept client-supplied identity headers as authentication. Ordinary owner sign-in remains independent of ChatGPT.
+The legacy first-owner bootstrap relies on the managed host's verified identity dispatch. Keep `ADMIN_USER_ID` and `OWNER_SETUP_TOKEN` unset on independent Cloudflare hosting. The standalone entry removes client-supplied `oai-authenticated-*` headers before invoking the application. Privately migrate existing owner credentials instead of enabling a fresh bootstrap or generating a replacement password. Ordinary owner sign-in remains independent of ChatGPT.
 
 ## TV provider
 
@@ -28,11 +48,11 @@ The `lumanest-stream-relay` Worker supports approved upstream streams through `s
 
 The `STREAM_RELAY_ALLOWED_HOSTS` variable lists the approved provider addresses, as exact public IPv4 addresses and `a.b.c.0/24` networks. Private, loopback, link-local and other reserved ranges are always refused. An invalid list makes the relay answer 503. The main application keeps a matching list in `site/lib/player-relay.ts`; change both together. The optional `RELAY_LIMITER` rate limiting binding caps relay requests per Cloudflare location and returns 429 when exceeded. The configuration comments explain the chosen limit.
 
-The Cloudflare configurations omit account IDs. Authenticate to the intended LumaNest account and supply `CLOUDFLARE_ACCOUNT_ID` through the deployment environment. Review domain routes and bindings before deploying. This source migration does not modify DNS or domain registration.
+The checked-in portal/relay configurations omit account IDs; authenticate to the intended LumaNest account and supply `CLOUDFLARE_ACCOUNT_ID` through the deployment environment when maintaining those services. The main preparation script selects the migration account explicitly. Review the generated domain routes and bindings before deploying. Preserve domain registration, email routing and existing provider DNS settings during the website cutover.
 
 ## Payments
 
-PayPal order capture, subscription billing and verified webhooks run in server routes. Webhooks are deduplicated by event ID in D1. Records that need review are reconciled from the owner console instead of with manual database edits. Housekeeping runs without cron triggers; see `site/README.md`. Apply `drizzle/0008_chief_barracuda.sql` before deploying this version. Deploying it also rotates the derived player and renewal token keys, so customers sign in to the web player and renewal pages again. Merchant credentials, webhook registration, product/plan IDs and existing billing agreements are runtime state. Keep them in their existing services when adopting this repository. Automated tests use fixtures and mocked services, without charging a card or spending the reseller wallet.
+PayPal order capture, subscription billing and verified webhooks run in server routes. Webhooks are deduplicated by event ID in D1. Records that need review are reconciled from the owner console instead of with manual database edits. Housekeeping runs without cron triggers; see `site/README.md`. The imported baseline must already include `drizzle/0008_chief_barracuda.sql`; do not execute it again on an imported schema. Preserving `lumanest.tv` keeps existing webhook and return URLs. Merchant credentials, webhook registration, product/plan IDs and existing billing agreements remain private runtime state. Automated tests use fixtures and mocked services, without charging a card or spending the reseller wallet.
 
 ## TV applications
 
