@@ -98,7 +98,7 @@ test('a bare Xtream host is treated as HTTPS', async () => {
 });
 
 test('pairing rejects bad input and limits codes per network', async () => {
-  assert.equal((await call('/api/pair/start', {body: {device: 'roku'}})).status, 400);
+  assert.equal((await call('/api/pair/start', {body: {device: 'vizio'}})).status, 400);
   assert.equal((await call('/api/pair/poll', {body: {deviceCode: 'short'}})).status, 400);
   assert.equal((await call('/api/pair/poll', {method: 'OPTIONS'})).status, 204);
   assert.deepEqual((await call('/api/pair/poll', {body: {deviceCode: 'A'.repeat(43)}})).data, {status: 'expired'});

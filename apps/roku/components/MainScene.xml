@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tuner for Roku: pair with your phone, then Live TV, Movies, Series and Settings in three columns. -->
+<component name="MainScene" extends="Scene">
+  <script type="text/brightscript" uri="pkg:/components/MainScene.brs" />
+  <children>
+    <Rectangle id="bg" width="1920" height="1080" color="0x0E0C1AFF" />
+    <Rectangle id="glow" width="1920" height="6" color="0x7C3AEDFF" />
+
+    <Group id="pair" visible="false">
+      <Rectangle id="pairPanel" translation="[160,200]" width="1600" height="680" color="0x171428FF" />
+      <Rectangle id="qrBox" translation="[230,280]" width="520" height="520" color="0xFFFFFFFF" />
+      <Group id="qr" translation="[230,280]" />
+      <Label id="pairEyebrow" translation="[830,300]" text="PAIR WITH YOUR PHONE" color="0xC4B5FDFF" font="font:SmallBoldSystemFont" />
+      <Label id="pairTitle" translation="[830,350]" width="860" text="Scan to connect this TV" color="0xF6F3FBFF" font="font:LargeBoldSystemFont" />
+      <Label id="pairSteps" translation="[830,440]" width="860" wrap="true" color="0xDDD3F2FF" font="font:MediumSystemFont"
+        text="1. Point your phone's camera at the code.&#10;2. Sign in with your LumaNest TV line login.&#10;3. Tap Connect my TV. Your channels load here automatically." />
+      <Label id="pairOr" translation="[830,620]" width="860" text="No camera? Go to lumanest.tv/pair and enter:" color="0xA79FC0FF" font="font:SmallSystemFont" />
+      <Label id="pairCode" translation="[830,660]" width="860" text="····-····" color="0xFFFFFFFF" font="font:LargeBoldSystemFont" />
+      <Label id="pairStatus" translation="[830,750]" width="860" wrap="true" text="Getting a code…" color="0xC4B5FDFF" font="font:SmallSystemFont" />
+    </Group>
+
+    <Group id="home" visible="false">
+      <Label id="brand" translation="[80,48]" text="tuner" color="0xF6F3FBFF" font="font:LargeBoldSystemFont" />
+      <Label id="by" translation="[82,104]" text="by LumaNest TV" color="0xC4B5FDFF" font="font:SmallSystemFont" />
+      <Label id="status" translation="[420,70]" width="1420" wrap="true" color="0xC4B5FDFF" font="font:SmallSystemFont" />
+      <LabelList id="nav" translation="[80,190]" itemSize="[290,70]" itemSpacing="[0,8]" numRows="6"
+        color="0xBBB2CFFF" focusedColor="0x141224FF" focusBitmapBlendColor="0xB79CFBFF" font="font:MediumBoldSystemFont" focusedFont="font:MediumBoldSystemFont">
+        <ContentNode role="content">
+          <ContentNode title="Live TV" />
+          <ContentNode title="Movies" />
+          <ContentNode title="Series" />
+          <ContentNode title="Settings" />
+        </ContentNode>
+      </LabelList>
+      <LabelList id="cats" translation="[420,190]" itemSize="[460,62]" itemSpacing="[0,6]" numRows="12" vertFocusAnimationStyle="floatingFocus"
+        color="0xBBB2CFFF" focusedColor="0x141224FF" focusBitmapBlendColor="0xB79CFBFF" font="font:SmallSystemFont" focusedFont="font:SmallBoldSystemFont" />
+      <LabelList id="items" translation="[920,190]" itemSize="[920,62]" itemSpacing="[0,6]" numRows="12" vertFocusAnimationStyle="floatingFocus"
+        color="0xF6F3FBFF" focusedColor="0x141224FF" focusBitmapBlendColor="0xFFFFFFFF" font="font:SmallSystemFont" focusedFont="font:SmallBoldSystemFont" />
+      <Label id="hint" translation="[80,1010]" width="1760" color="0x857D9EFF" font="font:SmallestSystemFont"
+        text="Arrows browse · OK opens or plays · Back returns" />
+    </Group>
+
+    <Video id="video" width="1920" height="1080" visible="false" />
+
+    <Rectangle id="toastBg" translation="[460,940]" width="1000" height="80" color="0x2B2349F2" visible="false">
+      <Label id="toast" width="1000" height="80" horizAlign="center" vertAlign="center" color="0xF6F3FBFF" font="font:MediumSystemFont" />
+    </Rectangle>
+  </children>
+</component>

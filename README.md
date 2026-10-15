@@ -9,6 +9,7 @@ Website, checkout, owner tools, web player, and TV applications for [LumaNest TV
 | [`apps/android/`](apps/android/) | Android TV and Google TV development source, Kotlin/Compose/Media3, including tests; approved download is 1.6.0 |
 | [`apps/tizen/`](apps/tizen/) | Tuner 1.4.9 for Samsung TVs, source, tests and packaging tools |
 | [`apps/webos/`](apps/webos/) | Tuner 1.0.3 for LG webOS TVs |
+| [`apps/roku/`](apps/roku/) | Tuner 1.0.1 for Roku (sideload for testing; Roku Channel Store submission pending) |
 | [`releases/`](releases/) | Installer versions, checksums and release information |
 | [`.github/workflows/`](.github/workflows/) | Website and TV app build checks, nightly Android emulator tests and tag-driven draft releases |
 
