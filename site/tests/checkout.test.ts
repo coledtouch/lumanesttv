@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {registerHooks} from 'node:module';
 import {DatabaseSync} from 'node:sqlite';
+import {readFileSync, readdirSync} from 'node:fs';
 
 // Exercise the actual payment handlers with SQLite and fully mocked provider HTTP.
 // No payment processor or reseller request can leave this test process.
@@ -15,6 +16,8 @@ const hooks = registerHooks({
 });
 const {createCheckout, captureCheckout, fulfill, webhook, paypalReady, setupPayPalWebhook, clearProviderSnapshot} = await import('../lib/paypal.ts');
 const {bunny} = await import('../lib/mybunny.ts');
+const {reconcileOrder, resolveOrder, reviewQueue} = await import('../lib/reconcile.ts');
+const {cleanup} = await import('../lib/maintenance.ts');
 hooks.deregister();
 
 const nativeFetch = globalThis.fetch;
@@ -26,13 +29,12 @@ let requests: {url: string; init: RequestInit}[];
 test.beforeEach(() => {
   clearProviderSnapshot();
   sqlite = new DatabaseSync(':memory:');
-  sqlite.exec('CREATE TABLE orders (id TEXT PRIMARY KEY, paypal_id TEXT UNIQUE, email TEXT, name TEXT, kind TEXT, line_id INTEGER, devices INTEGER, months INTEGER, amount TEXT, state TEXT, created INTEGER, attempted INTEGER, capture_id TEXT, fulfilled_line_id INTEGER, error TEXT)');
-  sqlite.exec('CREATE TABLE subscriptions (id TEXT PRIMARY KEY, line_slot INTEGER UNIQUE)');
+  for (const file of readdirSync(new URL('../drizzle/', import.meta.url)).filter(file => file.endsWith('.sql')).sort()) sqlite.exec(readFileSync(new URL('../drizzle/' + file, import.meta.url), 'utf8').replaceAll('--> statement-breakpoint', ''));
   const database = {
     prepare(sql: string) {
       const statement = sqlite.prepare(sql);
-      return {bind(...args: (string | number | null)[]) {
-        return {async run() { const result = statement.run(...args); return {meta: {changes: Number(result.changes)}}; }, async first() { return statement.get(...args) ?? null; }};
+      return {async all() { return {results: statement.all()}; }, bind(...args: (string | number | null)[]) {
+        return {async run() { const result = statement.run(...args); return {meta: {changes: Number(result.changes)}}; }, async first() { return statement.get(...args) ?? null; }, async all() { return {results: statement.all(...args)}; }};
       }};
     }
   };
@@ -409,7 +411,135 @@ test('PayPal access tokens are reused until expiry and refreshed after a rejecti
   await paypal('/v2/checkout/orders/PAYPALORDER');
   assert.equal(tokens, 1);
   rejectNext = true;
-  assert.equal((await paypal('/v2/checkout/orders/PAYPALORDER')).id, 'PAYPALORDER');
+  assert.equal((await paypal<{id?: string}>('/v2/checkout/orders/PAYPALORDER'))?.id, 'PAYPALORDER');
   assert.equal(tokens, 2);
   clearPayPalToken();
+});
+
+function review(state = 'needs_review', changes: Record<string, unknown> = {}) {
+  const order = seed();
+  sqlite.prepare("UPDATE orders SET state=?,error='capture_not_verified' WHERE id=?").run(state, order.id);
+  for (const [key, value] of Object.entries(changes)) sqlite.prepare(`UPDATE orders SET ${key}=? WHERE id=?`).run(value as string | number | null, order.id);
+  return {...order, state, ...changes};
+}
+function orderReads() { return requests.filter(r => r.url.endsWith('/v2/checkout/orders/PAYPALORDER')); }
+
+test('verified webhook events are processed once per PayPal event id', async () => {
+  seed();
+  await webhook(completedEvent(), signedHeaders());
+  const reads = orderReads().length;
+  assert.deepEqual(await webhook(completedEvent(), signedHeaders()), {received: true});
+  assert.equal(orderReads().length, reads);
+  assert.equal(lineWrites().length, 1);
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM paypal_webhook_events').get()?.count, 1);
+  await assert.rejects(webhook({...completedEvent(), id: 'bad id with spaces'}, signedHeaders()), {code: 'invalid_webhook'});
+});
+
+test('a transient webhook failure releases the event claim so the PayPal retry is processed', async () => {
+  seed();
+  const defaultHttp = http;
+  http = async (url, init) => url.endsWith('/v2/checkout/orders/PAYPALORDER') ? new Response('{}', {status: 503}) : defaultHttp(url, init);
+  await assert.rejects(webhook(completedEvent(), signedHeaders()), {code: 'paypal_error', status: 502});
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM paypal_webhook_events').get()?.count, 0);
+  http = defaultHttp;
+  await webhook(completedEvent(), signedHeaders());
+  assert.equal(saved().state, 'fulfilled');
+  assert.equal(lineWrites().length, 1);
+});
+
+test('business conflicts in webhooks are recorded for review and acknowledged without retries', async () => {
+  sqlite.prepare("INSERT INTO orders (id,paypal_id,email,name,kind,line_id,devices,months,amount,state,created) VALUES ('renew-order','RENEWORDER','test@example.com','Test','renew',42,1,12,'95.00','created',1)").run();
+  sqlite.prepare("INSERT INTO subscriptions (id,paypal_id,plan_id,line_id,line_slot,credential,devices,months,amount,currency,email,name,state,mode,starts_at,created,updated) VALUES ('agreement','I-AGREEMENT','P-PLAN',42,42,'digest',1,12,'95.00','USD','test@example.com','Test','ACTIVE','live','2026-10-01T00:00:00.000Z',1,1)").run();
+  assert.deepEqual(await webhook({id: 'approval-conflict', event_type: 'CHECKOUT.ORDER.APPROVED', resource: {id: 'RENEWORDER'}}, signedHeaders()), {received: true});
+  assert.deepEqual({...sqlite.prepare("SELECT state,error,attempted FROM orders WHERE id='renew-order'").get()}, {state: 'needs_review', error: 'recurring_agreement_open', attempted: null});
+  assert.equal(requests.some(r => r.url.endsWith('/capture')), false);
+  seed();
+  const defaultHttp = http;
+  http = async (url, init) => {
+    if (url.endsWith('/v2/checkout/orders/PAYPALORDER')) {const altered = payment(); altered.purchase_units[0].payments.captures[0].amount.value = '1.00'; return Response.json(altered);}
+    return defaultHttp(url, init);
+  };
+  assert.deepEqual(await webhook(completedEvent(), signedHeaders()), {received: true});
+  assert.equal(saved().state, 'needs_review');
+  assert.equal(saved().error, 'payment_not_verified');
+  assert.equal(lineWrites().length, 0);
+});
+
+test('re-checking an approved order in review captures and activates it exactly once', async () => {
+  review();
+  const defaultHttp = http;
+  let captured = false;
+  http = async (url, init) => {
+    if (url.endsWith('/v2/checkout/orders/PAYPALORDER')) {const details = payment(captured ? 'COMPLETED' : 'APPROVED'); if (!captured) delete (details.purchase_units[0] as any).payments; return Response.json(details);}
+    if (url.endsWith('/capture')) {captured = true; return Response.json(payment());}
+    return defaultHttp(url, init);
+  };
+  const results = await Promise.all([reconcileOrder('local-order'), reconcileOrder('local-order')]);
+  assert.ok(results.some(result => result.state === 'fulfilled'));
+  assert.equal(requests.filter(r => r.url.endsWith('/capture')).length, 1);
+  assert.equal(lineWrites().length, 1);
+  assert.equal((await reconcileOrder('local-order')).state, 'fulfilled');
+  assert.equal(lineWrites().length, 1);
+});
+
+test('re-checking a completed capture in review fulfils only when activation was never attempted', async () => {
+  review();
+  assert.equal((await reconcileOrder('local-order')).state, 'fulfilled');
+  assert.equal(saved().capture_id, 'CAPTUREID');
+  assert.equal(lineWrites().length, 1);
+  sqlite.prepare('DELETE FROM orders').run();
+  review('needs_review', {attempted: 5});
+  const before = requests.length;
+  const result = await reconcileOrder('local-order') as {state: string; resolve_required?: boolean};
+  assert.equal(result.state, 'needs_review');
+  assert.equal(result.resolve_required, true);
+  assert.equal(requests.length, before);
+  assert.equal(lineWrites().length, 1);
+  assert.equal((await reviewQueue()).orders[0].resolve_required, true);
+  await assert.rejects(resolveOrder('local-order', ' '), {code: 'resolution_note_required'});
+  assert.equal((await resolveOrder('local-order', 'Line 42 renewed manually; checked wallet')).state, 'resolved');
+  assert.deepEqual({...sqlite.prepare('SELECT state,resolution,error FROM orders').get()}, {state: 'resolved', resolution: 'Line 42 renewed manually; checked wallet', error: 'capture_not_verified'});
+  assert.equal((await resolveOrder('local-order', 'Second note')).state, 'resolved');
+  assert.equal(sqlite.prepare('SELECT resolution FROM orders').get()?.resolution, 'Line 42 renewed manually; checked wallet');
+  await assert.rejects(resolveOrder('missing-order', 'note'), {code: 'review_not_found'});
+});
+
+test('re-checking never spends the wallet for mismatched, uncreated or conflicting orders', async () => {
+  review('needs_review', {paypal_id: null});
+  assert.equal((await reconcileOrder('local-order')).state, 'abandoned');
+  assert.equal(requests.length, 0);
+  sqlite.prepare('DELETE FROM orders').run();
+  review();
+  const defaultHttp = http;
+  http = async (url, init) => {
+    if (url.endsWith('/v2/checkout/orders/PAYPALORDER')) {const altered = payment(); altered.purchase_units[0].amount.value = '1.00'; return Response.json(altered);}
+    return defaultHttp(url, init);
+  };
+  await assert.rejects(reconcileOrder('local-order'), {code: 'review_order_mismatch'});
+  assert.equal(saved().state, 'needs_review');
+  http = defaultHttp;
+  sqlite.prepare("UPDATE orders SET kind='renew',line_id=42").run();
+  sqlite.prepare("INSERT INTO subscriptions (id,paypal_id,plan_id,line_id,line_slot,credential,devices,months,amount,currency,email,name,state,mode,starts_at,created,updated) VALUES ('agreement','I-AGREEMENT','P-PLAN',42,42,'digest',1,12,'95.00','USD','test@example.com','Test','ACTIVE','live','2026-10-01T00:00:00.000Z',1,1)").run();
+  await assert.rejects(reconcileOrder('local-order'), {code: 'recurring_agreement_open'});
+  assert.equal(saved().state, 'needs_review');
+  assert.equal(lineWrites().length, 0);
+});
+
+test('cleanup purges expired rows and closes stale never-created checkouts idempotently', async () => {
+  const now = Date.now(), old = now - 2 * 60 * 60 * 1000;
+  sqlite.prepare("INSERT INTO owner_credentials (id,email,password_hash,recovery_hash,version,created,updated) VALUES ('owner','support@lumanest.tv','x','y','v',1,1)").run();
+  sqlite.prepare("INSERT INTO owner_sessions VALUES ('expired','owner','v',?),('live','owner','v',?)").run(now - 1, now + 60000);
+  sqlite.prepare("INSERT INTO owner_auth_attempts VALUES ('expired',1,?)").run(now - 1);
+  sqlite.prepare("INSERT INTO player_login_attempts VALUES ('expired',1,?),('live',1,?)").run(now - 1, now + 60000);
+  sqlite.prepare("INSERT INTO player_revoked_sessions VALUES ('expired',?)").run(now - 1);
+  sqlite.prepare("INSERT INTO billing_line_locks VALUES (7,'token',?)").run(now - 1);
+  sqlite.prepare("INSERT INTO paypal_webhook_events VALUES ('old','X',?),('recent','X',?)").run(now - 31 * 24 * 60 * 60 * 1000, now);
+  sqlite.prepare("INSERT INTO orders (id,email,name,kind,devices,months,amount,state,created) VALUES ('stale','a@b.test','','new',1,12,'95.00','creating',?),('fresh','a@b.test','','new',1,12,'95.00','creating',?)").run(old, now);
+  sqlite.prepare("INSERT INTO subscriptions (id,plan_id,line_id,line_slot,credential,devices,months,amount,currency,email,name,state,mode,starts_at,created,updated) VALUES ('stale-sub','P-PLAN',42,42,'digest',1,12,'95.00','USD','a@b.test','','creating','live','2026-10-01T00:00:00.000Z',?,?)").run(old, old);
+  assert.deepEqual(await cleanup(now), {owner_sessions: 1, owner_auth_attempts: 1, player_login_attempts: 1, player_revoked_sessions: 1, billing_line_locks: 1, paypal_webhook_events: 1, abandoned_orders: 1, cancelled_enrollments: 1});
+  assert.deepEqual({...sqlite.prepare("SELECT state,error FROM orders WHERE id='stale'").get()}, {state: 'abandoned', error: 'checkout_not_created'});
+  assert.equal(sqlite.prepare("SELECT state FROM orders WHERE id='fresh'").get()?.state, 'creating');
+  assert.deepEqual({...sqlite.prepare('SELECT state,line_slot,error FROM subscriptions').get()}, {state: 'CANCELLED', line_slot: null, error: 'enrollment_not_created'});
+  assert.ok(Object.values(await cleanup(now)).every(count => count === 0));
+  assert.equal((await import('../lib/paypal.ts').then(m => m.status('stale'))).message, 'This checkout was not completed. No payment was captured by this website.');
 });

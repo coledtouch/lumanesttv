@@ -4,15 +4,16 @@ import {seal, open, digest} from './player-crypto';
 import {relayPlayerStream} from './player-stream-relay';
 import {sampleDiagnosticContainer} from './player-diagnostic-container';
 import {fetchPlayerRelay, providerRelaySource, relayConfigured} from './player-relay';
+import {db} from './paypal';
 
 export const PLAYER_COOKIE = 'lumanest_player';
 export const PLAYER_EXPIRED_COOKIE = PLAYER_COOKIE + '=; Path=/api/player; HttpOnly; Secure; SameSite=Lax; Max-Age=0';
 const hosts = () => settings().PLAYER_ALLOWED_HOSTS?.split(',').map(h => h.trim().toLowerCase()).filter(Boolean) || ['tv.lumanest.tv', 'connect.turbobunny.net', '*.turbobunny.net'];
 const httpHosts = () => settings().PLAYER_ALLOWED_HTTP_HOSTS?.split(',').map(h => h.trim().toLowerCase()).filter(Boolean) || [];
 const portal = () => settings().CUSTOMER_PORTAL_PRIMARY_URL || settings().CUSTOMER_PORTAL_URL || 'https://tv.lumanest.tv';
-const useRelay = () => relayConfigured(settings().PLAYER_STREAM_RELAY_URL, settings().PLAYER_STREAM_RELAY_KEY);
+const relayEnabled = () => relayConfigured(settings().PLAYER_STREAM_RELAY_URL, settings().PLAYER_STREAM_RELAY_KEY);
 function approvedStreamURL(value: string) {
-  const relay = useRelay() ? providerRelaySource(value) : null;
+  const relay = relayEnabled() ? providerRelaySource(value, settings().STREAM_RELAY_ALLOWED_HOSTS) : null;
   return trustedStreamURL(value, hosts(), relay ? [...httpHosts(), relay.hostname] : httpHosts());
 }
 const streamURL = (value: string) => approvedStreamURL(normalizeProviderURL(value, portal()).href);
@@ -34,9 +35,29 @@ export async function session(req: Request) {
   if (!value) throw new ServiceError(401, 'player_login_required', 'Sign in with your line login to watch.');
   const key = secret();
   let credentials: unknown;
-  try {credentials = await open<unknown>(value, key);} catch {throw new ServiceError(401, 'player_session_expired', 'Your player session expired. Please sign in again.');}
+  try {credentials = await open<unknown>(value, key, 'player-session');} catch {throw new ServiceError(401, 'player_session_expired', 'Your player session expired. Please sign in again.');}
   if (!validSession(credentials)) throw new ServiceError(401, 'player_session_expired', 'Your player session expired. Please sign in again.');
   return {credentials, binding: await digest(value)};
+}
+// Signed-out sessions are checked when channels are listed, when a stream starts and whenever an HLS playlist
+// mints new segment tokens. Segment requests skip D1; a short per-isolate cache bounds playlist refresh reads.
+const liveSessions = new Map<string, number>();
+export async function assertNotRevoked(credentials: PlayerSession) {
+  if ((liveSessions.get(credentials.sid) || 0) > Date.now()) return;
+  const revoked = await db().prepare('SELECT id FROM player_revoked_sessions WHERE id=?').bind(credentials.sid).first();
+  if (revoked) throw new ServiceError(401, 'player_session_expired', 'You signed out of this player session. Please sign in again.');
+  if (liveSessions.size >= 5000) liveSessions.clear();
+  liveSessions.set(credentials.sid, Date.now() + 20000);
+}
+export async function revokeSession(req: Request) {
+  const value = cookie(req);
+  if (!value || !/^[a-f0-9]{64}$/.test(settings().PLAYER_COOKIE_KEY || '')) return false;
+  let credentials: unknown;
+  try {credentials = await open<unknown>(value, secret(), 'player-session');} catch {return false;}
+  if (!validSession(credentials)) return false;
+  liveSessions.delete(credentials.sid);
+  await db().prepare('INSERT OR IGNORE INTO player_revoked_sessions (id,expires) VALUES (?,?)').bind(credentials.sid, credentials.exp).run();
+  return true;
 }
 async function limitedText(res: Response, max = 8 * 1024 * 1024) {
   const reader = res.body?.getReader();
@@ -66,8 +87,8 @@ export async function safeFetch(url: string, options: RequestInit = {}, hops = 0
     } catch {}
     throw error;
   }
-  if (useRelay() && providerRelaySource(source.href)) {
-    const response = await fetchPlayerRelay(source, settings().PLAYER_STREAM_RELAY_URL, settings().PLAYER_STREAM_RELAY_KEY, options);
+  if (relayEnabled() && providerRelaySource(source.href, settings().STREAM_RELAY_ALLOWED_HOSTS)) {
+    const response = await fetchPlayerRelay(source, settings().PLAYER_STREAM_RELAY_URL, settings().PLAYER_STREAM_RELAY_KEY, options, fetch, settings().STREAM_RELAY_ALLOWED_HOSTS);
     relaySources.set(response, source.href);
     const type = (response.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
     trace?.onResponse({origin: source.origin, status: response.status, contentType: diagnosticTypes.has(type) ? type : 'other'});
@@ -107,19 +128,20 @@ export async function playlist(credentials: PlayerSession, requestSignal?: Abort
 }
 export async function login(username: string, password: string) {
   const key = secret();
-  const credentials = {username, password, exp: Date.now() + 8 * 60 * 60 * 1000};
+  const credentials: PlayerSession = {username, password, exp: Date.now() + 8 * 60 * 60 * 1000, sid: crypto.randomUUID()};
   const channels = await playlist(credentials);
-  return {cookie: await seal(credentials, key), count: channels.length};
+  return {cookie: await seal(credentials, key, 'player-session'), count: channels.length};
 }
 export async function channelList(req: Request) {
   const {credentials, binding} = await session(req);
+  await assertNotRevoked(credentials);
   const entries = await playlist(credentials);
   const key = secret();
   const result = [];
   for (let start = 0; start < entries.length; start += 150) {
     const part = await Promise.all(entries.slice(start, start + 150).map(async entry => {
       let token: string | null = null, reason = '';
-      try {const source = streamURL(entry.url); token = await seal({url: source.href, bind: binding, exp: credentials.exp} satisfies PlayerMedia, key);}
+      try {const source = streamURL(entry.url); token = await seal({url: source.href, bind: binding, exp: credentials.exp, root: 1} satisfies PlayerMedia, key, 'player-media');}
       catch {reason = 'This channel is unavailable in the webplayer. Try the Tuner app or contact support.';}
       return {id: await digest(entry.url), name: entry.name, group: entry.group, format: entry.format, token, reason};
     }));
@@ -167,8 +189,9 @@ export async function media(req: Request) {
   if (!raw) throw new ServiceError(400, 'missing_stream', 'Choose a channel to watch.');
   const key = secret();
   let item: unknown;
-  try {item = await open<unknown>(raw, key);} catch {throw new ServiceError(403, 'stream_forbidden', 'This stream is no longer available. Refresh your channel list.');}
+  try {item = await open<unknown>(raw, key, 'player-media');} catch {throw new ServiceError(403, 'stream_forbidden', 'This stream is no longer available. Refresh your channel list.');}
   if (!validMedia(item, binding) || item.exp > credentials.exp) throw new ServiceError(403, 'stream_forbidden', 'This stream belongs to another or expired player session.');
+  if (item.root === 1) await assertNotRevoked(credentials);
   const url = streamURL(item.url);
   const headers: Record<string, string> = {Accept: '*/*'};
   const range = req.headers.get('Range');
@@ -186,12 +209,15 @@ export async function media(req: Request) {
   const finalURL = streamURL(relaySources.get(upstream) || upstream.url || url.href);
   const type = upstream.headers.get('Content-Type') || '';
   if (/mpegurl/i.test(type) || /\.m3u8$/i.test(finalURL.pathname)) {
+    if (item.root !== 1) {
+      try {await assertNotRevoked(credentials);} catch (error) {await upstream.body?.cancel(); throw error;}
+    }
     const text = await limitedText(upstream, 2 * 1024 * 1024);
     if (!text.trimStart().startsWith('#EXTM3U')) throw new ServiceError(502, 'invalid_media', 'The provider returned an invalid media playlist.');
     const expiresAt = item.exp;
     const output = await rewriteHLS(text, finalURL.href, async next => {
       const source = streamURL(next);
-      const token = await seal({url: source.href, bind: binding, exp: expiresAt} satisfies PlayerMedia, key);
+      const token = await seal({url: source.href, bind: binding, exp: expiresAt} satisfies PlayerMedia, key, 'player-media');
       return '/api/player/stream?token=' + encodeURIComponent(token);
     });
     return new Response(output, {headers: {'Content-Type': 'application/vnd.apple.mpegurl', 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff'}});

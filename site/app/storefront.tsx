@@ -43,8 +43,11 @@ export default function Storefront({portal, ready, support}: {portal: string; re
   const [selected, setSelected] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [availability, setAvailability] = useState<Availability>('checking');
   const [availabilityAttempt, setAvailabilityAttempt] = useState(0);
+  // A result counts only for the plan, period and attempt it was fetched for; anything else is still being checked.
+  const [checked, setChecked] = useState<{key: string; value: Availability} | null>(null);
+  const availabilityKey = selected + ':' + period + ':' + availabilityAttempt;
+  const availability: Availability = checked?.key === availabilityKey ? checked.value : 'checking';
   const dialogRef = useRef<HTMLDialogElement>(null);
   const submittingRef = useRef(false);
   const supportEmail = support || 'support@lumanest.tv';
@@ -55,15 +58,15 @@ export default function Storefront({portal, ready, support}: {portal: string; re
     const abort = new AbortController();
     const timeout = window.setTimeout(() => abort.abort(), 15000);
     let active = true;
-    setAvailability('checking');
+    const key = selected + ':' + period + ':' + availabilityAttempt;
     fetch('/api/availability?devices=' + plans[selected].devices + '&months=' + periods[period], {signal: abort.signal})
       .then(async response => {
         if (!response.ok) throw new Error('Availability could not be checked.');
         const result = await response.json() as {available?: boolean};
         if (typeof result.available !== 'boolean') throw new Error('Availability could not be checked.');
-        if (active) setAvailability(result.available ? 'available' : 'unavailable');
+        if (active) setChecked({key, value: result.available ? 'available' : 'unavailable'});
       })
-      .catch(() => { if (active) setAvailability('error'); })
+      .catch(() => { if (active) setChecked({key, value: 'error'}); })
       .finally(() => window.clearTimeout(timeout));
     return () => { active = false; window.clearTimeout(timeout); abort.abort(); };
   }, [selected, period, ready, availabilityAttempt]);
@@ -169,7 +172,7 @@ export default function Storefront({portal, ready, support}: {portal: string; re
           <div className="plan-top"><span><i className="screen-dots" aria-hidden="true">{Array.from({length: item.devices}, (_, dot) => <i key={dot}/>)}</i>{item.devices} {item.devices === 1 ? 'SCREEN' : 'SCREENS'}</span>{index === 1 && <small>THE SHARED FAVORITE</small>}</div>
           <h3 id={'plan-' + item.devices}>{item.name}</h3><p className="plan-description">{item.copy}</p>
           <div className="price">{monthly(item.prices[period], periods[period])}<span>/mo</span></div><p className="equivalent"><strong>{money(item.prices[period])}</strong> paid once for {periods[period]} months</p>
-          <button className={'button ' + (index === 1 ? 'primary' : 'secondary')} aria-haspopup="dialog" onClick={() => {setSelected(index); setError(''); setAvailability('checking');}}>Choose {item.name} <span aria-hidden="true">↗</span></button>
+          <button className={'button ' + (index === 1 ? 'primary' : 'secondary')} aria-haspopup="dialog" onClick={() => {setSelected(index); setError(''); setAvailabilityAttempt(attempt => attempt + 1);}}>Choose {item.name} <span aria-hidden="true">↗</span></button>
         </article>)}</div>
         <div className="plan-includes"><h3>Every plan includes</h3><ul>{included.map(item => <li key={item}><span aria-hidden="true">✓</span>{item}</li>)}</ul></div>
         <ul className="plan-reassurance" aria-label="Checkout and support"><li><span aria-hidden="true">{icon.lock}</span>Secure checkout with PayPal</li><li><span aria-hidden="true">{icon.once}</span>Pay once — no automatic charges unless you choose auto-renew</li><li><span aria-hidden="true">{icon.mail}</span><a href={'mailto:' + supportEmail}>Support by email</a></li></ul>

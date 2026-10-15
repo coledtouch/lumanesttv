@@ -15,7 +15,6 @@ const hooks = registerHooks({resolve(specifier, context, next) {
   if (specifier.startsWith('.') && !/\.[a-z]+$/.test(specifier)) return next(specifier + '.ts', context);
   return next(specifier, context);
 }});
-const {GET: quote} = await import('../app/api/player/renew/route.ts');
 const {POST: login} = await import('../app/api/player/renew/login/route.ts');
 const {POST: checkout} = await import('../app/api/player/renew/checkout/route.ts');
 const {POST: capture} = await import('../app/api/checkout/capture/route.ts');
@@ -27,6 +26,7 @@ const {GET: returned} = await import('../app/api/subscriptions/return/route.ts')
 const {GET: ownerGet, POST: ownerSetup} = await import('../app/api/manage/subscriptions/route.ts');
 const {POST: webhook} = await import('../app/api/paypal/webhook/route.ts');
 const {setupSubscriptionCatalog} = await import('../lib/subscriptions.ts');
+const {GET: reviewGet, POST: reviewPost} = await import('../app/api/manage/reconcile/route.ts');
 hooks.deregister();
 
 const nativeFetch = globalThis.fetch, nativeNow = Date.now;
@@ -201,7 +201,8 @@ test('pending payment, mismatched amount and mismatched binding never spend wall
     if (mutation === 'pending') transactions.get(result.sub.id)![0].status = 'PENDING';
     if (mutation === 'amount') transactions.get(result.sub.id)![0].amount_with_breakdown.gross_amount.value = '1.00';
     if (mutation === 'binding') result.sub.custom_id = crypto.randomUUID();
-    assert.equal((await event('PAYMENT.SALE.COMPLETED', sale)).response.status, 409); assert.equal(renewals.length, 0);
+    // Unverifiable payments are recorded for review and acknowledged, so PayPal does not keep retrying them.
+    assert.equal((await event('PAYMENT.SALE.COMPLETED', sale)).response.status, 200); assert.equal(renewals.length, 0); assert.equal(sqlite.prepare('SELECT state FROM subscriptions').get()!.state, 'needs_review', mutation);
     sqlite.prepare('DELETE FROM subscriptions').run(); sqlite.prepare('DELETE FROM subscription_payments').run(); subscriptions.clear(); transactions.clear(); sqlite.prepare('DELETE FROM player_login_attempts').run();
   }
 });
@@ -236,7 +237,7 @@ test('completed-sale transaction ranges never extend into the future and future 
   assert.ok(reads.length > 0); for (const read of reads) assert.ok(Date.parse(new URL(read.url).searchParams.get('end_time')!) <= now);
   const future = {...sale, id: 'SALEFUTURE', create_time: new Date(now + 60000).toISOString()};
   transactions.get(result.sub.id)!.push({id: future.id, status: 'COMPLETED', time: future.create_time, amount_with_breakdown: {gross_amount: {currency_code: 'USD', value: '59.00'}}});
-  assert.equal((await event('PAYMENT.SALE.COMPLETED', future)).response.status, 409); assert.equal(renewals.length, 1);
+  assert.equal((await event('PAYMENT.SALE.COMPLETED', future)).response.status, 200); assert.equal(renewals.length, 1); assert.equal(sqlite.prepare('SELECT state FROM subscriptions').get()!.state, 'needs_review');
 });
 test('merchant activation requires same-line session plus approved PayPal binding and never renews', async () => {
   const result = await begin(), body = {subscription: result.data.subscription_id, subscription_id: result.sub.id};
@@ -263,4 +264,46 @@ test('a fulfilled renewal with unconfirmed calendar alignment pauses future bill
 test('refund without billing_agreement_id finds stored sale and pauses its agreement', async () => {
   const result = await begin(), sale = pay(result.sub); await event('PAYMENT.SALE.COMPLETED', sale); await event('PAYMENT.SALE.REFUNDED', {id: 'REFUND42', sale_id: sale.id});
   assert.equal(result.sub.status, 'SUSPENDED'); assert.equal(sqlite.prepare('SELECT state FROM subscription_payments').get()!.state, 'needs_review'); assert.equal(renewals.length, 1);
+});
+
+function ownerSession() {
+  const token = 'f'.repeat(64), version = 'b'.repeat(32);
+  sqlite.prepare('INSERT INTO owner_credentials (id,email,password_hash,recovery_hash,version,created,updated) VALUES (?,?,?,?,?,?,?)').run('owner', 'support@lumanest.tv', 'scrypt$32768$8$3$' + 'c'.repeat(32) + '$' + 'd'.repeat(128), 'e'.repeat(64), version, now, now);
+  sqlite.prepare('INSERT INTO owner_sessions VALUES (?,?,?,?)').run(createHash('sha256').update(token).digest('hex'), 'owner', version, now + 100000);
+  return '__Host-lumanest_owner=' + token;
+}
+test('owner review re-checks agreements with PayPal and releases the line only when closed', async () => {
+  const result = await begin(), owner = ownerSession(), id = result.data.subscription_id;
+  assert.equal((await call(reviewGet, '/api/manage/reconcile')).response.status, 401);
+  assert.equal((await call(reviewPost, '/api/manage/reconcile', {action: 'recheck', kind: 'subscription', id}, owner, {Origin: 'https://other.test'})).response.status, 403);
+  sqlite.prepare("UPDATE subscriptions SET state='needs_review',error='enrollment_not_confirmed'").run(); result.sub.status = 'ACTIVE';
+  const queue = await call(reviewGet, '/api/manage/reconcile', undefined, owner);
+  assert.equal(queue.response.status, 200); assert.equal(queue.data.subscriptions[0].id, id); assert.equal(JSON.stringify(queue.data).includes('receipt@example.test'), false);
+  const open = await call(reviewPost, '/api/manage/reconcile', {action: 'recheck', kind: 'subscription', id}, owner);
+  assert.equal(open.response.status, 200, JSON.stringify(open.data)); assert.equal(open.data.state, 'needs_review'); assert.equal(open.data.line_released, false); assert.equal(result.sub.status, 'SUSPENDED');
+  result.sub.status = 'CANCELLED';
+  const closed = await call(reviewPost, '/api/manage/reconcile', {action: 'recheck', kind: 'subscription', id}, owner);
+  assert.equal(closed.data.state, 'CANCELLED'); assert.equal(closed.data.line_released, true); assert.equal(sqlite.prepare('SELECT line_slot FROM subscriptions').get()!.line_slot, null);
+  assert.equal((await call(reviewPost, '/api/manage/reconcile', {action: 'recheck', kind: 'subscription', id}, owner)).data.state, 'CANCELLED');
+  assert.equal(renewals.length, 0);
+});
+test('owner review cancels enrollments that never received a PayPal agreement once they are stale', async () => {
+  const owner = ownerSession(), insert = sqlite.prepare("INSERT INTO subscriptions (id,plan_id,line_id,line_slot,credential,devices,months,amount,currency,email,name,state,mode,starts_at,created,updated) VALUES (?,'P-PLAN',?,?,'digest',2,3,'59.00','USD','r@example.test','',?,'live','2026-10-01T00:00:00.000Z',?,?)");
+  const fresh = crypto.randomUUID(), stale = crypto.randomUUID(), reviewed = crypto.randomUUID();
+  insert.run(fresh, 41, 41, 'creating', now, now); insert.run(stale, 42, 42, 'creating', now - 10 * 60 * 1000, now); insert.run(reviewed, 43, 43, 'needs_review', now, now);
+  const recheck = (id: string) => call(reviewPost, '/api/manage/reconcile', {action: 'recheck', kind: 'subscription', id}, owner);
+  assert.equal((await recheck(fresh)).data.state, 'creating');
+  for (const id of [stale, reviewed]) {const result = await recheck(id); assert.equal(result.data.state, 'CANCELLED'); assert.equal(result.data.line_released, true);}
+  assert.equal(sqlite.prepare('SELECT COUNT(*) AS count FROM subscriptions WHERE line_slot IS NOT NULL').get()!.count, 1);
+  assert.equal(requests.filter(request => request.url.includes('/v1/billing/subscriptions')).length, 0);
+  assert.equal((await call(reviewPost, '/api/manage/reconcile', {action: 'recheck', kind: 'subscription', id: 'missing'}, owner)).response.status, 404);
+  assert.equal((await call(reviewPost, '/api/manage/reconcile', {action: 'explode', kind: 'subscription', id: stale}, owner)).response.status, 400);
+  const cleaned = await call(reviewPost, '/api/manage/reconcile', {action: 'cleanup'}, owner);
+  assert.equal(cleaned.response.status, 200); assert.equal(typeof cleaned.data.cleaned.owner_sessions, 'number');
+});
+test('verified subscription events are deduplicated by PayPal event id', async () => {
+  const result = await begin(), sale = pay(result.sub), body = {id: 'WH-DUPLICATE-1', event_type: 'PAYMENT.SALE.COMPLETED', resource: sale};
+  for (let count = 0; count < 2; count++) assert.equal((await call(webhook, '/api/paypal/webhook', body, undefined, signature())).response.status, 200);
+  assert.deepEqual(renewals, ['paypal-sale-SALE42']);
+  assert.equal(requests.filter(request => new URL(request.url).pathname.endsWith('/transactions')).length, 1);
 });

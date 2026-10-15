@@ -132,3 +132,10 @@ test('an unexpectedly followed relay response is rejected and its body is cancel
   await assert.rejects(fetchPlayerRelay(new URL(privateSource),endpoint,key,{},async()=>response),/unexpected redirect/);
   assert.equal(canceled,1);
 });
+
+test('a configured provider list replaces the default, matching the relay Worker', () => {
+  assert.equal(providerRelaySource('http://203.0.114.9/live/1', '203.0.114.0/24')?.hostname, '203.0.114.9');
+  assert.equal(providerRelaySource('http://136.148.65.1/live/1', '203.0.114.0/24'), null);
+  assert.equal(providerRelaySource('http://10.0.0.5/live/1', '10.0.0.0/24'), null);
+  assert.equal(providerRelaySource('http://136.148.65.1/live/1', 'not-a-list'), null);
+});

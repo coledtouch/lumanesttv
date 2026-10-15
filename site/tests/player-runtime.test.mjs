@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {build} from 'esbuild';
 import {Miniflare} from 'miniflare';
 import {fileURLToPath} from 'node:url';
-import {readFile} from 'node:fs/promises';
+import {readFile, readdir} from 'node:fs/promises';
 
 let runtime;
 const ownerHeaders = {'oai-authenticated-user-id': 'runtime-owner', 'oai-authenticated-user-email': 'owner@lumanest.tv', 'test-player-session': 'valid'};
@@ -15,18 +15,23 @@ test.before(async () => {
         import {GET as diagnosticsGET} from './app/api/player/diagnostics/route.ts';
         import {GET as channelsGET} from './app/api/player/channels/route.ts';
         import {GET as streamGET} from './app/api/player/stream/route.ts';
+        import {POST as logoutPOST} from './app/api/player/logout/route.ts';
         import {seal} from './lib/player-crypto.ts';
         import {PLAYER_COOKIE} from './lib/player.ts';
         import {env} from 'cloudflare:workers';
         export default {async fetch(request) {
           globalThis.__testHeaders = request.headers;
           const headers = new Headers(request.headers);
-          if (headers.get('test-player-session') === 'valid') {
-            const value = globalThis.__testPlayerCookie ||= await seal({username:'runtime-private-user',password:'runtime-secret-password',exp:Date.now()+60000}, env.PLAYER_COOKIE_KEY);
+          const kind = headers.get('test-player-session');
+          if (kind === 'valid' || kind === 'revocable') {
+            const sealed = () => seal({username:'runtime-private-user',password:'runtime-secret-password',exp:Date.now()+60000,sid:crypto.randomUUID()}, env.PLAYER_COOKIE_KEY, 'player-session');
+            const value = kind === 'valid' ? globalThis.__testPlayerCookie ||= await sealed() : globalThis.__testRevocableCookie ||= await sealed();
             headers.set('Cookie', PLAYER_COOKIE + '=' + value);
           }
+          // Miniflare rejects Origin on direct worker fetches; the test adds the same-site header here instead.
+          if (headers.get('test-same-origin')) headers.set('Origin', new URL(request.url).origin);
           const pathname = new URL(request.url).pathname;
-          return (pathname.endsWith('/channels') ? channelsGET : pathname.endsWith('/stream') ? streamGET : diagnosticsGET)(new Request(request, {headers}));
+          return (pathname.endsWith('/logout') ? logoutPOST : pathname.endsWith('/channels') ? channelsGET : pathname.endsWith('/stream') ? streamGET : diagnosticsGET)(new Request(request, {headers}));
         }};
       `,
       resolveDir: fileURLToPath(new URL('../', import.meta.url)), sourcefile: 'player-runtime-worker.ts', loader: 'ts'
@@ -83,10 +88,11 @@ test.before(async () => {
       `
     }]
   });
-  const migration = await readFile(new URL('../drizzle/0002_fluffy_mystique.sql', import.meta.url), 'utf8');
+  const migrations = [];
+  for (const file of (await readdir(new URL('../drizzle/', import.meta.url))).filter(file => file.endsWith('.sql')).sort()) migrations.push(await readFile(new URL('../drizzle/' + file, import.meta.url), 'utf8'));
   for (const name of ['player-runtime','player-runtime-mapped','player-runtime-public-alias','player-runtime-relay']) {
     const database = await runtime.getD1Database('DB', name);
-    await database.batch(migration.split('--> statement-breakpoint').map(sql => database.prepare(sql.trim())));
+    for (const migration of migrations) await database.batch(migration.split('--> statement-breakpoint').map(sql => database.prepare(sql.trim())));
   }
 });
 test.after(async () => {await runtime?.dispose();});
@@ -237,4 +243,24 @@ test('relay media keeps customer authentication and encrypted-token checks befor
   assert.equal(invalid.status,403);
   const output=JSON.stringify([await missing.json(),await noToken.json(),await invalid.json()]);
   for(const secret of ['runtime-private-user','runtime-secret-password','136.148.65.42','streams.lumanest.tv','Bearer','b'.repeat(64)])assert.ok(!output.includes(secret));
+});
+
+test('player sign-out revokes the sealed session for channel lists, stream starts and HLS playlist refreshes',async()=>{
+  const worker=await runtime.getWorker('player-runtime-relay'),headers={'test-player-session':'revocable'};
+  const listed=await worker.fetch('https://lumanest.tv/api/player/channels',{headers});
+  assert.equal(listed.status,200);
+  const {channels}=await listed.json();
+  const stream=index=>worker.fetch('https://lumanest.tv/api/player/stream?token='+encodeURIComponent(channels[index].token),{headers});
+  const playlist=await stream(6);assert.equal(playlist.status,200);
+  const segment=(await playlist.text()).split('\n').find(line=>line.startsWith('/api/player/stream?token='));
+  const signedOut=await worker.fetch('https://lumanest.tv/api/player/logout',{method:'POST',headers:{...headers,'test-same-origin':'1','Content-Type':'application/json'},body:'{}'});
+  assert.equal(signedOut.status,200);assert.match(signedOut.headers.get('Set-Cookie'),/Max-Age=0/);
+  const database=await runtime.getD1Database('DB','player-runtime-relay');
+  assert.equal(await database.prepare('SELECT COUNT(*) AS count FROM player_revoked_sessions').first('count'),1);
+  const relisted=await worker.fetch('https://lumanest.tv/api/player/channels',{headers});
+  assert.equal(relisted.status,401);assert.match(relisted.headers.get('Set-Cookie'),/Max-Age=0/);
+  for(const index of [4,6])assert.equal((await stream(index)).status,401);
+  // Segment tokens already handed out stay usable; new live segments need a playlist refresh, which is checked.
+  assert.equal((await worker.fetch('https://lumanest.tv'+segment,{headers})).status,200);
+  assert.equal((await worker.fetch('https://lumanest.tv/api/player/channels',{headers:{'test-player-session':'valid'}})).status,200);
 });

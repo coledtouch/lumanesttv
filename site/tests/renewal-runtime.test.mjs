@@ -99,7 +99,7 @@ test.before(async () => {
     }]
   });
   database = await runtime.getD1Database('DB');
-  for (const path of ['0000_mature_donald_blake.sql', '0001_tired_kid_colt.sql', '0003_short_thunderbird.sql', '0004_fat_invisible_woman.sql', '0005_modern_black_panther.sql', '0006_white_deathbird.sql']) {
+  for (const path of ['0000_mature_donald_blake.sql', '0001_tired_kid_colt.sql', '0003_short_thunderbird.sql', '0004_fat_invisible_woman.sql', '0005_modern_black_panther.sql', '0006_white_deathbird.sql', '0008_chief_barracuda.sql']) {
     const migration = await readFile(new URL('../drizzle/' + path, import.meta.url), 'utf8');
     await database.batch(migration.split('--> statement-breakpoint').map(sql => database.prepare(sql.trim())));
   }
@@ -107,7 +107,7 @@ test.before(async () => {
 });
 test.after(async () => {await runtime?.dispose();});
 test.beforeEach(async () => {
-  await database.batch([database.prepare('DELETE FROM orders'), database.prepare('DELETE FROM player_login_attempts')]);
+  await database.batch([database.prepare('DELETE FROM orders'), database.prepare('DELETE FROM player_login_attempts'), database.prepare('DELETE FROM paypal_webhook_events')]);
   await control({reset: true});
 });
 async function control(input) {await upstream.fetch('https://mock/control', {method: 'POST', body: JSON.stringify(input)});}
@@ -133,7 +133,7 @@ test('expired on-site lines sign in and receive only their own retail renewal of
   const {quote_token, ...publicQuote} = data;
   assert.deepEqual(publicQuote, {line: {username, devices: 2, status: 'expired', expires_at: '2026-10-01T00:00:00.000Z', days_left: -13}, offers: [{months: 3, amount: 59, currency: 'USD', available: true}, {months: 6, amount: 99, currency: 'USD', available: true}, {months: 12, amount: 159, currency: 'USD', available: true}], checkout_available: true, message: null});
   assert.equal(typeof quote_token, 'string');
-  const quoteSnapshot = await open(quote_token, key);
+  const quoteSnapshot = await open(quote_token, key, 'renewal-quote');
   assert.equal(quoteSnapshot.purpose, 'lumanest-renewal-quote-v1');
   assert.equal(quoteSnapshot.lineId, 42);
   assert.deepEqual(quoteSnapshot.amounts, [59, 99, 159]);
@@ -143,7 +143,7 @@ test('expired on-site lines sign in and receive only their own retail renewal of
   for (const value of [password, '213.5', 'provider-private-customer', 'playlist_url', 'lineId', '"cost"']) assert.ok(!text.includes(value), value);
   assert.match(response.headers.get('Set-Cookie'), /Path=\/api\/player\/renew; HttpOnly; Secure; SameSite=Strict; Max-Age=3600$/);
   assert.equal(response.headers.get('Cache-Control'), 'private, no-store');
-  const decoded = await open(cookie.slice(cookie.indexOf('=') + 1), key);
+  const decoded = await open(cookie.slice(cookie.indexOf('=') + 1), key, 'renewal-session');
   assert.equal(decoded.purpose, 'lumanest-renewal-v1');
   assert.equal(decoded.lineId, 42);
   assert.equal(decoded.password, undefined);
@@ -171,8 +171,8 @@ test('wrong, unknown, disabled, off-site, and duplicate line logins cannot creat
 test('tampered, expired, wrong-purpose, and reset-password sessions are rejected', async () => {
   const signed = await login();
   const token = signed.cookie.slice(signed.cookie.indexOf('=') + 1);
-  const decoded = await open(token, key);
-  for (const value of [token + 'x', await seal({...decoded, exp: Date.now() - 1}, key), await seal({...decoded, purpose: 'lumanest-player-v1'}, key), await seal({...decoded, lineId: 99}, key)]) {
+  const decoded = await open(token, key, 'renewal-session');
+  for (const value of [token + 'x', await seal({...decoded, exp: Date.now() - 1}, key, 'renewal-session'), await seal({...decoded, purpose: 'lumanest-player-v1'}, key, 'renewal-session'), await seal({...decoded, lineId: 99}, key, 'renewal-session'), await seal(decoded, key, 'player-session'), await seal(decoded, key, 'renewal-quote')]) {
     const cookie = '__Secure-lumanest_renewal=' + value;
     assert.equal((await request(prefix, undefined, cookie)).response.status, 401);
     assert.equal((await request(prefix + '/checkout', {months: 3, email: receipt, quoteToken: signed.data.quote_token}, cookie)).response.status, 401);
@@ -246,10 +246,10 @@ test('checkout derives the authenticated line, real screen count and retail pric
 });
 
 test('missing, tampered, expired, wrong-purpose, wrong-line, and changed-price quote snapshots create no payment', async () => {
-  const signed = await login(), quote = await open(signed.data.quote_token, key);
-  const changed = [undefined, signed.data.quote_token + 'x', await seal({...quote, exp: Date.now() - 1}, key),
-    await seal({...quote, purpose: 'lumanest-renewal-v1'}, key), await seal({...quote, lineId: 99}, key),
-    await seal({...quote, credential: 'invalid-credential-binding'}, key), await seal({...quote, amounts: [1, 99, 159]}, key)];
+  const signed = await login(), quote = await open(signed.data.quote_token, key, 'renewal-quote');
+  const changed = [undefined, signed.data.quote_token + 'x', await seal({...quote, exp: Date.now() - 1}, key, 'renewal-quote'),
+    await seal({...quote, purpose: 'lumanest-renewal-v1'}, key, 'renewal-quote'), await seal({...quote, lineId: 99}, key, 'renewal-quote'),
+    await seal({...quote, credential: 'invalid-credential-binding'}, key, 'renewal-quote'), await seal({...quote, amounts: [1, 99, 159]}, key, 'renewal-quote')];
   for (const quoteToken of changed) {
     const result = await request(prefix + '/checkout', {months: 3, email: receipt, ...(quoteToken === undefined ? {} : {quoteToken})}, signed.cookie);
     assert.equal(result.response.status, 409, JSON.stringify(result.data));
@@ -290,7 +290,7 @@ test('verified payment return and duplicate webhooks extend the same line once',
 
 test('changed screen counts, disabled status, off-site state, and missing renewal quotes stop paid fulfillment', async () => {
   for (const change of [{devices: 3}, {status: 'disabled'}, {on_site: false}, {prices: {renew: []}}]) {
-    await database.batch([database.prepare('DELETE FROM orders'), database.prepare('DELETE FROM player_login_attempts')]);
+    await database.batch([database.prepare('DELETE FROM orders'), database.prepare('DELETE FROM player_login_attempts'), database.prepare('DELETE FROM paypal_webhook_events')]);
     await control({reset: true});
     const result = await begin(), token = new URL(result.data.approval_url).searchParams.get('token');
     await control({line: change});

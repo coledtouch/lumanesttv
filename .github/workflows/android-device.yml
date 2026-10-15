@@ -1,0 +1,93 @@
+name: Android device tests
+
+# Instrumentation tests need an emulator and take far longer than the PR checks in
+# android.yml, so they run nightly and on demand instead of on every pull request.
+on:
+  schedule:
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+    inputs:
+      api-level:
+        description: Emulator API level
+        type: choice
+        options: ['34', '35']
+        default: '34'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-device-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Suites that use only the packaged audio-fixture.mp4 and a loopback HTTP server.
+  # Each is opt-in through an instrumentation argument so it never runs by accident
+  # against a person's TV; CI turns them on explicitly.
+  # AudioFallbackTest has no opt-in flag and always runs.
+  OPT_IN_ARGS: >-
+    -Pandroid.testInstrumentationRunnerArguments.guideRemoteCheck=true
+    -Pandroid.testInstrumentationRunnerArguments.multiViewFullscreenCheck=true
+    -Pandroid.testInstrumentationRunnerArguments.pictureInPictureCheck=true
+    -Pandroid.testInstrumentationRunnerArguments.twoChannelCheck=true
+  # Suites that need a saved provider account, its cached catalogue, or live third-party
+  # streams, or that change saved preferences. Their opt-in flags are never set here and
+  # they are excluded as well, so a future flag rename cannot start them in CI.
+  EXCLUDED_SUITES: >-
+    tv.lumanest.tuner.CatalogTimingTest,tv.lumanest.tuner.DeviceNavigationTest,tv.lumanest.tuner.InstalledCatalogTest,tv.lumanest.tuner.StartupSpeedTest,tv.lumanest.tuner.TwoChannelProviderTest
+
+jobs:
+  instrumentation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    defaults:
+      run:
+        working-directory: apps/android
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: 'false'
+      - name: Install the target Android SDK
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
+      - name: Make the checked-in wrapper executable
+        run: chmod +x gradlew
+      - name: Build the app and test APKs before the emulator starts
+        run: ./gradlew --no-daemon assembleDebug assembleDebugAndroidTest
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run instrumentation tests on an emulator
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: ${{ inputs.api-level || '34' }}
+          target: google_apis
+          arch: x86_64
+          # Landscape 1080p, matching the TV layouts the tests assert against.
+          profile: tv_1080p
+          ram-size: 4096M
+          disk-size: 6000M
+          emulator-boot-timeout: 900
+          working-directory: apps/android
+          script: ./gradlew --no-daemon connectedDebugAndroidTest $OPT_IN_ARGS -Pandroid.testInstrumentationRunnerArguments.notClass=$EXCLUDED_SUITES
+      - name: Save instrumentation reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: android-device-test-reports
+          path: |
+            apps/android/app/build/reports/androidTests/
+            apps/android/app/build/outputs/androidTest-results/
+          if-no-files-found: ignore
+          retention-days: 14

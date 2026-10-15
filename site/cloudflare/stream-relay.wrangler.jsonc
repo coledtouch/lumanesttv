@@ -8,5 +8,24 @@
   "observability": {"enabled": false},
   "routes": [
     {"pattern": "streams.lumanest.tv", "custom_domain": true}
+  ],
+  "vars": {
+    // Upstream providers the relay may connect to: comma-separated exact public IPv4
+    // addresses and a.b.c.0/24 networks (which allow hosts .1-.254). Private, loopback,
+    // link-local, CGNAT, documentation, multicast and reserved ranges are always refused,
+    // and any invalid entry makes the relay answer 503 instead of guessing. Leaving the
+    // value unset or empty uses this same default. The main application keeps its own
+    // relay allowlist in lib/player-relay.ts; update both together.
+    "STREAM_RELAY_ALLOWED_HOSTS": "136.148.65.0/24,38.190.178.54"
+  },
+  // Optional circuit breaker keyed on a digest of the bearer key. The main application is
+  // the only caller, so this counts every viewer together, per Cloudflare location. Live HLS
+  // costs about one playlist and one segment request per target duration (2-10 s), so a
+  // viewer on 2 s segments makes up to ~60 requests a minute; 10000 a minute leaves room for
+  // ~160 such viewers (or ~500 on 6 s segments) per location before 429s. Continuous
+  // MPEG-TS channels use one long request each. Raise the limit as the audience grows.
+  // Removing this binding disables limiting.
+  "ratelimits": [
+    {"name": "RELAY_LIMITER", "namespace_id": "1001", "simple": {"limit": 10000, "period": 60}}
   ]
 }

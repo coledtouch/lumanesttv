@@ -50,16 +50,29 @@ The following environment variable names describe the runtime contract. Supply r
 | `CHECKOUT_ENABLED` | Explicit gate for customer payment checkout. |
 | `CUSTOMER_PORTAL_URL`, `CUSTOMER_PORTAL_PRIMARY_URL` | Public hub and primary provider connection. |
 | `SUPPORT_EMAIL` | Customer support destination displayed by the application. |
-| `PLAYER_COOKIE_KEY` | Encryption key for player and renewal sessions; requires 64 lowercase hexadecimal characters. |
+| `PLAYER_COOKIE_KEY` | Root secret for player sessions, media tokens, renewal sessions and renewal quotes; requires 64 lowercase hexadecimal characters. Each token type uses its own HKDF-derived AES-GCM key and authenticated purpose label. |
 | `PLAYER_ALLOWED_HOSTS`, `PLAYER_ALLOWED_HTTP_HOSTS`, `PLAYER_STREAM_ORIGIN_MAP` | Restricted provider stream origins and optional approved origin aliases. |
 | `PLAYER_STREAM_RELAY_URL`, `PLAYER_STREAM_RELAY_KEY` | First-party stream bridge endpoint and shared authentication secret. |
 | `STREAM_RELAY_KEY` | Matching shared secret on the separate relay Worker; requires 64 lowercase hexadecimal characters. |
 | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | Private operator configuration when deploying the standalone Cloudflare workers. |
 | `ADMIN_USER_ID` | Legacy hosting-owned bootstrap identity only. Keep unset on a standalone deployment; ordinary owner sign-in uses its private D1 credential record. |
+| `OWNER_SETUP_TOKEN` | One-time secret (at least 32 random characters) required by `/manage/setup` to create the first owner login. Without it, first-owner setup is disabled (503). Remove it after setup; it has no effect once owner credentials exist. |
 
 The application expects D1 binding `DB` and R2 binding `BUCKET`. Production D1 contains owner credentials/sessions, order and subscription state, payment deduplication, and rate limits. Its contents are not part of this repository. Recurring PayPal agreements and the merchant catalog are external state as well. Preserve or migrate these privately before a hosting cutover; an empty database is not a working replacement for the current owner account or billing records.
 
-First-time owner setup in the retained code depends on the original hosting service's trusted bootstrap identity. A new standalone deployment needs a secure bootstrap implementation or private credential migration. Never accept a visitor-supplied identity header as proof of ownership.
+First-time owner setup requires both the original hosting service's trusted bootstrap identity and the `OWNER_SETUP_TOKEN` secret, entered on the setup form. A new standalone deployment still needs a trusted identity source or a private credential migration. Never accept a visitor-supplied identity header as proof of ownership.
+
+## Payment review and housekeeping
+
+The owner console lists orders and auto-renew agreements that need review. **Re-check with PayPal** reads the PayPal order or agreement and continues only safe steps:
+
+- It captures an approved order that was never captured.
+- It activates a verified completed capture whose activation was never attempted.
+- It syncs and closes agreements.
+
+An order whose provider activation was already attempted is never charged against the wallet again. Check the line, then mark the order resolved with a required note. PayPal webhooks are deduplicated by event ID. Business conflicts during webhook processing are recorded for review and acknowledged so PayPal does not keep retrying them.
+
+Cleanup is idempotent and does not depend on cron triggers. It removes expired owner sessions, rate-limit rows, revoked player sessions, billing locks and webhook IDs older than 30 days. It also closes checkouts and enrollments that stayed in `creating` for over an hour without a PayPal ID. It runs when the review queue loads, from **Run cleanup**, and at most every 15 minutes per isolate alongside `/api/availability`.
 
 ## Database schema changes
 

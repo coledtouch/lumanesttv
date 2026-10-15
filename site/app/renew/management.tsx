@@ -8,6 +8,7 @@ import styles from './renewal.module.css';
 
 export default function AutoRenewManagement({supportLink, onBack}: {supportLink: string; onBack: () => void}) {
   const [billing, setBilling] = useState<BillingOptions | null>(null);
+  const [checkedAt, setCheckedAt] = useState(0);
   const [checking, setChecking] = useState(true);
   const [busy, setBusy] = useState<'login' | 'cancel' | 'logout' | 'activate' | null>(null);
   const [error, setError] = useState('');
@@ -42,7 +43,7 @@ export default function AutoRenewManagement({supportLink, onBack}: {supportLink:
       }
       if (path !== 'logout') {
         if (!isBillingOptions(data)) throw new Error('The automatic payment result could not be confirmed. Check the status or manage payments directly in PayPal.');
-        setBilling(data);
+        setBilling(data); setCheckedAt(Date.now());
         if (path === 'subscription/cancel') {
           setConfirming(false);
           setNotice(!data.subscription || ['cancelled', 'expired'].includes(data.subscription.status) ? 'Future automatic payments are stopped. Your already-paid viewing time stays available.' : data.subscription.message || 'Your stop request is saved. PayPal approval is still pending; check the status before starting another renewal.');
@@ -59,6 +60,7 @@ export default function AutoRenewManagement({supportLink, onBack}: {supportLink:
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- loads the signed-in billing status from the server on mount
     void run('subscription', undefined, true);
     return () => {controllerRef.current?.abort(); controllerRef.current = null;};
   }, [run]);
@@ -106,7 +108,7 @@ export default function AutoRenewManagement({supportLink, onBack}: {supportLink:
     <p className={styles.cardIntro}>Use your line login to manage automatic payments. You can stop future charges even when your line is no longer available for renewal.</p>
     {checking && !billing ? <div className={styles.billingLoading} role="status"><span className={styles.spinner} aria-hidden="true"/>Checking your billing session…</div> : billing ? <>
       {notice && <p className={styles.reviewNotice} role="status">{notice}</p>}
-      {billing.subscription ? <BillingAgreement billing={billing} disabled={disabled} cancelling={busy === 'cancel'} activating={busy === 'activate'} confirming={confirming} onConfirm={setConfirming} onCancel={cancel} onActivate={activate} onRefresh={refresh}/> : <p className={styles.reviewNotice} role="status">There is no automatic payment agreement for this line.</p>}
+      {billing.subscription ? <BillingAgreement billing={billing} checkedAt={checkedAt} disabled={disabled} cancelling={busy === 'cancel'} activating={busy === 'activate'} confirming={confirming} onConfirm={setConfirming} onCancel={cancel} onActivate={activate} onRefresh={refresh}/> : <p className={styles.reviewNotice} role="status">There is no automatic payment agreement for this line.</p>}
       <div className={styles.managementLinks}><button className={styles.textButton} type="button" disabled={disabled} onClick={logout}>{busy === 'logout' ? 'Signing out…' : 'Use a different line'}</button></div>
     </> : <form ref={formRef} onSubmit={event => void login(event)}>
       <label htmlFor="billing-username">Line username<input id="billing-username" name="username" required maxLength={100} autoComplete="username" autoCapitalize="none" spellCheck={false} disabled={disabled}/></label>

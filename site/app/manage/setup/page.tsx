@@ -1,7 +1,7 @@
 import type {Metadata} from 'next';
 import {redirect} from 'next/navigation';
 import {requireChatGPTUser} from '../../chatgpt-auth';
-import {getOwner,ownerConfigured,requireBootstrapOwner,OWNER_EMAIL} from '../../../lib/owner-auth';
+import {getOwner,ownerConfigured,ownerSetupEnabled,requireBootstrapOwner,OWNER_EMAIL} from '../../../lib/owner-auth';
 import {ServiceError} from '../../../lib/mybunny';
 import OwnerAuthFrame from '../owner-auth-frame';
 import OwnerForm from '../owner-form';
@@ -20,5 +20,6 @@ export default async function OwnerSetup() {
     if(!(error instanceof ServiceError)||error.status!==403)throw error;
     return <OwnerAuthFrame><h2>Owner access required.</h2><p className={styles.description}>This one-time setup is available only to the hosting account that created LumaNest TV.</p><a className={styles.primary} href="/signout-with-chatgpt?return_to=%2Fmanage%2Fsetup" target="_top">Use the owner hosting account ↗</a></OwnerAuthFrame>;
   }
+  if(!ownerSetupEnabled())return <OwnerAuthFrame><h2>Owner setup is locked.</h2><p className={styles.description}>First-owner setup needs a one-time setup token. Add an <code>OWNER_SETUP_TOKEN</code> secret of at least 32 random characters to this deployment, then reload this page.</p></OwnerAuthFrame>;
   return <OwnerAuthFrame><OwnerForm mode="setup" email={OWNER_EMAIL}/></OwnerAuthFrame>;
 }

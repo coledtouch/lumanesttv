@@ -11,6 +11,18 @@ import {SiteFooter, SiteHeader} from '../site-chrome';
 type Channel = {id: string; name: string; group: string; format: 'hls' | 'mpegts' | 'file'; token: string | null; reason: string};
 type ChannelResponse = {channels?: Channel[]; username?: string; expiresAt?: number; error?: {code?: string; message: string}};
 
+const LAST_CHANNEL_KEY = 'lumanest_last_channel';
+const CHANNEL_ID = /^[A-Za-z0-9_-]{30,50}$/;
+const SESSION_EXPIRED = 'Your player session expired. Please sign in again.';
+const SHORTCUTS: [string, string][] = [['↑ / ↓', 'Previous or next channel in this lineup'], ['F', 'Toggle fullscreen'], ['M', 'Mute or unmute'], ['/', 'Search channels'], ['?', 'Show these shortcuts']];
+
+/** True when a key press belongs to a text field or picker rather than to the player shortcuts. */
+function typingTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  return target.isContentEditable || target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement;
+}
+
 export default function Player({portal, support}: {portal: string; support: string}) {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [username, setUsername] = useState('');
@@ -32,8 +44,13 @@ export default function Player({portal, support}: {portal: string; support: stri
   const [retry, setRetry] = useState(0);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [showPassword, setShowPassword] = useState(false);
+  const [lastChannel, setLastChannel] = useState('');
+  const [announcement, setAnnouncement] = useState('');
   const video = useRef<HTMLVideoElement>(null);
   const viewingArea = useRef<HTMLDivElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const shortcutsDialog = useRef<HTMLDialogElement>(null);
+  const channelList = useRef<HTMLDivElement>(null);
   const hls = useRef<Hls | null>(null);
   const startPlayback = useRef<(() => void) | null>(null);
   const channelRequest = useRef<AbortController | null>(null);
@@ -54,7 +71,7 @@ export default function Player({portal, support}: {portal: string; support: stri
       const data = await response.json() as ChannelResponse;
       if (controller.signal.aborted) return;
       if (!response.ok) {
-        if (response.status === 401) clearSession(data.error?.code === 'player_login_required' ? '' : data.error?.message || 'Your player session expired. Please sign in again.');
+        if (response.status === 401) clearSession(data.error?.code === 'player_login_required' ? '' : data.error?.message || SESSION_EXPIRED);
         else setError(data.error?.message || 'Unable to load your channels. Please try again.');
         return;
       }
@@ -76,7 +93,11 @@ export default function Player({portal, support}: {portal: string; support: stri
       void loadChannels();
       try {
         const saved: unknown = JSON.parse(localStorage.getItem('lumanest_favorites') || '[]');
-        if (Array.isArray(saved)) setFavorites(saved.filter((item): item is string => typeof item === 'string' && /^[A-Za-z0-9_-]{30,50}$/.test(item)).slice(0, 500));
+        if (Array.isArray(saved)) setFavorites(saved.filter((item): item is string => typeof item === 'string' && CHANNEL_ID.test(item)).slice(0, 500));
+      } catch {}
+      try {
+        const last = localStorage.getItem(LAST_CHANNEL_KEY);
+        if (last && CHANNEL_ID.test(last)) setLastChannel(last);
       } catch {}
     });
     return () => {disposed = true; channelRequest.current?.abort();};
@@ -84,7 +105,7 @@ export default function Player({portal, support}: {portal: string; support: stri
 
   useEffect(() => {
     if (!expiresAt) return;
-    const timer = setTimeout(() => clearSession('Your player session expired. Please sign in again.'), Math.max(0, expiresAt - Date.now()));
+    const timer = setTimeout(() => clearSession(SESSION_EXPIRED), Math.max(0, expiresAt - Date.now()));
     return () => clearTimeout(timer);
   }, [expiresAt, clearSession]);
 
@@ -130,9 +151,15 @@ export default function Player({portal, support}: {portal: string; support: stri
   const selectedIndex = playable.findIndex(channel => channel.id === selected?.id);
   const streamFormat = selected?.token === detectedStream?.token ? detectedStream?.format : selected?.format;
 
+  // The last channel is offered as a one-tap resume rather than started on load,
+  // so opening the page never starts a stream (or uses a screen) without a gesture.
+  const resume = useMemo(() => !selected && lastChannel ? channels.find(channel => channel.id === lastChannel && channel.token) || null : null, [channels, lastChannel, selected]);
+
   function choose(channel: Channel) {
     if (channel.id === selected?.id) setRetry(current => current + 1);
     else {setDetectedStream(null); setSelected(channel);}
+    setLastChannel(channel.id);
+    try {localStorage.setItem(LAST_CHANNEL_KEY, channel.id);} catch {}
     if (window.matchMedia('(max-width: 760px)').matches) viewingArea.current?.scrollIntoView({block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
   }
   function resetFilters() {setQuery(''); setGroup('All channels'); setFavoriteOnly(false); setLimit(60);}
@@ -163,10 +190,23 @@ export default function Player({portal, support}: {portal: string; support: stri
     startPlayback.current = play;
     setPlayError(''); setStatus('Connecting…'); setQualities([]); setQuality(-1);
     const source = '/api/player/stream?token=' + encodeURIComponent(selected.token);
+    const probe = new AbortController();
+    // Native playback (Safari HLS, direct files) reports failures without an HTTP status. On error, ask the
+    // stream endpoint whether the session itself was rejected and, if so, sign in again as the hls.js path does.
+    function playNatively() {
+      element!.addEventListener('error', () => {
+        void fetch(source, {cache: 'no-store', headers: {Range: 'bytes=0-0'}, signal: probe.signal}).then(response => {
+          void response.body?.cancel().catch(() => {});
+          if (response.status === 401 && !probe.signal.aborted && video.current === element) clearSession(SESSION_EXPIRED);
+        }, () => {});
+      }, {once: true, signal: probe.signal});
+      element!.src = source; play();
+    }
     async function start() {
       try {
         if (streamFormat === 'hls') {
-          if (element!.canPlayType('application/vnd.apple.mpegurl')) {element!.src = source; play();}
+          // Safari plays HLS natively and picks the quality itself, so no quality selector is offered there.
+          if (element!.canPlayType('application/vnd.apple.mpegurl')) playNatively();
           else {
             const {default: Hls} = await import('hls.js');
             if (!playback.isCurrent()) return;
@@ -178,7 +218,7 @@ export default function Player({portal, support}: {portal: string; support: stri
             });
             engine.on(Hls.Events.ERROR, (_, data) => {
               if (!data.fatal || !playback.isCurrent() || !engine) return;
-              if (data.response?.code === 401) {clearSession('Your player session expired. Please sign in again.'); return;}
+              if (data.response?.code === 401) {clearSession(SESSION_EXPIRED); return;}
               if (data.type === Hls.ErrorTypes.MEDIA_ERROR && !recoveredMedia) {
                 recoveredMedia = true; setStatus('Reconnecting…'); engine.recoverMediaError(); return;
               }
@@ -199,17 +239,18 @@ export default function Player({portal, support}: {portal: string; support: stri
           transport.attachMediaElement(element!);
           transport.on(mpegts.Events.ERROR, (_type, _detail, info: {code?: number}) => {
             if (!playback.isCurrent()) return;
-            if (info?.code === 401) {clearSession('Your player session expired. Please sign in again.'); return;}
+            if (info?.code === 401) {clearSession(SESSION_EXPIRED); return;}
             fail(playerStreamError(_detail, info?.code));
           });
           transport.load(); play();
-        } else {element!.src = source; play();}
+        } else playNatively();
       } catch (cause) {fail(cause instanceof Error ? cause.message : 'Playback is unavailable. Please try again.');}
     }
     void start();
     return () => {
       playback.dispose([
         () => playbackController.abort(),
+        () => probe.abort(),
         () => {if (startPlayback.current === play) startPlayback.current = null;},
         () => {if (hls.current === engine) hls.current = null;},
         () => engine?.destroy(),
@@ -233,6 +274,54 @@ export default function Player({portal, support}: {portal: string; support: stri
       else setStatus('Use your video controls for fullscreen');
     } catch {setStatus('Use your video controls for fullscreen');}
   }
+  function toggleFullscreen() {
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+    else if (selected) void fullscreen();
+  }
+  function toggleMute() {
+    const element = video.current;
+    if (!element || !selected) return;
+    element.muted = !element.muted;
+    setAnnouncement(element.muted ? 'Sound muted' : 'Sound on');
+  }
+  /** Moves through the filtered lineup like the Previous/Next buttons; returns false when there is nowhere to go. */
+  function step(offset: 1 | -1) {
+    const target = selectedIndex >= 0 ? playable[selectedIndex + offset]
+      : resume && playable.includes(resume) ? resume : playable[offset > 0 ? 0 : playable.length - 1];
+    if (!target) return false;
+    choose(target);
+    setLimit(current => Math.max(current, filtered.indexOf(target) + 1));
+    requestAnimationFrame(() => {
+      const list = channelList.current;
+      const row = list?.querySelector<HTMLElement>('[data-channel="' + CSS.escape(target.id) + '"]');
+      if (!list || !row) return;
+      const bounds = list.getBoundingClientRect(), item = row.getBoundingClientRect();
+      if (item.top < bounds.top) list.scrollTop -= bounds.top - item.top;
+      else if (item.bottom > bounds.bottom) list.scrollTop += item.bottom - bounds.bottom;
+    });
+    return true;
+  }
+
+  // Player shortcuts. Re-subscribed each render so the handler always sees the current lineup.
+  useEffect(() => {
+    if (!username) return;
+    function shortcut(event: KeyboardEvent) {
+      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || typingTarget(event.target) || shortcutsDialog.current?.open) return;
+      const key = event.key;
+      if (key === 'ArrowDown' || key === 'ArrowUp') {
+        // A focused video keeps its own arrow-key behaviour (seeking and volume in some browsers).
+        if (event.target instanceof HTMLMediaElement || !step(key === 'ArrowDown' ? 1 : -1)) return;
+      } else if (key === 'f' || key === 'F') {if (!event.repeat) toggleFullscreen();}
+      else if (key === 'm' || key === 'M') {if (!event.repeat) toggleMute();}
+      else if (key === '/') searchInput.current?.focus();
+      else if (key === '?') shortcutsDialog.current?.showModal();
+      else return;
+      event.preventDefault();
+    }
+    window.addEventListener('keydown', shortcut);
+    return () => window.removeEventListener('keydown', shortcut);
+  });
+
   const connecting = selected && !playError && ['Connecting…', 'Reconnecting…', 'Buffering…'].includes(status);
 
   return <div className="watch-shell">
@@ -255,24 +344,31 @@ export default function Player({portal, support}: {portal: string; support: stri
           <div className="watch-title"><div><p className="eyebrow">YOUR CHANNEL. YOUR EVENING.</p><h1>Welcome home.</h1></div><span className="watch-user" title={username}>{username}</span></div>
           <div className="video-wrap" ref={viewingArea}>
             <video key={(selected?.token || 'empty') + ':' + streamFormat + ':' + retry} ref={video} aria-label={selected ? 'Watching ' + selected.name : 'LumaNest TV video player'} controls playsInline preload="none"/>
-            {!selected && <div className="video-empty"><span aria-hidden="true">▶</span><h2>The night is yours.</h2><p>Choose a channel from your lineup to start watching.</p></div>}
+            {!selected && <div className="video-empty"><span aria-hidden="true">▶</span><h2>The night is yours.</h2>{resume ? <button type="button" className="button primary watch-resume" onClick={() => choose(resume)}>Continue with {resume.name} ▶</button> : <p>Choose a channel from your lineup to start watching.</p>}</div>}
             {connecting && <div className="watch-loading"><span className="watch-spinner" aria-hidden="true"/><span>{status}</span></div>}
             {selected && !playError && status === 'Press play to start' && <div className="watch-start"><button className="button primary" onClick={() => startPlayback.current?.()}>Play {selected.name} ▶</button></div>}
           </div>
-          <div className="now-playing"><div><small>NOW PLAYING</small><h2>{selected?.name || 'Make yourself at home.'}</h2><p>{selected?.group || 'Your channels are waiting.'}</p></div><div><span className="playback-status" role="status" aria-live="polite">{selected ? status : 'Choose a channel'}</span>{selected && <><button className="small-button" onClick={stopPlayback}>Stop playback ■</button><button className="small-button" onClick={fullscreen}>Fullscreen ⛶</button></>}</div></div>
+          <div className="now-playing"><div><small>NOW PLAYING</small><h2>{selected?.name || 'Make yourself at home.'}</h2><p>{selected?.group || 'Your channels are waiting.'}</p></div><div><span className="playback-status" role="status" aria-live="polite">{selected ? status : 'Choose a channel'}</span>{selected && <><button className="small-button" onClick={stopPlayback}>Stop playback ■</button><button className="small-button" aria-keyshortcuts="F" onClick={fullscreen}>Fullscreen ⛶</button></>}</div></div>
           {selected && <div className="watch-player-tools"><div className="watch-channel-navigation"><button className="small-button" aria-label="Previous channel in this lineup" disabled={selectedIndex <= 0} onClick={() => choose(playable[selectedIndex - 1])}>← Previous</button><button className="small-button" aria-label="Next channel in this lineup" disabled={selectedIndex < 0 || selectedIndex >= playable.length - 1} onClick={() => choose(playable[selectedIndex + 1])}>Next →</button></div>{qualities.length > 1 && <label className="quality-select">Picture quality<select value={quality} onChange={event => {const next = Number(event.target.value); setQuality(next); if (hls.current) hls.current.currentLevel = next;}}><option value={-1}>Automatic</option>{qualities.map(item => <option key={item.index} value={item.index}>{item.height ? item.height + 'p' : 'Quality ' + (item.index + 1)}</option>)}</select></label>}</div>}
           {playError && <div className="watch-error" role="alert"><p>{playError}</p><button className="small-button" onClick={() => setRetry(current => current + 1)}>Try this channel again</button></div>}
-          <div className="watch-bottom"><p>Playback uses one of your plan’s simultaneous screens. Available channels and formats depend on your line.</p><a href={'mailto:' + support}>Need a hand? Contact support ↗</a></div>
+          <div className="watch-bottom"><p>Playback uses one of your plan’s simultaneous screens. Available channels and formats depend on your line.</p><div className="watch-bottom-links"><button type="button" className="watch-shortcuts-open" aria-keyshortcuts="Shift+?" onClick={() => shortcutsDialog.current?.showModal()}>Keyboard shortcuts</button><a href={'mailto:' + support}>Need a hand? Contact support ↗</a></div></div>
+          <span className="sr-only" role="status">{announcement}</span>
+          <dialog ref={shortcutsDialog} className="watch-shortcuts" aria-labelledby="watch-shortcuts-title">
+            <h2 id="watch-shortcuts-title">Keyboard shortcuts</h2>
+            <dl>{SHORTCUTS.map(([keys, action]) => <div key={keys}><dt><kbd>{keys}</kbd></dt><dd>{action}</dd></div>)}</dl>
+            <p>Shortcuts work while you are not typing in a field.</p>
+            <form method="dialog"><button className="small-button">Close</button></form>
+          </dialog>
         </section>
         <aside className="channel-panel" aria-label="Channel lineup" aria-busy={checking}>
           <div className="channel-panel-title"><h2>Your lineup</h2><button aria-label="Refresh channel list" disabled={checking || signingOut} onClick={() => {void loadChannels();}}>↻</button></div>
-          <label className="search-label">Search channels<input value={query} onChange={event => {setQuery(event.target.value); setLimit(60);}} placeholder="A channel, a category…" type="search"/></label>
+          <label className="search-label">Search channels<input ref={searchInput} aria-keyshortcuts="/" value={query} onChange={event => {setQuery(event.target.value); setLimit(60);}} placeholder="A channel, a category…" type="search"/></label>
           <div className="channel-filters"><button aria-pressed={!favoriteOnly} onClick={() => {setFavoriteOnly(false); setLimit(60);}}>All channels</button><button aria-pressed={favoriteOnly} onClick={() => {setFavoriteOnly(true); setLimit(60);}}>★ Favorites</button></div>
           <label className="search-label">Category<select value={group} onChange={event => {setGroup(event.target.value); setLimit(60);}}><option>All channels</option>{groups.map(item => <option key={item}>{item}</option>)}</select></label>
           <p className="channel-count">{filtered.length.toLocaleString()} {filtered.length === 1 ? 'channel' : 'channels'} {checking && '· refreshing…'}</p>
           {error && <p className="watch-error" role="alert">{error}</p>}
-          <div className="channel-list">
-            {filtered.slice(0, limit).map(channel => <div key={channel.id} className={'channel-row ' + (selected?.id === channel.id ? 'selected' : '')}>
+          <div className="channel-list" ref={channelList}>
+            {filtered.slice(0, limit).map(channel => <div key={channel.id} data-channel={channel.id} className={'channel-row ' + (selected?.id === channel.id ? 'selected' : '')}>
               <button className="channel-choice" disabled={!channel.token} aria-pressed={selected?.id === channel.id} title={channel.reason || channel.name} onClick={() => choose(channel)}><span className="channel-icon" aria-hidden="true">{channel.name.slice(0, 2).toUpperCase()}</span><span><strong>{channel.name}</strong><small>{channel.token ? channel.group : 'Stream unavailable'}</small></span>{selected?.id === channel.id && <i className="status-dot" aria-hidden="true"/>}</button>
               <button className="favorite-button" aria-label={(favorites.includes(channel.id) ? 'Remove ' : 'Add ') + channel.name + (favorites.includes(channel.id) ? ' from favorites' : ' to favorites')} aria-pressed={favorites.includes(channel.id)} onClick={() => favorite(channel.id)}>{favorites.includes(channel.id) ? '★' : '☆'}</button>
             </div>)}

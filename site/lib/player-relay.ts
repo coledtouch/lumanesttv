@@ -1,14 +1,13 @@
+import {allowedHosts, hostAllowed} from '../cloudflare/lumanest-stream-relay.mjs';
 const RELAY_ORIGIN = 'https://streams.lumanest.tv';
 
-export function providerRelaySource(value: string): URL | null {
+// Shares the relay Worker's parser so both sides accept exactly the same provider hosts.
+export function providerRelaySource(value: string, allowed?: string): URL | null {
   if (value.length > 8192) return null;
   let url: URL;
   try {url = new URL(value);} catch {return null;}
   if (url.protocol !== 'http:' || url.port || url.username || url.password || url.hash) return null;
-  const host = url.hostname;
-  const match = /^136\.148\.65\.(\d{1,3})$/.exec(host);
-  if (host !== '38.190.178.54' && (!match || Number(match[1]) < 1 || Number(match[1]) > 254)) return null;
-  return url;
+  return hostAllowed(url.hostname, allowedHosts(allowed)) ? url : null;
 }
 
 export function relayConfigured(endpoint: string | undefined, key: string | undefined) {
@@ -16,8 +15,8 @@ export function relayConfigured(endpoint: string | undefined, key: string | unde
 }
 
 // Only authenticated, sealed playlist addresses reach this first-party bridge.
-export async function fetchPlayerRelay(source: URL, endpoint: string, key: string, options: RequestInit = {}, send: typeof fetch = fetch) {
-  if (!relayConfigured(endpoint, key) || !providerRelaySource(source.href)) throw new Error('The stream connection is unavailable.');
+export async function fetchPlayerRelay(source: URL, endpoint: string, key: string, options: RequestInit = {}, send: typeof fetch = fetch, allowed?: string) {
+  if (!relayConfigured(endpoint, key) || !providerRelaySource(source.href, allowed)) throw new Error('The stream connection is unavailable.');
   const range = new Headers(options.headers).get('Range');
   if (range) {
     const parts = /^bytes=(\d*)-(\d*)$/.exec(range);

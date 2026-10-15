@@ -191,11 +191,20 @@ export async function loginOwner(req: Request, input: Record<string, unknown>) {
   if (result.meta.changes !== 1) throw rejectedLogin();
   return {token};
 }
+// First-owner setup also needs a one-time deployment secret, so a forwarded identity header alone is never enough.
+export function ownerSetupEnabled() {return (settings().OWNER_SETUP_TOKEN || '').trim().length >= 32;}
+function setupTokenMatches(value: unknown) {
+  const offered = typeof value === 'string' && value.length <= 256 ? value.trim() : '';
+  const matches = timingSafeEqual(Buffer.from(hash('owner-setup:' + offered), 'hex'), Buffer.from(hash('owner-setup:' + (settings().OWNER_SETUP_TOKEN || '').trim()), 'hex'));
+  return matches && offered.length > 0;
+}
 export async function setupOwner(req: Request, input: Record<string, unknown>) {
-  exactKeys(input, ['password']);
+  exactKeys(input, ['password', 'setupToken']);
   const password = inputPassword(input.password, true);
   await requireBootstrapOwner();
+  if (!ownerSetupEnabled()) throw new ServiceError(503, 'owner_setup_disabled', 'Owner setup is disabled. Set the OWNER_SETUP_TOKEN secret (at least 32 characters) for this deployment, then try again.');
   await throttle(req, 'setup');
+  if (!setupTokenMatches(input.setupToken)) throw new ServiceError(403, 'invalid_setup_token', 'The owner setup token was not accepted.');
   const encoded = await passwordHash(password);
   const code = recovery();
   const version = randomBytes(16).toString('hex');

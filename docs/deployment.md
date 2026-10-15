@@ -16,21 +16,23 @@ Existing customer/order records and owner password hashes live in D1. App downlo
 
 The live owner console uses LumaNest email/password sign-in at `/manage/login`. Existing owner credentials and recovery information are in the live database. A clean source checkout does not recreate them.
 
-The legacy first-owner bootstrap relies on the managed host's verified identity dispatch. A fresh independent deployment must privately migrate the existing owner credentials or implement and test an alternative secure bootstrap before enabling owner access. Do not accept client-supplied identity headers as authentication. Ordinary owner sign-in remains independent of ChatGPT.
+The legacy first-owner bootstrap relies on the managed host's verified identity dispatch. It also requires a one-time `OWNER_SETUP_TOKEN` secret of at least 32 random characters, which is entered on `/manage/setup`. Without that secret, setup returns 503. Set it only for the first setup, then remove it. A fresh independent deployment must still privately migrate the existing owner credentials or provide a trusted identity source before enabling owner access. Do not accept client-supplied identity headers as authentication. Ordinary owner sign-in remains independent of ChatGPT.
 
 ## TV provider
 
 The provider maintains customer lines, playlists, channel selection and the hosted customer portal. Its source code is external to this project. The main website calls its API using a private reseller key.
 
-The `lumanest-app-support` Worker adds installable PWA support to the two provider portal domains. Its configuration is in `site/cloudflare/wrangler.jsonc`. Separate Cloudflare redirect rules direct renewals to the first-party website; those rules remain external configuration.
+The `lumanest-app-support` Worker adds installable PWA support to the two provider portal domains. Its configuration is in `site/cloudflare/wrangler.jsonc`. Separate Cloudflare redirect rules direct renewals to the first-party website; those rules remain external configuration. The Worker never edits the provider's Content-Security-Policy. If a header or `<meta>` policy would block the injected script, service worker, stylesheet or manifest, it leaves the page unchanged and logs a `pwa_injection_skipped` event naming the blocking directive. The service worker is served at `/sw.js`, whose default maximum scope is already `/`. The portal needs that root scope for its offline fallback across all pages, so the Worker sends no `Service-Worker-Allowed` header.
 
 The `lumanest-stream-relay` Worker supports approved upstream streams through `streams.lumanest.tv`. Its configuration is in `site/cloudflare/stream-relay.wrangler.jsonc`. The main application and relay share a private authentication key, stored as `PLAYER_STREAM_RELAY_KEY` and `STREAM_RELAY_KEY` respectively. Neither key is in Git.
+
+The `STREAM_RELAY_ALLOWED_HOSTS` variable lists the approved provider addresses, as exact public IPv4 addresses and `a.b.c.0/24` networks. Private, loopback, link-local and other reserved ranges are always refused. An invalid list makes the relay answer 503. The main application keeps a matching list in `site/lib/player-relay.ts`; change both together. The optional `RELAY_LIMITER` rate limiting binding caps relay requests per Cloudflare location and returns 429 when exceeded. The configuration comments explain the chosen limit.
 
 The Cloudflare configurations omit account IDs. Authenticate to the intended LumaNest account and supply `CLOUDFLARE_ACCOUNT_ID` through the deployment environment. Review domain routes and bindings before deploying. This source migration does not modify DNS or domain registration.
 
 ## Payments
 
-PayPal order capture, subscription billing and verified webhooks run in server routes. Merchant credentials, webhook registration, product/plan IDs and existing billing agreements are runtime state. Keep them in their existing services when adopting this repository. Automated tests use fixtures and mocked services, without charging a card or spending the reseller wallet.
+PayPal order capture, subscription billing and verified webhooks run in server routes. Webhooks are deduplicated by event ID in D1. Records that need review are reconciled from the owner console instead of with manual database edits. Housekeeping runs without cron triggers; see `site/README.md`. Apply `drizzle/0008_chief_barracuda.sql` before deploying this version. Deploying it also rotates the derived player and renewal token keys, so customers sign in to the web player and renewal pages again. Merchant credentials, webhook registration, product/plan IDs and existing billing agreements are runtime state. Keep them in their existing services when adopting this repository. Automated tests use fixtures and mocked services, without charging a card or spending the reseller wallet.
 
 ## TV applications
 
