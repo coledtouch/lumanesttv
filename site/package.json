@@ -39,7 +39,7 @@
     "json-rpc-2.0": "1.7.1",
     "miniflare": "4.20260515.0",
     "raw-body": "3.0.2",
-    "react-server-dom-webpack": "19.2.6",
+    "react-server-dom-webpack": "19.3.0",
     "typescript": "5.9.3",
     "vinext": "1.1.0",
     "vite": "8.0.13",
