@@ -5,7 +5,7 @@ import {tuner} from '../../lib/tuner';
 
 const devices = [
   ['android', 'Android / Google TV', 'Google TV, Android TV and Fire TV'],
-  ['samsung', 'Samsung TV', 'App coming soon. Try the web player in your TV’s browser.'],
+  ['samsung', 'Samsung TV', 'App temporarily unavailable. Try the web player in your TV’s browser.'],
   ['lg', 'LG TV', 'webOS · Install from a computer, with guided steps'],
   ['browser', 'Computer / browser', 'Watch in your browser. No installation needed.'],
 ];
@@ -64,13 +64,13 @@ export default function Setup({portal, support}: {portal: string; support: strin
 
   const deviceName = devices.find(item => item[0] === device)?.[1];
   return <>
-    <div className="device-grid" ref={pickerRef} role="group" aria-label="Choose your device">{devices.map(([id, title, description]) => <button type="button" className={'device-card' + (device === id ? ' active' : '') + (id === 'samsung' ? ' soon' : '')} key={id} aria-pressed={device === id} aria-controls="setup-instructions" onClick={() => chooseDevice(id)}><span aria-hidden="true"><DeviceGlyph id={id}/></span><strong>{title}{id === 'samsung' && <em className="device-soon">Coming soon</em>}</strong><small>{description}</small></button>)}</div>
+    <div className="device-grid" ref={pickerRef} role="group" aria-label="Choose your device">{devices.map(([id, title, description]) => <button type="button" className={'device-card' + (device === id ? ' active' : '') + (id === 'samsung' ? ' soon' : '')} key={id} aria-pressed={device === id} aria-controls="setup-instructions" onClick={() => chooseDevice(id)}><span aria-hidden="true"><DeviceGlyph id={id}/></span><strong>{title}{id === 'samsung' && <em className="device-soon">Temporarily unavailable</em>}</strong><small>{description}</small></button>)}</div>
     {suggested && <p className="setup-suggested">We picked <strong>{deviceName}</strong> based on this device. Choose another any time.</p>}
     <p className="sr-only" role="status">{device ? deviceName + ' instructions are ready below.' : 'Choose your device to see its setup instructions.'}</p>
     {device ? <section id="setup-instructions" className="setup-panel" aria-labelledby="setup-title">
       <div className="setup-panel-heading"><p className="eyebrow">SETUP FOR {deviceName?.toUpperCase()}</p><button type="button" className="setup-change-device" onClick={() => {const active = pickerRef.current?.querySelector<HTMLButtonElement>('button[aria-pressed="true"]'); active?.focus(); pickerRef.current?.scrollIntoView({block: 'center'});}}>Change device ↑</button></div>
       {device === 'browser' ? <><h2 id="setup-title" ref={headingRef} tabIndex={-1}>Sign in. Start watching.</h2><p>Use the <strong>line username and line password</strong> from your customer hub’s TV/app setup details. These can be different from your email account login.</p><a className="button primary" href="/watch">Open the web player <span aria-hidden="true">↗</span></a>{portal && <p><a className="setup-inline-link" href={portal}>Find my line login in the customer hub <span aria-hidden="true">↗</span></a></p>}</> : device === 'samsung' ? <>
-        <h2 id="setup-title" ref={headingRef} tabIndex={-1}>Samsung app coming soon.</h2>
+        <h2 id="setup-title" ref={headingRef} tabIndex={-1}>Samsung app temporarily unavailable.</h2>
         <p>The Tuner download for Samsung TVs is temporarily unavailable. <strong>In the meantime, try your TV’s web browser:</strong> open the web player and sign in with your line login. If it doesn’t play there, a computer or phone browser works too.</p>
         <p>Already use an IPTV player? Connect it with the server address and line login in your customer hub.</p>
         <div className="actions"><a className="button primary" href="/watch">Open the web player <span aria-hidden="true">↗</span></a>{portal && <a className="button secondary" href={portal}>Open my customer hub <span aria-hidden="true">↗</span></a>}</div>
