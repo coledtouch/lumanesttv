@@ -36,7 +36,13 @@ export async function bunny(path: string, method = 'GET', body?: unknown, key?: 
     throw new ServiceError(502, 'outcome_unknown', 'The provider returned an unreadable response. Check the line and transactions before retrying any paid operation.');
   }
   if (!response.ok) {
-    throw new ServiceError(response.status, result?.error?.code || 'provider_error', result?.error?.message || 'The provider could not complete this operation.', response.headers.get('Retry-After') || undefined);
+    const code = typeof result?.error?.code === 'string' ? result.error.code.slice(0, 64) : 'provider_error';
+    // Authentication, quota and server faults are ours to fix: log the provider code, never show it to customers.
+    if ([401, 403, 429].includes(response.status) || response.status >= 500) {
+      console.error('lumanest_provider_request_failed', JSON.stringify({http_status: response.status, code: /^[A-Za-z0-9_.-]+$/.test(code) ? code : 'provider_error'}));
+      throw new ServiceError(response.status === 429 ? 503 : 502, 'provider_unavailable', 'The TV service is temporarily unavailable. Please try again shortly.', response.headers.get('Retry-After') || undefined);
+    }
+    throw new ServiceError(response.status, code, result?.error?.message || 'The provider could not complete this operation.', response.headers.get('Retry-After') || undefined);
   }
   if (!result || !Object.hasOwn(result, 'data') || result.data === undefined || result.data === null) {
     throw new ServiceError(502, 'outcome_unknown', 'The provider returned an incomplete response. Check the line and transactions before retrying any paid operation.');

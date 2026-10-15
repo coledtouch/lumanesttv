@@ -221,6 +221,12 @@ test('provider errors return a safe unavailable message and never expose provide
   assert.equal(JSON.stringify(failed.data).includes('provider-private-customer'), false);
 });
 
+test('successful logins do not use the per-username failure budget', async () => {
+  for (let i = 0; i < 12; i++) assert.equal((await request(prefix + '/login', {username, password}, undefined, {'cf-connecting-ip': '198.51.100.' + (i + 1)})).response.status, 200);
+  for (let i = 0; i < 12; i++) assert.equal((await request(prefix + '/login', {username, password: 'incorrect'}, undefined, {'cf-connecting-ip': '203.0.113.' + (i + 1)})).response.status, 401);
+  assert.equal((await request(prefix + '/login', {username, password}, undefined, {'cf-connecting-ip': '203.0.113.200'})).response.status, 429);
+});
+
 test('login throttling uses purpose hashes and stops repeated guesses', async () => {
   for (let i = 0; i < 8; i++) assert.equal((await login({username, password: 'incorrect'})).response.status, 401);
   const limited = await login({username, password});
