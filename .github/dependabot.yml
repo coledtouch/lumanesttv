@@ -16,10 +16,3 @@ updates:
     directories: [/site, /apps/tizen, /apps/webos]
     schedule:
       interval: weekly
-    ignore:
-      # Newer wrangler expects @cloudflare/workers-types 5, whose globals clash with Node's Buffer
-      # types in lib/owner-auth.ts; move both together in a dedicated change.
-      - dependency-name: wrangler
-        update-types: [version-update:semver-minor]
-      - dependency-name: "@cloudflare/workers-types"
-        update-types: [version-update:semver-major]
