@@ -14,8 +14,8 @@
     // addresses and a.b.c.0/24 networks (which allow hosts .1-.254). Private, loopback,
     // link-local, CGNAT, documentation, multicast and reserved ranges are always refused,
     // and any invalid entry makes the relay answer 503 instead of guessing. Leaving the
-    // value unset or empty uses this same default. The main application keeps its own
-    // relay allowlist in lib/player-relay.ts; update both together.
+    // value unset or empty uses this same default. The main lumanest-tv Worker reads the
+    // same setting with the same parser; set the same value on both Workers.
     "STREAM_RELAY_ALLOWED_HOSTS": "136.148.65.0/24,38.190.178.54"
   },
   // Optional circuit breaker keyed on a digest of the bearer key. The main application is
