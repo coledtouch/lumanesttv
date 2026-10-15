@@ -9,7 +9,7 @@ export const metadata: Metadata = {
   title: siteTitle,
   description: siteDescription,
   openGraph,
-  twitter: {card: 'summary', title: siteTitle, description: siteDescription, images: ['/logo.png']},
+  twitter: {card: 'summary_large_image', title: siteTitle, description: siteDescription, images: ['/og-image.png']},
   manifest: '/manifest.webmanifest',
   appleWebApp: {capable: true, statusBarStyle: 'black-translucent', title: 'LumaNest TV'},
   icons: {
