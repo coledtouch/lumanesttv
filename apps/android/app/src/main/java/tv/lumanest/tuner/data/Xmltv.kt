@@ -59,12 +59,12 @@ object Xmltv {
                             chId = raw?.lowercase()
                             if (raw != null) addName(ChannelMatch.idKey(raw), raw.lowercase(), ChannelMatch.isRegional(raw))
                         }
-                        "display-name" -> if (chId != null) {
+                        "display-name" -> chId?.let { id ->
                             val n = parser.nextText().trim()
-                            addName(ChannelMatch.key(n), chId!!, ChannelMatch.isRegional(n))
+                            addName(ChannelMatch.key(n), id, ChannelMatch.isRegional(n))
                         }
-                        "icon" -> if (chId != null) {
-                            parser.getAttributeValue(null, "src")?.takeIf { it.startsWith("http") }?.let { icons.getOrPut(chId!!) { it } }
+                        "icon" -> chId?.let { id ->
+                            parser.getAttributeValue(null, "src")?.takeIf { it.startsWith("http") }?.let { icons.getOrPut(id) { it } }
                         }
                         "programme" -> {
                             pChan = parser.getAttributeValue(null, "channel")?.lowercase()
@@ -82,7 +82,8 @@ object Xmltv {
                     when (parser.name) {
                         "channel" -> chId = null
                         "programme" -> {
-                            if (keep) out.getOrPut(pChan!!) { ArrayList() } +=
+                            val ch = pChan
+                            if (keep && ch != null) out.getOrPut(ch) { ArrayList() } +=
                                 Program(pStart, pEnd, title ?: "", desc?.ifBlank { null }, sub?.ifBlank { null })
                             keep = false
                         }

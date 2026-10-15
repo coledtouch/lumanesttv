@@ -47,7 +47,7 @@ class PlaybackReliabilityTest {
         assertTrue(PlaybackFailurePolicy.isMissingHttp(410))
     }
 
-    @Test fun sleepingTheAppDoesNotConsumeTheTorrentPeerBudget() {
+    @Test fun sleepingTheAppDoesNotConsumeTheBufferingBudget() {
         val budget = PlaybackWaitBudget(120_000, 0)
         assertFalse(budget.expired(30_000, paused = false))
         assertFalse(budget.expired(600_000, paused = true))

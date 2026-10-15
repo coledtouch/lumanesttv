@@ -37,7 +37,6 @@ import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.Tv
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.ViewWeek
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -96,7 +95,6 @@ fun HomeScreen(state: AppState) {
                     Tab.GUIDE -> GuideScreen(state)
                     Tab.MOVIES -> MoviesScreen(state)
                     Tab.SERIES -> SeriesScreen(state)
-                    Tab.STREAMING -> TorrentioScreen(state)
                     Tab.MULTIVIEW -> MultiViewScreen(state)
                     Tab.SEARCH -> SearchScreen(state)
                     Tab.SETTINGS -> SettingsScreen(state)
@@ -158,7 +156,6 @@ private fun TopBar(state: AppState) {
                         if (state.tab == t) {
                             when (t) {
                                 Tab.MOVIES, Tab.SERIES -> state.restoreFocus = true
-                                Tab.STREAMING -> state.torrentioBrowse.restoreFocus = true
                                 else -> focusManager.moveFocus(FocusDirection.Down)
                             }
                         }
@@ -177,7 +174,6 @@ private fun TopBar(state: AppState) {
                         Tab.GUIDE -> Icons.Rounded.LiveTv
                         Tab.MOVIES -> Icons.Rounded.Movie
                         Tab.SERIES -> Icons.Rounded.Tv
-                        Tab.STREAMING -> Icons.Rounded.Cloud
                         Tab.MULTIVIEW -> Icons.Rounded.ViewWeek
                         Tab.SEARCH -> Icons.Rounded.Search
                         Tab.SETTINGS -> Icons.Rounded.Settings

@@ -14,11 +14,6 @@ val releaseProperties = Properties().apply {
     if (releasePropertiesFile.isFile) releasePropertiesFile.inputStream().use { load(it) }
 }
 val testJavaExecutable = providers.gradleProperty("tunerTestJavaExecutable").orNull
-val torrentNatives by configurations.creating
-val unpackTorrentNatives by tasks.registering(Sync::class) {
-    from({ torrentNatives.map { zipTree(it) } }) { include("lib/**/*.so"); eachFile { path = path.removePrefix("lib/") }; includeEmptyDirs = false }
-    into(layout.buildDirectory.dir("generated/torrentJni"))
-}
 fun signingValue(name: String): String = releaseProperties.getProperty(name)?.takeIf { it.isNotBlank() }
     ?: error("Missing $name in the external release signing properties")
 
@@ -30,8 +25,8 @@ android {
         applicationId = "tv.lumanest.tuner"
         minSdk = 23
         targetSdk = 35
-        versionCode = 14
-        versionName = "1.5.3"
+        versionCode = 15
+        versionName = "1.6.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -47,7 +42,7 @@ android {
         }
     }
     buildTypes {
-        debug { signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug") }
+        debug { signingConfig = signingConfigs.getByName("debug") }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
@@ -62,7 +57,6 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true; buildConfig = true }
-    sourceSets.getByName("main").jniLibs.srcDir(layout.buildDirectory.dir("generated/torrentJni"))
     testOptions {
         unitTests.isIncludeAndroidResources = true
         unitTests.all {
@@ -80,12 +74,6 @@ android {
 }
 
 dependencies {
-    val torrentVersion = "2.0.12.9"
-    implementation("com.frostwire:jlibtorrent:$torrentVersion")
-    torrentNatives("com.frostwire:jlibtorrent-android-arm:$torrentVersion")
-    torrentNatives("com.frostwire:jlibtorrent-android-arm64:$torrentVersion")
-    torrentNatives("com.frostwire:jlibtorrent-android-x86:$torrentVersion")
-    torrentNatives("com.frostwire:jlibtorrent-android-x86_64:$torrentVersion")
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
@@ -115,4 +103,3 @@ dependencies {
     testImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
-tasks.named("preBuild") { dependsOn(unpackTorrentNatives) }

@@ -37,7 +37,7 @@ object PlayerHolder {
     private var exo: ExoPlayer? = null
     private var dataSourceUa: String? = null
     private val main = Handler(Looper.getMainLooper())
-    private val deadlines by lazy { TuneDeadline(Net.client.newBuilder().addInterceptor(DebridNotice).build()) }
+    private val deadlines by lazy { TuneDeadline(Net.client) }
 
     var currentUrl: String? = null
         private set
@@ -87,7 +87,7 @@ object PlayerHolder {
     private val goodSource = HashMap<String, String>()
     private val source: String? get() = sources.getOrNull(sourceIndex)
 
-    fun init(context: Context) { appContext = context.applicationContext; TorrentEngine.init(appContext) }
+    fun init(context: Context) { appContext = context.applicationContext }
 
     val player: ExoPlayer
         get() {
@@ -102,7 +102,7 @@ object PlayerHolder {
             val extractors = DefaultExtractorsFactory()
                 .setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES)
                 .setConstantBitrateSeekingEnabled(true)
-            val mediaSources = DefaultMediaSourceFactory(TorrentDataSource.Factory(LiveSlotDataSource.Factory(http, deadlines, guard = { progressive }, live = { isLive })), extractors)
+            val mediaSources = DefaultMediaSourceFactory(LiveSlotDataSource.Factory(http, deadlines, guard = { progressive }, live = { isLive }), extractors)
                 .setLoadErrorHandlingPolicy(RetryPolicy)
             // Start once half a second is buffered (IPTV servers burst the first few seconds), then keep
             // a deep buffer so short network hiccups don't stall the picture.
@@ -134,16 +134,6 @@ object PlayerHolder {
         override fun onPlayerError(e: PlaybackException) {
             if (currentUrl == null) return
             val url = source ?: return
-            var cause: Throwable? = e
-            while (cause != null) {
-                if (cause is DebridNoticeException) {
-                    if (nextSource(p, "Debrid status notice")) return
-                    error.value = cause.explanation
-                    PlaybackLog.note("debrid returned a status notice")
-                    return
-                }
-                cause = cause.cause
-            }
             if (e.hasCause<SlotBusyException>()) {
                 PlaybackLog.note("gave up, connection still in use")
                 error.value = "Your provider says another device is using your connection. Your plan allows one stream at a time."
@@ -153,7 +143,7 @@ object PlayerHolder {
                 p.seekToDefaultPosition(); p.prepare(); return
             }
             // Some panels hand out HLS without a .m3u8 extension. Only worth trying when the bytes didn't parse.
-            if (!url.startsWith("torrent:") && !triedHls && !url.contains(".m3u8") && e.errorCode in 3000..3999) {
+            if (!triedHls && !url.contains(".m3u8") && e.errorCode in 3000..3999) {
                 triedHls = true
                 progressive = false
                 PlaybackLog.note("retrying as HLS")
@@ -182,7 +172,6 @@ object PlayerHolder {
                 return
             }
             error.value = describe(e)
-            if (url.startsWith("torrent:")) TorrentEngine.stop()
         }
 
         override fun onPlaybackStateChanged(state: Int) {
@@ -213,7 +202,7 @@ object PlayerHolder {
 
     /** Every few seconds while something plays: buffer depth and frame counts, for `adb logcat -s TunerPlayback`. */
     private const val HEALTH_EVERY_MS = 5_000L
-    private fun newBufferingBudget() = PlaybackWaitBudget(if (source?.startsWith("torrent:") == true) 120_000 else 30_000, SystemClock.elapsedRealtime())
+    private fun newBufferingBudget() = PlaybackWaitBudget(30_000, SystemClock.elapsedRealtime())
     private val health = object : Runnable {
         override fun run() {
             val p = exo ?: return
@@ -225,7 +214,6 @@ object PlayerHolder {
                     if (nextSource(p, "Stream stalled")) return
                     bufferingBudget = null
                     p.stop()
-                    TorrentEngine.stop()
                     error.value = "This stream is taking too long to load. Press OK to retry or choose another stream."
                     return
                 }
@@ -254,7 +242,7 @@ object PlayerHolder {
         progressive = isLive && !url.contains(".m3u8")
         p.volume = 1f
         p.playWhenReady = wantsPlay && appForeground
-        PlaybackLog.start(if (url.startsWith("torrent:")) "torrent" else url)
+        PlaybackLog.start(url)
         main.removeCallbacks(health)
         main.postDelayed(health, HEALTH_EVERY_MS)
         if (startMs > 0) p.setMediaItem(item(url, forceHls = false), startMs) else p.setMediaItem(item(url, forceHls = false))
@@ -268,7 +256,7 @@ object PlayerHolder {
         val position = if (isLive) 0 else resumePosition(p)
         val wantsPlay = p.playWhenReady
         sourceIndex++
-        p.stop(); TorrentEngine.stop()
+        p.stop()
         triedHls = false
         reconnects = 0
         PlaybackLog.note("$why, switching to backup $sourceIndex of ${sources.lastIndex}")
@@ -304,7 +292,6 @@ object PlayerHolder {
         }
         main.removeCallbacksAndMessages(null)
         p.stop()
-        TorrentEngine.stop()
         p.volume = 1f
         p.playWhenReady = appForeground
         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
@@ -347,7 +334,6 @@ object PlayerHolder {
         val position = if (isLive) 0 else resumePosition(p)
         main.removeCallbacksAndMessages(null)
         p.stop()
-        TorrentEngine.stop()
         sourceIndex = 0
         triedHls = false
         reconnects = 0
@@ -359,7 +345,6 @@ object PlayerHolder {
     fun stop() {
         playbackIntent.stop()
         bufferingBudget = null
-        TorrentEngine.stop()
         main.removeCallbacksAndMessages(null)
         exo?.playWhenReady = false
         exo?.stop()
@@ -376,7 +361,6 @@ object PlayerHolder {
         if (inPictureInPicture.value) return
         playbackIntent.background(exo?.playWhenReady == true && currentUrl != null)
         bufferingBudget = null
-        TorrentEngine.pause()
         val p = exo ?: return
         main.removeCallbacksAndMessages(null)
         if (isLive) { p.stop() } else p.pause()
@@ -384,7 +368,6 @@ object PlayerHolder {
 
     fun onAppForeground() {
         val resumeVod = playbackIntent.foreground()
-        TorrentEngine.resume()
         val p = exo ?: return
         if (currentUrl != null) { main.removeCallbacks(health); main.postDelayed(health, HEALTH_EVERY_MS) }
         if (isLive && currentUrl != null && p.playbackState == Player.STATE_IDLE) { p.prepare(); p.play() }
@@ -400,7 +383,7 @@ object PlayerHolder {
         PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED -> "This stream format isn't supported. Try switching Live format in Settings."
         PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
         PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED -> "This device can't decode the stream's video or audio."
-        else -> if (currentUrl?.startsWith("torrent:") == true) e.cause?.message?.takeIf { it.startsWith("No peers") || it.startsWith("Torrent peers") || it.startsWith("Not enough") || it.startsWith("The requested") || it.startsWith("No video") || it.startsWith("The torrent engine") } ?: "Torrent playback failed. Try a smaller stream with more peers." else "Playback failed (${e.errorCodeName})"
+        else -> "Playback failed (${e.errorCodeName})"
     }
 
     private val RECONNECTABLE = setOf(
@@ -441,10 +424,7 @@ object PlayerHolder {
      */
     private object RetryPolicy : DefaultLoadErrorHandlingPolicy() {
         override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
-            if (loadErrorInfo.exception.hasCause<SlotBusyException>() || loadErrorInfo.exception.hasCause<DebridNoticeException>()) return C.TIME_UNSET
-            // Native metadata/piece waits already have a two-minute budget. Let the player try a backup
-            // rather than silently repeat the same stalled operation for several more minutes.
-            if (loadErrorInfo.loadEventInfo.uri.scheme == "torrent") return C.TIME_UNSET
+            if (loadErrorInfo.exception.hasCause<SlotBusyException>()) return C.TIME_UNSET
             if (!isLive) return super.getRetryDelayMsFor(loadErrorInfo)
             if (super.getRetryDelayMsFor(loadErrorInfo) == C.TIME_UNSET) return C.TIME_UNSET
             return if (loadErrorInfo.errorCount <= 3) 300L * loadErrorInfo.errorCount else C.TIME_UNSET

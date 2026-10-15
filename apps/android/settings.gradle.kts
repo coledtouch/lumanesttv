@@ -12,7 +12,6 @@ dependencyResolutionManagement {
         System.getenv("MAVEN_MIRROR")?.let { maven(it) }
         google()
         mavenCentral()
-        maven("https://dl.frostwire.com/maven") { content { includeGroup("com.frostwire") } }
     }
 }
 rootProject.name = "Tuner"
