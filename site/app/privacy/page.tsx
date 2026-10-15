@@ -31,7 +31,7 @@ export default function Privacy() {
     <h2>Other services</h2>
     <ul>
       <li>The site runs on Cloudflare, which processes requests to deliver it.</li>
-      <li>Fonts are loaded from Google Fonts, which receives standard request information such as your IP address.</li>
+      <li>Fonts are hosted on this website and delivered by Cloudflare. Loading them does not send a request to Google Fonts.</li>
     </ul>
     <h2>Your choices</h2>
     <p>You can ask us what we hold about you, or ask us to correct or delete it, by emailing support. We may need to keep payment records where the law requires it.</p>

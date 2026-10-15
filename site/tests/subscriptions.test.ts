@@ -109,7 +109,7 @@ async function signed() {const result = await call(login, '/api/player/renew/log
 async function ready() {for (let step = 0; step < 4; step++) await setupSubscriptionCatalog(origin); assert.equal(plans.size, 12);}
 async function begin() {await ready(); const auth = await signed(); const result = await call(enroll, '/api/player/renew/subscription', {months: 3, email: 'receipt@example.test', quoteToken: auth.data.quote_token, consent: true}, auth.cookie); assert.equal(result.response.status, 200, JSON.stringify(result.data)); return {...result, auth, sub: Array.from(subscriptions.values())[0]};}
 function signature() {return {'paypal-auth-algo': 'SHA256withRSA', 'paypal-cert-url': 'https://api.paypal.com/test.pem', 'paypal-transmission-id': 'test-id', 'paypal-transmission-sig': 'test-signature', 'paypal-transmission-time': new Date(now).toISOString()};}
-async function event(type: string, resource: any) {return call(webhook, '/api/paypal/webhook', {id: crypto.randomUUID(), event_type: type, resource}, undefined, signature());}
+async function event(type: string, resource: any, id = crypto.randomUUID()) {return call(webhook, '/api/paypal/webhook', {id, event_type: type, resource}, undefined, signature());}
 function pay(sub: any, id = 'SALE42') {now = Date.parse(sub.start_time) + 1000; sub.status = 'ACTIVE'; sub.billing_info.next_billing_time = plusMonths(sub.start_time, 3); const sale = {id, billing_agreement_id: sub.id, create_time: new Date(now).toISOString()}; transactions.get(sub.id)!.push({id, status: 'COMPLETED', time: sale.create_time, amount_with_breakdown: {gross_amount: {currency_code: 'USD', value: '59.00'}}}); return sale;}
 
 test('catalog creates 12 fixed-price plans in resumable steps, expands webhook events and keeps secrets private', async () => {
@@ -180,8 +180,19 @@ test('unapproved manual checkout is atomically abandoned and late approval never
   assert.equal(sqlite.prepare('SELECT state FROM orders').get()!.state, 'needs_review'); assert.notEqual(sqlite.prepare('SELECT attempted FROM orders').get()!.attempted, null); assert.equal(renewals.length, 0);
 });
 test('a canonical completed scheduled sale renews once under concurrent duplicate events', async () => {
-  const result = await begin(), sale = pay(result.sub); const events = await Promise.all([event('PAYMENT.SALE.COMPLETED', sale), event('PAYMENT.SALE.COMPLETED', sale)]);
-  assert.ok(events.every(result => result.response.status === 200), JSON.stringify(events.map(result => result.data))); assert.deepEqual(renewals, ['paypal-sale-SALE42']);
+  const result = await begin(), sale = pay(result.sub), ids = [crypto.randomUUID(),crypto.randomUUID()];
+  const events = await Promise.all(ids.map(id=>event('PAYMENT.SALE.COMPLETED',sale,id)));
+  assert.ok(events.some(result=>result.response.status===200));
+  assert.ok(events.every(result=>[200,503].includes(result.response.status)),JSON.stringify(events.map(result=>result.data)));
+  for(const [index,delivery] of events.entries()) {
+    if(delivery.response.status===503) {
+      assert.equal(delivery.data.error.code,'webhook_processing');
+      assert.equal(sqlite.prepare('SELECT id FROM paypal_webhook_events WHERE id=?').get(ids[index]),undefined);
+      assert.equal((await event('PAYMENT.SALE.COMPLETED',sale,ids[index])).response.status,200);
+    }
+    assert.ok(sqlite.prepare('SELECT id FROM paypal_webhook_events WHERE id=?').get(ids[index]));
+  }
+  assert.deepEqual(renewals, ['paypal-sale-SALE42']);
   assert.equal(sqlite.prepare('SELECT state FROM subscription_payments').get()!.state, 'fulfilled'); assert.equal(sqlite.prepare('SELECT state FROM subscriptions').get()!.state, 'ACTIVE');
   const options = await call(billing, '/api/player/renew/subscription', undefined, result.auth.cookie); assert.equal(options.data.subscription.last_payment_status, 'fulfilled');
   for (const privateValue of [password, 'test-provider-secret', 'receipt@example.test', 'line_id', 'credential']) assert.equal(JSON.stringify(options.data).includes(privateValue), false);

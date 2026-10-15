@@ -1,7 +1,7 @@
 const HOSTS = new Set(['portal.lumanest.tv', 'tv.lumanest.tv']);
 const ASSETS = new Set(['/sw.js', '/pwa-install.js', '/pwa-install.css', '/pwa/offline.html', '/pwa/offline.css', '/pwa/icon.svg', '/pwa/icon-180.png', '/pwa/icon-192.png', '/pwa/icon-512.png', '/pwa/icon-maskable-512.png']);
 const HEAD = '<link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/pwa/icon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/pwa/icon-180.png"><meta name="theme-color" content="#141224"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="LumaNest TV"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">';
-const SCRIPT = '<script id="lumanest-pwa-script" src="/pwa-install.js" defer></script>';
+const INSTALL = '<div id="lumanest-pwa-install-slot" data-pwa-install-slot></div><script id="lumanest-pwa-script" src="/pwa-install.js" defer></script>';
 // Same-origin resources the injected markup loads, and the CSP directives a browser consults
 // for each, in fallback order. Icons are omitted: a blocked icon is only cosmetic.
 const CSP_NEEDS = [
@@ -11,13 +11,15 @@ const CSP_NEEDS = [
   {path: '/manifest.webmanifest', script: false, directives: ['manifest-src', 'default-src']},
 ];
 
-// Whether one (lowercased) CSP source expression matches an https URL on this portal host.
+// Whether one CSP source expression matches an https URL on this portal host.
 // CSP3 lets http: and http:// sources match their https upgrade.
 function sourceAllows(source, hostname, path) {
-  if (source === '*' || source === "'self'" || source === 'https:' || source === 'http:') return true;
-  const match = /^(?:https?:\/\/)?(\*|(?:\*\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*)(?::(\d{1,5}|\*))?(\/[^?#]*)?$/.exec(source);
+  const keyword = source.toLowerCase();
+  if (keyword === '*' || keyword === "'self'" || keyword === 'https:' || keyword === 'http:') return true;
+  const match = /^(?:https?:\/\/)?(\*|(?:\*\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*)(?::(\d{1,5}|\*))?(\/[^?#]*)?$/i.exec(source);
   if (!match) return false;
-  const [, host, port, pathname] = match;
+  const [, sourceHost, port, pathname] = match;
+  const host = sourceHost.toLowerCase();
   return (host === '*' || host === hostname || (host.startsWith('*.') && hostname.endsWith(host.slice(1)))) &&
     (!port || port === '*' || port === '443') && (!pathname || (pathname.endsWith('/') ? path.startsWith(pathname) : path === pathname));
 }
@@ -31,7 +33,8 @@ export function cspBlocker(header, hostname, meta = false) {
   for (const policy of header.split(',')) {
     const directives = new Map();
     for (const part of policy.split(';')) {
-      const [name, ...sources] = part.trim().toLowerCase().split(/[\t\n\f\r ]+/);
+      const [rawName, ...sources] = part.trim().split(/[\t\n\f\r ]+/);
+      const name = rawName.toLowerCase();
       if (name && !directives.has(name)) directives.set(name, sources);
     }
     // A meta-delivered policy cannot sandbox; a header sandbox gives the page an opaque origin.
@@ -40,7 +43,7 @@ export function cspBlocker(header, hostname, meta = false) {
       const directive = need.directives.find(name => directives.has(name));
       if (!directive) continue;
       const sources = directives.get(directive);
-      if ((need.script && sources.includes("'strict-dynamic'")) || !sources.some(source => sourceAllows(source, hostname, need.path))) return directive;
+      if ((need.script && sources.some(source => source.toLowerCase() === "'strict-dynamic'")) || !sources.some(source => sourceAllows(source, hostname, need.path))) return directive;
     }
   }
   return null;
@@ -98,7 +101,7 @@ const pwaWorker = {
       }})
       // Insert at the end tags, after any meta policy in the head has been seen.
       .on('head', {element(element) {element.onEndTag(end => {if (!blocked) end.before(HEAD, {html: true});});}})
-      .on('body', {element(element) {element.onEndTag(end => {if (!blocked) end.before(SCRIPT, {html: true});});}})
+      .on('body', {element(element) {element.onEndTag(end => {if (!blocked) end.before(INSTALL, {html: true});});}})
       .transform(response);
   }
 };

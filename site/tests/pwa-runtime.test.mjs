@@ -118,6 +118,7 @@ test('customer HTML gains app metadata while retaining private response and logi
   assert.ok(body.includes('Private channel selection'));
   assert.ok(body.includes('<link rel="manifest" href="/manifest.webmanifest">'));
   assert.ok(body.includes('src="/pwa-install.js" defer'));
+  assert.ok(body.includes('<div id="lumanest-pwa-install-slot" data-pwa-install-slot></div>'));
   assert.equal(response.headers.get('Cache-Control'), 'private, no-store');
   assert.equal(response.headers.get('Set-Cookie'), 'private-session=fixture; HttpOnly; Secure');
   assert.equal(response.headers.get('Content-Security-Policy'), "default-src 'self'");
@@ -132,7 +133,8 @@ test('CSP evaluation allows injection only where every injected same-origin reso
   for (const policy of [undefined, '', "default-src 'self'", "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; manifest-src 'self'; img-src data:",
     "default-src https:", "default-src *", "default-src https://portal.lumanest.tv:443", "default-src *.lumanest.tv", "default-src 'self'; frame-ancestors 'none'; object-src 'none'",
     "script-src 'self' 'unsafe-inline'; style-src 'self'", "default-src portal.lumanest.tv/pwa-install.js portal.lumanest.tv/sw.js portal.lumanest.tv/pwa-install.css portal.lumanest.tv/manifest.webmanifest",
-    "img-src 'none'", "DEFAULT-SRC 'SELF'", "default-src 'self', script-src 'self'"]) assert.equal(cspBlocker(policy, host), null, String(policy));
+    "img-src 'none'", "DEFAULT-SRC 'SELF'", "default-src 'self', script-src 'self'",
+    "default-src 'self'; SCRIPT-SRC HTTPS://PORTAL.LUMANEST.TV/pwa-install.js; WORKER-SRC HTTPS://PORTAL.LUMANEST.TV/sw.js"]) assert.equal(cspBlocker(policy, host), null, String(policy));
   for (const [policy, directive] of [
     ["default-src 'none'", 'default-src'],
     ["script-src 'nonce-abc' 'strict-dynamic' 'self'", 'script-src'],
@@ -145,6 +147,11 @@ test('CSP evaluation allows injection only where every injected same-origin reso
     ["default-src 'self'; script-src tv.lumanest.tv", 'script-src'],
     ["default-src 'self'; script-src portal.lumanest.tv:8443", 'script-src'],
     ["default-src 'self'; script-src portal.lumanest.tv/other/", 'script-src'],
+    ["default-src 'self'; script-src https://portal.lumanest.tv/PWA-INSTALL.JS; worker-src https://portal.lumanest.tv/SW.JS", 'script-src'],
+    ["default-src 'self'; worker-src https://portal.lumanest.tv/SW.JS", 'worker-src'],
+    ["default-src 'self'; style-src https://portal.lumanest.tv/PWA-INSTALL.CSS", 'style-src'],
+    ["default-src 'self'; manifest-src https://portal.lumanest.tv/MANIFEST.WEBMANIFEST", 'manifest-src'],
+    ["default-src 'self'; script-src 'SELF' 'STRICT-DYNAMIC'", 'script-src'],
     ["default-src 'self'; script-src", 'script-src'],
     ["default-src 'self', script-src 'none'", 'script-src'],
     ["default-src 'self'; sandbox allow-scripts", 'sandbox'],
@@ -155,7 +162,7 @@ test('CSP evaluation allows injection only where every injected same-origin reso
 
 test('customer HTML keeps a blocking provider CSP intact and skips injection with a bounded diagnostic', async () => {
   const page = '<!doctype html><html><head><title>Channels</title></head><body><main>Private channel selection</main></body></html>';
-  for (const policy of ["default-src 'self'; script-src 'nonce-provider' 'strict-dynamic'", "script-src https://cdn.provider.example", "default-src 'self'; manifest-src 'none'"]) {
+  for (const policy of ["default-src 'self'; script-src 'nonce-provider' 'strict-dynamic'", "script-src https://cdn.provider.example", "default-src 'self'; manifest-src 'none'", "default-src 'self'; script-src https://portal.lumanest.tv/PWA-INSTALL.JS"]) {
     await control({status: 200, type: 'text/html; charset=utf-8', body: page, headers: {'Cache-Control': 'private, no-store', ETag: 'fixture-etag', 'Content-Security-Policy': policy}});
     const response = await runtime.dispatchFetch(customerOrigin + '/channels');
     assert.equal(await response.text(), page, policy);
@@ -302,17 +309,23 @@ test('offline navigation returns a generic public page rather than saved account
   assert.match(await response.text(), /internet connection/);
 });
 
-async function installUI({hostname = 'portal.lumanest.tv', pathname = '/channels', secure = true, standalone = false, ios = false, narrow = false, slot = true, storage = new Map()} = {}) {
+async function installUI({hostname = 'portal.lumanest.tv', pathname = '/channels', secure = true, standalone = false, ios = false, narrow = false, slot = true, provider = false, header = true, fullscreen = false, storage = new Map()} = {}) {
   const nodes = [], registrations = [], windowListeners = new Map(), documentListeners = new Map();
   let focused;
   function element(tagName) {
     const events = new Map();
-    const node = {tagName, children: [], hidden: false, disabled: false, attributes: {}, append(...children) {this.children.push(...children);}, prepend(child) {this.children.unshift(child);}, appendChild(child) {this.children.push(child); return child;}, setAttribute(name, value) {this.attributes[name] = value;}, addEventListener(name, callback) {events.set(name, callback);}, focus() {focused = node;}, async dispatch(name, event = {}) {await events.get(name)?.(event);}};
+    function detach(child) {if (child.parent) child.parent.children.splice(child.parent.children.indexOf(child), 1); child.parent = node;}
+    const node = {tagName, children: [], hidden: false, disabled: false, attributes: {}, append(...children) {for (const child of children) {detach(child); this.children.push(child);}}, prepend(child) {detach(child); this.children.unshift(child);}, appendChild(child) {this.append(child); return child;}, insertAdjacentElement(position, child) {assert.equal(position, 'afterend'); const parent = this.parent; detach(child); child.parent = parent; parent.children.splice(parent.children.indexOf(this) + 1, 0, child); return child;}, setAttribute(name, value) {this.attributes[name] = value;}, addEventListener(name, callback) {events.set(name, callback);}, focus() {focused = node;}, async dispatch(name, event = {}) {await events.get(name)?.(event);}};
     nodes.push(node);
     return node;
   }
-  const classes = new Set(), headerSlot = slot ? element('span') : null;
-  const document = {head: element('head'), body: element('body'), documentElement: {classList: {toggle: (name, on) => {if (on) classes.add(name); else classes.delete(name);}}}, fullscreenElement: null, querySelector: selector => selector === '[data-pwa-install-slot]' ? headerSlot : null, getElementById: id => nodes.find(node => node.id === id), createElement: element, addEventListener: (name, callback) => documentListeners.set(name, callback)};
+  const classes = new Set(), headerSlot = provider ? element('div') : slot ? element('span') : null;
+  if (provider) headerSlot.id = 'lumanest-pwa-install-slot';
+  const headerNode = header ? element('header') : null;
+  const document = {head: element('head'), body: element('body'), documentElement: {classList: {toggle: (name, on) => {if (on) classes.add(name); else classes.delete(name);}}}, fullscreenElement: fullscreen ? {} : null, querySelector: selector => selector === '[data-pwa-install-slot]' ? headerSlot : selector === 'header' ? headerNode : null, getElementById: id => nodes.find(node => node.id === id), createElement: element, addEventListener: (name, callback) => documentListeners.set(name, callback)};
+  if (headerNode) document.body.append(headerNode);
+  document.body.append(element('main'));
+  if (provider) document.body.append(headerSlot);
   const context = vm.createContext({
     document,
     location: {hostname, pathname},
@@ -321,7 +334,7 @@ async function installUI({hostname = 'portal.lumanest.tv', pathname = '/channels
     navigator: {standalone, userAgent: ios ? 'iPhone' : 'test-browser', platform: ios ? 'iPhone' : 'test-platform', maxTouchPoints: ios ? 1 : 0, serviceWorker: {register: async (url, options) => {registrations.push({url, scope: options.scope});}}}
   });
   vm.runInContext(await readFile(new URL('../public/pwa-install.js', import.meta.url), 'utf8'), context);
-  return {document, registrations, storage, headerSlot, classes, find: id => document.getElementById(id), focus: () => focused, emitWindow: async (name, event) => {await windowListeners.get(name)?.(event);}, emitDocument: async (name, event) => {await documentListeners.get(name)?.(event);}};
+  return {document, registrations, storage, headerSlot, headerNode, classes, find: id => document.getElementById(id), focus: () => focused, emitWindow: async (name, event) => {await windowListeners.get(name)?.(event);}, emitDocument: async (name, event) => {await documentListeners.get(name)?.(event);}};
 }
 
 test('install support stays on configured secure customer pages and hides in installed app windows', async () => {
@@ -362,7 +375,7 @@ test('browser installation requires a customer click and remains hidden after in
   assert.equal(widget.hidden, true);
 });
 
-test('manual Safari installation help is accessible and viewing fullscreen hides the install overlay', async () => {
+test('manual Safari installation help is accessible and viewing fullscreen hides the install controls', async () => {
   const ui = await installUI({ios: true, pathname: '/watch'});
   const widget = ui.find('lumanest-install');
   const panel = widget.children[0], button = widget.children[1];
@@ -387,12 +400,12 @@ test('manual Safari installation help is accessible and viewing fullscreen hides
 test('install button stays off payment return pages and remains hidden once dismissed', async () => {
   for (const pathname of ['/checkout/return', '/checkout/cancel', '/renew/return']) {
     for (const narrow of [false, true]) {
-      const ui = await installUI({pathname, narrow, storage: new Map([['lumanest-install-views', '5']])});
+      const ui = await installUI({pathname, narrow});
       assert.equal(ui.find('lumanest-install'), undefined);
       assert.deepEqual(ui.registrations, [{url: '/sw.js', scope: '/'}]);
     }
   }
-  const storage = new Map([['lumanest-install-views', '1']]);
+  const storage = new Map();
   const ui = await installUI({narrow: true, storage});
   const widget = ui.find('lumanest-install');
   const dismiss = widget.children.find(node => node.className === 'lumanest-install-dismiss');
@@ -405,32 +418,61 @@ test('install button stays off payment return pages and remains hidden once dism
   for (const narrow of [false, true]) assert.equal((await installUI({narrow, storage})).find('lumanest-install'), undefined);
 });
 
-test('wide screens only place the install button in a page-provided header slot, never floating over content', async () => {
-  const ui = await installUI();
+test('every screen size places the install button in a page-provided slot, never floating over content', async () => {
+  for (const narrow of [false, true]) {
+  const ui = await installUI({narrow});
   const widget = ui.find('lumanest-install');
   assert.equal(widget.className, 'lumanest-install-inline');
   assert.ok(ui.headerSlot.children.includes(widget));
   assert.equal(ui.document.body.children.includes(widget), false);
   assert.equal(widget.children[1].textContent, 'Install app');
-  const bare = await installUI({slot: false});
+  const bare = await installUI({slot: false, narrow});
   assert.equal(bare.find('lumanest-install'), undefined);
   assert.equal(bare.document.head.children.some(node => node.tagName === 'link'), false);
   assert.deepEqual(bare.registrations, [{url: '/sw.js', scope: '/'}]);
+  }
 });
 
-test('narrow screens show a small dismissible bottom banner only from the second page view', async () => {
+test('narrow screens use a dismissible in-flow slot from the first visit without page-view tracking or bottom spacers', async () => {
   const storage = new Map();
   const first = await installUI({narrow: true, storage});
-  assert.equal(first.find('lumanest-install'), undefined);
-  assert.equal(storage.get('lumanest-install-views'), '1');
-  const second = await installUI({narrow: true, storage});
-  const banner = second.find('lumanest-install');
-  assert.equal(banner.className, 'lumanest-install-banner');
-  assert.ok(second.document.body.children.includes(banner));
-  assert.equal(second.headerSlot.children.length, 0);
-  assert.match(banner.children.find(node => node.className === 'lumanest-install-text').textContent, /home screen/);
-  assert.ok(banner.children.some(node => node.className === 'lumanest-install-dismiss' && node.attributes['aria-label']));
-  assert.equal(second.classes.has('lumanest-install-open'), true);
+  const widget = first.find('lumanest-install');
+  assert.equal(widget.className, 'lumanest-install-inline');
+  assert.ok(first.headerSlot.children.includes(widget));
+  assert.ok(widget.children.some(node => node.className === 'lumanest-install-dismiss' && node.attributes['aria-label']));
+  assert.equal(storage.size, 0);
+  assert.equal(first.classes.size, 0);
   const unavailable = await installUI({narrow: true, storage: {has: () => {throw new Error('blocked');}, get: () => null, set: () => {}}});
-  assert.equal(unavailable.find('lumanest-install'), undefined);
+  assert.ok(unavailable.find('lumanest-install'));
+  const css = await readFile(new URL('../public/pwa-install.css', import.meta.url), 'utf8');
+  assert.doesNotMatch(css, /position\s*:\s*fixed|body\s*::after|lumanest-install-banner|lumanest-install-open/);
+  // The hidden rule must follow the equally specific inline display rule.
+  assert.ok(css.indexOf('#lumanest-install[hidden]{display:none}') > css.indexOf('#lumanest-install.lumanest-install-inline{display:inline-flex'));
+});
+
+test('provider install slot moves after the header in normal flow and hides completely in fullscreen or after dismissal', async () => {
+  for (const narrow of [false, true]) {
+    const ui = await installUI({provider: true, narrow});
+    const widget = ui.find('lumanest-install');
+    assert.ok(ui.headerSlot.children.includes(widget));
+    assert.equal(ui.document.body.children.indexOf(ui.headerSlot), ui.document.body.children.indexOf(ui.headerNode) + 1);
+    assert.equal(ui.headerNode.children.includes(ui.headerSlot), false);
+    assert.equal(ui.headerSlot.hidden, false);
+    ui.document.fullscreenElement = {};
+    await ui.emitDocument('fullscreenchange');
+    assert.equal(widget.hidden, true);
+    assert.equal(ui.headerSlot.hidden, true);
+    ui.document.fullscreenElement = null;
+    await ui.emitDocument('fullscreenchange');
+    assert.equal(ui.headerSlot.hidden, false);
+    await widget.children[2].dispatch('click');
+    assert.equal(ui.headerSlot.hidden, true);
+    await ui.emitDocument('fullscreenchange');
+    assert.equal(ui.headerSlot.hidden, true);
+  }
+  const noHeader = await installUI({provider: true, header: false});
+  assert.equal(noHeader.document.body.children[0], noHeader.headerSlot);
+  const fullscreen = await installUI({provider: true, fullscreen: true});
+  assert.equal(fullscreen.find('lumanest-install').hidden, true);
+  assert.equal(fullscreen.headerSlot.hidden, true);
 });

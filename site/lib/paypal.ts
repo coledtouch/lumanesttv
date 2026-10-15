@@ -230,21 +230,27 @@ export async function webhook(input: unknown, headers: Headers) {
     transmission_sig: headers.get('paypal-transmission-sig'), transmission_time: headers.get('paypal-transmission-time'), webhook_id: webhookId, webhook_event: event
   });
   if (verified?.verification_status !== 'SUCCESS') throw new ServiceError(403, 'invalid_webhook', 'Webhook verification failed.');
-  // PayPal redelivers events; each verified event id is processed once. A transient failure releases the claim so the retry runs.
-  const claim = await db().prepare('INSERT OR IGNORE INTO paypal_webhook_events (id,type,received) VALUES (?,?,?)').bind(event.id, event.event_type, Date.now()).run();
-  if (claim.meta.changes !== 1) return {received: true};
-  try {return await processWebhook(event);}
+  // This table records completed handling, never a claim made before processing. If the
+  // Worker stops or storage fails, PayPal can retry; the payment/fulfillment locks below
+  // prevent duplicate wallet operations across concurrent deliveries.
+  if (await db().prepare('SELECT id FROM paypal_webhook_events WHERE id=?').bind(event.id).first()) return {received: true};
+  const completed = () => db().prepare('INSERT OR IGNORE INTO paypal_webhook_events (id,type,received) VALUES (?,?,?)').bind(event.id, event.event_type, Date.now()).run();
+  try {
+    const result = await processWebhook(event);
+    await completed();
+    return result;
+  }
   catch (error) {
     // Business conflicts are recorded for owner review and acknowledged so PayPal does not retry them for days.
     if (businessConflict(error)) {
       const code = error instanceof ServiceError ? error.code : 'payment_not_verified';
       try {
         await reviewWebhookConflict(event, code);
+        await completed();
         console.error('lumanest_paypal_webhook_review', JSON.stringify({type: event.event_type, code}));
         return {received: true};
       } catch {}
     }
-    await db().prepare('DELETE FROM paypal_webhook_events WHERE id=?').bind(event.id).run().catch(() => {});
     throw error;
   }
 }
@@ -267,22 +273,34 @@ async function reviewWebhookConflict(event: VerifiedPayPalEvent, code: string) {
 async function processWebhook(event: VerifiedPayPalEvent) {
   if (event.event_type.startsWith('BILLING.SUBSCRIPTION.') || event.event_type.startsWith('PAYMENT.SALE.')) {
     await (await import('./subscriptions.ts')).subscriptionWebhook(event);
+    if (event.event_type === 'PAYMENT.SALE.COMPLETED' && typeof event.resource?.id === 'string') {
+      const payment = await db().prepare('SELECT state FROM subscription_payments WHERE sale_id=?').bind(event.resource.id).first<{state: string}>();
+      if (payment && ['verified', 'fulfilling'].includes(payment.state)) throw webhookPending();
+    }
     return {received: true};
   }
   const id = webhookOrderId(event);
   if (id) {
     const row = await db().prepare('SELECT * FROM orders WHERE paypal_id=?').bind(id).first<Order>();
-    if (row && event.event_type === 'CHECKOUT.ORDER.APPROVED') await captureCheckout(row.id, id);
+    if (row && event.event_type === 'CHECKOUT.ORDER.APPROVED') settledPayment(await captureCheckout(row.id, id));
     if (row && event.event_type === 'PAYMENT.CAPTURE.COMPLETED' && row.state === 'abandoned') {
       const captureId = verifiedCapture(row, await paypal<PayPalOrder>('/v2/checkout/orders/' + id));
       await db().prepare("UPDATE orders SET state='needs_review',capture_id=?,attempted=?,error='A replaced checkout received payment; review before renewal' WHERE id=? AND state='abandoned'").bind(captureId, Date.now(), row.id).run();
       if (row.line_id) await (await import('./subscriptions.ts')).reviewConflictingManualPayment(row.line_id);
     }
     if (row && event.event_type === 'PAYMENT.CAPTURE.COMPLETED' && row.attempted === null && ['created', 'pending', 'capturing', 'needs_review'].includes(row.state)) {
-      await fulfill(row, await paypal<PayPalOrder>('/v2/checkout/orders/' + id));
+      settledPayment(await fulfill(row, await paypal<PayPalOrder>('/v2/checkout/orders/' + id)));
+    }
+    if (row && ['capturing', 'fulfilling'].includes(row.state)) {
+      const latest = await status(row.id);
+      settledPayment(latest);
     }
   }
   return {received: true};
+}
+function webhookPending() {return new ServiceError(503, 'webhook_processing', 'This payment is still processing. Please retry this notification shortly.', '5');}
+function settledPayment(result: {state: string}) {
+  if (['creating', 'created', 'pending', 'capturing', 'fulfilling'].includes(result.state)) throw webhookPending();
 }
 
 export async function verifyPayPalConnection() {

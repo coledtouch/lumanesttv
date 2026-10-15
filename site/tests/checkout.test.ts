@@ -25,16 +25,18 @@ test.after(() => { globalThis.fetch = nativeFetch; });
 let sqlite: DatabaseSync;
 let http: (url: string, init: RequestInit) => Promise<Response>;
 let requests: {url: string; init: RequestInit}[];
+let storageFailure: ((sql: string) => void) | undefined;
 
 test.beforeEach(() => {
   clearProviderSnapshot();
+  storageFailure = undefined;
   sqlite = new DatabaseSync(':memory:');
   for (const file of readdirSync(new URL('../drizzle/', import.meta.url)).filter(file => file.endsWith('.sql')).sort()) sqlite.exec(readFileSync(new URL('../drizzle/' + file, import.meta.url), 'utf8').replaceAll('--> statement-breakpoint', ''));
   const database = {
     prepare(sql: string) {
       const statement = sqlite.prepare(sql);
       return {async all() { return {results: statement.all()}; }, bind(...args: (string | number | null)[]) {
-        return {async run() { const result = statement.run(...args); return {meta: {changes: Number(result.changes)}}; }, async first() { return statement.get(...args) ?? null; }, async all() { return {results: statement.all(...args)}; }};
+        return {async run() { storageFailure?.(sql); const result = statement.run(...args); return {meta: {changes: Number(result.changes)}}; }, async first() { return statement.get(...args) ?? null; }, async all() { return {results: statement.all(...args)}; }};
       }};
     }
   };
@@ -423,6 +425,12 @@ function review(state = 'needs_review', changes: Record<string, unknown> = {}) {
   return {...order, state, ...changes};
 }
 function orderReads() { return requests.filter(r => r.url.endsWith('/v2/checkout/orders/PAYPALORDER')); }
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => {resolve = done;});
+  return {promise, resolve};
+}
+function completedEvents() {return sqlite.prepare('SELECT COUNT(*) AS count FROM paypal_webhook_events').get()?.count;}
 
 test('verified webhook events are processed once per PayPal event id', async () => {
   seed();
@@ -435,7 +443,7 @@ test('verified webhook events are processed once per PayPal event id', async () 
   await assert.rejects(webhook({...completedEvent(), id: 'bad id with spaces'}, signedHeaders()), {code: 'invalid_webhook'});
 });
 
-test('a transient webhook failure releases the event claim so the PayPal retry is processed', async () => {
+test('a transient webhook failure leaves no completion record so the PayPal retry is processed', async () => {
   seed();
   const defaultHttp = http;
   http = async (url, init) => url.endsWith('/v2/checkout/orders/PAYPALORDER') ? new Response('{}', {status: 503}) : defaultHttp(url, init);
@@ -445,6 +453,97 @@ test('a transient webhook failure releases the event claim so the PayPal retry i
   await webhook(completedEvent(), signedHeaders());
   assert.equal(saved().state, 'fulfilled');
   assert.equal(lineWrites().length, 1);
+});
+
+test('an overlapping approval retries instead of acknowledging another delivery before capture finishes', async () => {
+  seed();
+  const defaultHttp = http, entered = deferred<void>(), release = deferred<Response>();
+  let firstRead = true;
+  http = async (url, init) => {
+    if (url.endsWith('/v2/checkout/orders/PAYPALORDER') && firstRead) {firstRead = false; entered.resolve(); return release.promise;}
+    return defaultHttp(url, init);
+  };
+  const event = {id:'approval-event',event_type:'CHECKOUT.ORDER.APPROVED',resource:{id:'PAYPALORDER'}};
+  const first = webhook(event,signedHeaders()).then(value=>({value,error:null}),error=>({value:null,error}));
+  await entered.promise;
+  assert.equal(saved().state,'capturing');
+  assert.equal(completedEvents(),0);
+  await assert.rejects(webhook(event,signedHeaders()),{code:'webhook_processing',status:503});
+  assert.equal(completedEvents(),0);
+  release.resolve(new Response('{}',{status:503}));
+  assert.equal((await first).error?.code,'paypal_error');
+  assert.equal(saved().state,'created');
+  assert.equal(completedEvents(),0);
+  http = defaultHttp;
+  assert.deepEqual(await webhook(event,signedHeaders()),{received:true});
+  assert.equal(saved().state,'fulfilled');
+  assert.equal(completedEvents(),1);
+  assert.equal(lineWrites().length,1);
+});
+
+test('a duplicate completed capture is not acknowledged while its wallet operation is unfinished', async () => {
+  seed();
+  const defaultHttp = http, entered = deferred<void>(), release = deferred<Response>();
+  http = async (url, init) => {
+    if (url.endsWith('/api/v1/lines') && init.method === 'POST') {entered.resolve(); return release.promise;}
+    return defaultHttp(url,init);
+  };
+  const first = webhook(completedEvent(),signedHeaders());
+  await entered.promise;
+  assert.equal(saved().state,'fulfilling');
+  assert.equal(completedEvents(),0);
+  await assert.rejects(webhook(completedEvent(),signedHeaders()),{code:'webhook_processing',status:503});
+  assert.equal(completedEvents(),0);
+  release.resolve(Response.json({data:{line:{id:42}}}));
+  assert.deepEqual(await first,{received:true});
+  assert.equal(saved().state,'fulfilled');
+  assert.equal(completedEvents(),1);
+  assert.equal(lineWrites().length,1);
+});
+
+test('a failed completion write permits retry after activation without spending the wallet twice', async () => {
+  seed();
+  storageFailure = sql => {
+    if (sql.startsWith('INSERT OR IGNORE INTO paypal_webhook_events')) {storageFailure = undefined; throw new Error('D1_ERROR: synthetic storage interruption');}
+  };
+  await assert.rejects(webhook(completedEvent(),signedHeaders()),/synthetic storage interruption/);
+  assert.equal(saved().state,'fulfilled');
+  assert.equal(completedEvents(),0);
+  assert.equal(lineWrites().length,1);
+  assert.deepEqual(await webhook(completedEvent(),signedHeaders()),{received:true});
+  assert.equal(completedEvents(),1);
+  assert.equal(lineWrites().length,1);
+});
+
+test('a failing overlapping delivery cannot erase a completion saved by another handler', async () => {
+  seed();
+  const defaultHttp = http, entered = deferred<void>(), release = deferred<Response>();
+  let firstRead = true;
+  http = async (url,init) => {
+    if (url.endsWith('/v2/checkout/orders/PAYPALORDER') && firstRead) {firstRead = false; entered.resolve(); return release.promise;}
+    return defaultHttp(url,init);
+  };
+  const first = webhook(completedEvent(),signedHeaders()).then(value=>({value,error:null}),error=>({value:null,error}));
+  await entered.promise;
+  assert.deepEqual(await webhook(completedEvent(),signedHeaders()),{received:true});
+  assert.equal(completedEvents(),1);
+  release.resolve(new Response('{}',{status:503}));
+  assert.equal((await first).error?.code,'paypal_error');
+  assert.equal(completedEvents(),1);
+  assert.equal(lineWrites().length,1);
+  const reads = orderReads().length;
+  await webhook(completedEvent(),signedHeaders());
+  assert.equal(orderReads().length,reads);
+});
+
+test('an unfinished recurring payment also keeps its completion notification retryable', async () => {
+  sqlite.prepare("INSERT INTO subscription_payments (sale_id,subscription_id,amount,currency,state,paid_at,created) VALUES ('SALEID','agreement','95.00','USD','fulfilling','2026-10-15T00:00:00.000Z',1)").run();
+  const event = {id:'sale-event',event_type:'PAYMENT.SALE.COMPLETED',resource:{id:'SALEID',billing_agreement_id:'I-AGREEMENT'}};
+  await assert.rejects(webhook(event,signedHeaders()),{code:'webhook_processing',status:503});
+  assert.equal(completedEvents(),0);
+  sqlite.prepare("UPDATE subscription_payments SET state='fulfilled' WHERE sale_id='SALEID'").run();
+  assert.deepEqual(await webhook(event,signedHeaders()),{received:true});
+  assert.equal(completedEvents(),1);
 });
 
 test('business conflicts in webhooks are recorded for review and acknowledged without retries', async () => {
