@@ -24,10 +24,11 @@ const worksOn: [string, string, keyof typeof icon, string][] = [
   ['android', 'Android TV / Google TV', 'tv', 'TV app'],
   ['android', 'Amazon Fire TV', 'stick', 'TV app'],
   ['lg', 'LG webOS', 'tv', 'Developer install'],
+  ['roku', 'Roku', 'stick', 'Developer install'],
   ['browser', 'Any web browser', 'browser', 'No install needed'],
   ['samsung', 'Samsung TV', 'tv', 'App temporarily unavailable'],
 ];
-const included = ['Live channels, with your channel choices', 'Movies and series to browse', 'The web player in your browser', 'TV app setup for Android TV, Google TV, Fire TV and LG webOS', 'Online renewals and subscription management'];
+const included = ['Live channels, with your channel choices', 'Movies and series to browse', 'The web player in your browser', 'TV app setup for Android TV, Google TV, Fire TV, LG webOS and Roku', 'Online renewals and subscription management'];
 
 const questions = [
   ['What are simultaneous screens?', 'A screen is any device watching at the same time. For example, a TV, a phone and a laptop watching at once count as three screens. ' + plans.map(item => item.name + ' allows ' + ['one', 'two', 'three', 'four'][item.devices - 1]).join(', ').replace(/, ([^,]*)$/, ' and $1') + '.'],
