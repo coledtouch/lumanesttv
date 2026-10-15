@@ -55,7 +55,7 @@ class ThemePickerTest {
         // The Theme row is beyond the initial lazy viewport, so scroll the list to compose it first.
         rule.onNode(hasScrollAction()).performScrollToNode(hasText("Theme"))
         rule.onNode(hasClickAction() and hasText("Theme")).performClick()
-        rule.onNode(hasClickAction() and hasText("Midnight") and !hasText("Theme")).assertIsFocused()
+        rule.onNode(hasClickAction() and hasText("LumaNest") and !hasText("Theme")).assertIsFocused()
     }
 
     @Test fun previewDoesNotPersistAndBackRestoresTheThemeRow() {

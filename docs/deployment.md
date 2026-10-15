@@ -59,3 +59,11 @@ PayPal order capture, subscription billing and verified webhooks run in server r
 Android, Tizen and webOS clients are independently built from `apps/`. They use the configured TV service and catalog integrations. Android release signing uses externally supplied key material. Samsung installation requires the appropriate signing identity and TV configuration. Never generate a replacement release key as part of a source migration: it would break update compatibility.
 
 CI validates source and creates development build artifacts. CI does not deploy production, charge customers, install on TVs or obtain private signing keys.
+
+### Pair with your phone
+
+The TV apps set themselves up through `lumanest.tv/pair`, modelled on the OAuth device flow. A TV calls `POST /api/pair/start` and shows the returned QR code and 8-letter code. The customer signs in to the web player on their phone and approves it via `/api/player/pair`. The TV then collects its playlist login once from `POST /api/pair/poll`. Codes expire after 10 minutes. D1 stores only a hash of the TV's device code, and the login stays sealed with `PLAYER_COOKIE_KEY` until the TV collects it, which deletes the row. `/api/pair/*` allows any origin because TV apps are not pages on this site, and it never reads cookies.
+
+The pairing table arrives in migration `0009_device_pairings.sql`. Apply it before deploying the code that uses it: `npx wrangler d1 migrations apply lumanest-tv-production --remote --config dist/server/wrangler-cloudflare.json` from a prepared `site/` checkout.
+
+By default a paired TV receives the same M3U URL the web player loads (`<portal>/m3u?u=…&p=…`). If the TV service exposes an Xtream Codes API, set `TV_APP_XTREAM_SERVER` to its base URL (for example `https://tv.lumanest.tv`). Paired TVs then use Xtream mode, which adds Movies and Series.

@@ -343,7 +343,7 @@ export default function Player({portal, support}: {portal: string; support: stri
         <section className="watch-main">
           <div className="watch-title"><div><p className="eyebrow">YOUR CHANNEL. YOUR EVENING.</p><h1>Welcome home.</h1></div><span className="watch-user" title={username}>{username}</span></div>
           <div className="video-wrap" ref={viewingArea}>
-            <video key={(selected?.token || 'empty') + ':' + streamFormat + ':' + retry} ref={video} aria-label={selected ? 'Watching ' + selected.name : 'LumaNest TV video player'} controls playsInline preload="none"/>
+            <video key={(selected?.token || 'empty') + ':' + streamFormat + ':' + retry} ref={video} aria-label={selected ? 'Watching ' + selected.name : 'LumaNest TV video player'} controls={!connecting} playsInline preload="none"/>
             {!selected && <div className="video-empty"><span aria-hidden="true">▶</span><h2>The night is yours.</h2>{resume ? <button type="button" className="button primary watch-resume" onClick={() => choose(resume)}>Continue with {resume.name} ▶</button> : <p>Choose a channel from your lineup to start watching.</p>}</div>}
             {connecting && <div className="watch-loading"><span className="watch-spinner" aria-hidden="true"/><span>{status}</span></div>}
             {selected && !playError && status === 'Press play to start' && <div className="watch-start"><button className="button primary" onClick={() => startPlayback.current?.()}>Play {selected.name} ▶</button></div>}

@@ -6,7 +6,7 @@ const zlib = require("node:zlib");
 const acorn = require("acorn");
 
 const ROOT = path.resolve(__dirname, "..");
-const FILES = Object.freeze(["config.xml", "index.html", "css/app.css", "js/data.js", "js/player.js", "js/app.js", "assets/icon.png"]);
+const FILES = Object.freeze(["config.xml", "index.html", "css/app.css", "js/data.js", "js/player.js", "js/pairing.js", "js/app.js", "assets/icon.png"]);
 const SIGNATURES = Object.freeze(["author-signature.xml", "signature1.xml"]);
 const APPLICATION_ID = "TunerTv001.Tuner";
 const PACKAGE_ID = "TunerTv001";
@@ -40,7 +40,7 @@ function validateSource(root = ROOT) {
         if (fs.lstatSync(file).isSymbolicLink()) throw new Error("Widget assets must not be symlinks: " + name);
     });
     const version = validateManifest(fs.readFileSync(path.join(root, "config.xml"), "utf8"));
-    ["js/data.js", "js/player.js", "js/app.js"].forEach(name => {
+    ["js/data.js", "js/player.js", "js/pairing.js", "js/app.js"].forEach(name => {
         const ast = acorn.parse(fs.readFileSync(path.join(root, name), "utf8"), { ecmaVersion: 5 });
         function walk(node) {
             if (!node || typeof node !== "object") return;
@@ -52,7 +52,7 @@ function validateSource(root = ROOT) {
     });
     const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
     const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
-    if (scripts.some(match => match[2].trim() || !/\bsrc=["'](?:js\/(?:data|player|app)\.js|\$WEBAPIS\/webapis\/webapis\.js)["']/.test(match[1]))) throw new Error("HTML scripts must use the packaged allowlist or Samsung SDK");
+    if (scripts.some(match => match[2].trim() || !/\bsrc=["'](?:js\/(?:data|player|pairing|app)\.js|\$WEBAPIS\/webapis\/webapis\.js)["']/.test(match[1]))) throw new Error("HTML scripts must use the packaged allowlist or Samsung SDK");
     if (/\son[a-z]+\s*=/i.test(html) || /javascript:/i.test(html)) throw new Error("HTML inline event handlers are forbidden");
     return version;
 }

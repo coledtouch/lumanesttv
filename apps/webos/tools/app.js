@@ -6,9 +6,9 @@ const acorn = require("acorn");
 const ROOT = path.resolve(__dirname, "..");
 const FILES = Object.freeze([
     "appinfo.json", "index.html", "assets/icon.png", "css/app.css",
-    "js/data.js", "js/player.js", "js/webos-platform.js", "js/app.js"
+    "js/data.js", "js/player.js", "js/webos-platform.js", "js/pairing.js", "js/app.js"
 ]);
-const SCRIPTS = Object.freeze(["js/data.js", "js/player.js", "js/webos-platform.js", "js/app.js"]);
+const SCRIPTS = Object.freeze(["js/data.js", "js/player.js", "js/webos-platform.js", "js/pairing.js", "js/app.js"]);
 
 function validateSource(root = ROOT) {
     FILES.forEach(name => {

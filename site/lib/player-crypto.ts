@@ -1,4 +1,4 @@
-export type TokenPurpose='player-session'|'player-media'|'renewal-session'|'renewal-quote';
+export type TokenPurpose='player-session'|'player-media'|'device-pairing'|'renewal-session'|'renewal-quote';
 function base64url(value:Uint8Array){return btoa(String.fromCharCode(...value)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')}
 function bytes(value:string){return Uint8Array.from(atob(value.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0))}
 const text=(value:string)=>new TextEncoder().encode(value),label=(purpose:TokenPurpose)=>text('lumanest-token-v2:'+purpose);

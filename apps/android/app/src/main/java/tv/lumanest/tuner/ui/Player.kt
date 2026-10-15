@@ -395,7 +395,7 @@ private fun LivePlayer(req: PlayRequest.Live, onExit: (Channel?) -> Unit) {
         favoriteNotice?.let { message ->
             Text(message, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.align(Alignment.TopCenter).padding(top = 22.dp, start = 24.dp, end = 24.dp)
-                    .clip(RoundedCornerShape(50)).background(Color(0xFF142338).copy(alpha = 0.95f)).padding(horizontal = 18.dp, vertical = 10.dp))
+                    .clip(RoundedCornerShape(50)).background(Color(0xFF221B3A).copy(alpha = 0.95f)).padding(horizontal = 18.dp, vertical = 10.dp))
         }
         }
     }
@@ -497,7 +497,7 @@ private fun ChannelPanel(lineup: List<Channel>, current: Int, now: Long, epgVers
     BoxWithConstraints(Modifier.fillMaxSize()) {
     Column(
         Modifier.width((maxWidth * 0.58f).coerceAtMost(440.dp)).fillMaxHeight()
-            .background(Brush.horizontalGradient(listOf(Color(0xFF0B1321).copy(alpha = 0.98f), Color(0xFF101B2A).copy(alpha = 0.96f))))
+            .background(Brush.horizontalGradient(listOf(Color(0xFF0E0C1A).copy(alpha = 0.98f), Color(0xFF171428).copy(alpha = 0.96f))))
             .onPreviewKeyEvent { e ->
                 if (rowsFocused && e.type == KeyEventType.KeyDown && e.key.nativeKeyCode == AndroidKeyEvent.KEYCODE_DPAD_RIGHT) { onDismiss(); true } else false
             },
@@ -830,7 +830,7 @@ private fun TrackDialog(type: Int, version: Int, onClose: () -> Unit) {
 @Composable
 private fun ErrorCard(message: String, hint: String, modifier: Modifier) {
     Column(
-        modifier.widthIn(max = 460.dp).fillMaxWidth(0.86f).clip(RoundedCornerShape(16.dp)).background(Color(0xFF0D1726).copy(alpha = 0.94f)).padding(24.dp),
+        modifier.widthIn(max = 460.dp).fillMaxWidth(0.86f).clip(RoundedCornerShape(16.dp)).background(Color(0xFF141224).copy(alpha = 0.94f)).padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Icon(Icons.Rounded.Refresh, null, tint = Palette.accent, modifier = Modifier.size(30.dp))

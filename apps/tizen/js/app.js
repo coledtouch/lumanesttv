@@ -1377,6 +1377,20 @@
         store.settings.source ? "Settings" : "Welcome to Tuner"
       )
     );
+    if (window.TunerPairing) {
+      var pairRow = el("div", "pair-entry");
+      pairRow.appendChild(
+        el(
+          "p",
+          "",
+          store.settings.source
+            ? "Switching lines? Pair with your phone instead of typing."
+            : "LumaNest TV customer? Scan a code with your phone and this TV sets itself up. No typing."
+        )
+      );
+      pairRow.appendChild(button("Pair with your phone", "pair-phone", openPairing, "primary-button"));
+      main.appendChild(pairRow);
+    }
     var grid = el("div", "settings-grid"),
       form = el("form", "settings-main");
     form.id = "source-form";
@@ -1462,11 +1476,11 @@
     side.appendChild(
       button(
         "Theme: " +
-          (store.settings.theme === "midnight" ? "Midnight" : "Black"),
+          (store.settings.theme === "black" ? "Black" : "LumaNest"),
         "theme-setting",
         function () {
           store.saveSettings({
-            theme: store.settings.theme === "midnight" ? "black" : "midnight",
+            theme: store.settings.theme === "black" ? "midnight" : "black",
           });
           render();
         },
@@ -1492,7 +1506,7 @@
       button("About Tuner", "about-tuner", function () {
         showDialog(
           "Tuner for Samsung TV",
-          "Version 1.4.8 · Samsung TV\nLive TV, guide, movies, series and Favorites. Two-channel PiP works on supported TVs and playlists. Embedded torrent playback is not available on Samsung.",
+          "Version 1.4.9 · Samsung TV\nLive TV, guide, movies, series and Favorites. Two-channel PiP works on supported TVs and playlists. Embedded torrent playback is not available on Samsung.",
           []
         );
       })
@@ -1500,7 +1514,20 @@
     grid.appendChild(side);
     main.appendChild(grid);
     if (S.zone === "nav") focus("tab-" + S.nav);
-    else focus("source-type");
+    else focus(!store.settings.source && window.TunerPairing ? "pair-phone" : "source-type");
+  }
+  function openPairing() {
+    window.TunerPairing.open({
+      device: "samsung",
+      onSource: function (source) {
+        if (!store.saveSettings({ source: source }))
+          return toast(store.lastError || "The playlist could not be saved.");
+        connect();
+        openTab(0);
+        toast("Paired with LumaNest TV. Loading your channels.");
+      },
+      onClose: function () { focus("pair-phone"); }
+    });
   }
   function saveSource() {
     var type = document.getElementById("source-type").value,
@@ -2139,7 +2166,7 @@
           player.state &&
           /loading|playing|paused/.test(player.state.status)));
     document.body.className =
-      (store.settings.theme === "midnight" ? "" : "black") +
+      (store.settings.theme === "black" ? "black" : "") +
       (S.fullscreen ? " fullscreen" : "") +
       (dualActive && S.tab === 5 ? " multiview-fullscreen" : "") +
       (nativeVisible ? " native-video" : "");

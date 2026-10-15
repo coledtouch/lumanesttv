@@ -228,3 +228,12 @@ export async function media(req: Request) {
   for (const name of ['Content-Range', 'Accept-Ranges']) {const value = upstream.headers.get(name); if (value) responseHeaders[name] = value;}
   return new Response(relayPlayerStream(upstream.body, controller), {status: upstream.status, headers: responseHeaders});
 }
+// Device pairing (lib/pairing.ts) hands a TV app the same line login this web player session proved.
+export const playerSecret = () => secret();
+export function tvAccount(credentials: PlayerSession) {
+  const xtream = (settings().TV_APP_XTREAM_SERVER || '').trim().replace(/\/+$/, '');
+  if (/^https?:\/\/[^\s/?#]+$/i.test(xtream)) return {type: 'xtream' as const, name: 'LumaNest TV', server: xtream, username: credentials.username, password: credentials.password};
+  const playlist = new URL('/m3u', portal());
+  playlist.searchParams.set('u', credentials.username); playlist.searchParams.set('p', credentials.password);
+  return {type: 'm3u' as const, name: 'LumaNest TV', m3uUrl: playlist.href};
+}

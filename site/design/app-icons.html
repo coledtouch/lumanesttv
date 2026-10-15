@@ -1,0 +1,32 @@
+<!doctype html><html><head><meta charset="utf-8">
+<style>
+@font-face{font-family:Manrope;src:url(../public/fonts/manrope-latin.woff2) format('woff2');font-weight:200 800}
+@font-face{font-family:'DM Sans';src:url(../public/fonts/dm-sans-latin.woff2) format('woff2');font-weight:100 1000}
+*{box-sizing:border-box;margin:0}
+body{background:transparent;padding:20px;display:flex;gap:20px;align-items:flex-start}
+.icon{width:512px;height:512px;display:block}
+.banner{width:640px;height:360px;position:relative;overflow:hidden;font-family:'DM Sans',sans-serif;color:#f8f5ee;
+background:radial-gradient(520px 360px at 92% 8%,#3b2566 0%,transparent 62%),linear-gradient(135deg,#141224 0%,#1d1630 55%,#2a1d45 100%);
+display:flex;align-items:center;gap:30px;padding:0 54px}
+.banner svg{width:150px;height:150px;flex:none}
+.name{font-family:Manrope,sans-serif;font-weight:700;font-size:96px;line-height:.9;letter-spacing:-4px}
+.by{margin-top:14px;font-size:26px;font-weight:500;letter-spacing:.5px;color:#c4b5fd}
+.by b{color:#fff;font-weight:600}
+</style></head><body>
+<!-- Launcher and TV app icon: the favicon mark, drawn full-bleed. -->
+<svg class="icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#141224"/>
+  <circle cx="256" cy="256" r="153" fill="none" stroke="#7c3aed" stroke-width="24"/>
+  <circle cx="359" cy="145" r="25" fill="#ab73ef"/>
+  <path d="M216 185c-7-4-15 1-15 9v124c0 8 8 13 15 9l108-62c7-4 7-14 0-18z" fill="#fff"/>
+</svg>
+<!-- Android TV / Google TV launcher banner (320x180dp at xhdpi). -->
+<div class="banner">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+    <circle cx="256" cy="256" r="190" fill="none" stroke="#7c3aed" stroke-width="30"/>
+    <circle cx="384" cy="118" r="32" fill="#ab73ef"/>
+    <path d="M206 168c-9-5-19 1-19 11v154c0 10 10 16 19 11l134-77c9-5 9-17 0-22z" fill="#fff"/>
+  </svg>
+  <div><div class="name">Tuner</div><div class="by">by <b>LumaNest</b> TV</div></div>
+</div>
+</body></html>
