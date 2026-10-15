@@ -8,6 +8,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.style.TextAlign
 import tv.lumanest.tuner.data.PhoneSetup
+import tv.lumanest.tuner.data.Pairing
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
@@ -184,7 +185,13 @@ fun EditSourceScreen(sourceId: String?, canCancel: Boolean, onDone: () -> Unit) 
                 }
             }
         }
-        phoneUrl?.let { PhonePanel(it, Modifier.padding(top = 48.dp)) }
+        // New playlists: LumaNest customers pair by scanning a code. Edits keep the same-Wi-Fi phone form.
+        if (existing == null) LumaNestPairPanel(Modifier.padding(top = 48.dp)) { account ->
+            type = account.type; name = account.name
+            server = account.server; username = account.username; password = account.password; m3uUrl = account.m3uUrl
+            Toasts.show("Paired with LumaNest TV")
+            if (busy == null) save()
+        } else phoneUrl?.let { PhonePanel(it, Modifier.padding(top = 48.dp)) }
       }
     }
 }
@@ -223,6 +230,66 @@ private fun PhonePanel(url: String, modifier: Modifier) {
         )
         Text(url, color = Palette.accent, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 14.dp))
     }
+}
+
+@Composable
+private fun LumaNestPairPanel(modifier: Modifier, onAccount: (Pairing.Account) -> Unit) {
+    var code by remember { mutableStateOf<Pairing.Code?>(null) }
+    var status by remember { mutableStateOf("Getting a code…") }
+    LaunchedEffect(Unit) {
+        if (!Pairing.enabled) { status = "Pairing is off in this build."; return@LaunchedEffect }
+        // Keeps a fresh code on screen until the customer approves one; codes last 10 minutes.
+        var backoff = 5_000L
+        while (true) {
+            val next = runCatching { Pairing.start() }.getOrElse {
+                code = null; status = (it.message ?: "Pairing isn't available right now.") + " Retrying…"
+                delay(backoff); backoff = (backoff * 2).coerceAtMost(60_000L); null
+            } ?: continue
+            backoff = 5_000L
+            code = next; status = "Waiting for you to approve on your phone…"
+            val until = System.currentTimeMillis() + (next.expiresInS - 20).coerceAtLeast(60) * 1000L
+            var wait = next.intervalS * 1000L
+            while (System.currentTimeMillis() < until) {
+                delay(wait)
+                when (val r = runCatching { Pairing.poll(next.deviceCode) }.getOrNull()) {
+                    is Pairing.Status.Approved -> { status = "Paired. Loading your channels…"; onAccount(r.account); return@LaunchedEffect }
+                    Pairing.Status.Expired -> break
+                    Pairing.Status.Pending -> { wait = next.intervalS * 1000L; status = "Waiting for you to approve on your phone…" }
+                    null -> { wait = (wait * 2).coerceAtMost(30_000L); status = "Can't reach LumaNest TV. Retrying…" }
+                }
+            }
+        }
+    }
+    Column(
+        modifier.width(300.dp).clip(RoundedCornerShape(16.dp)).background(Palette.surface).padding(20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("PAIR WITH YOUR PHONE", color = Palette.accent, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
+        Text(
+            "LumaNest TV customer? Scan with your phone camera and sign in. This TV sets itself up.",
+            color = Palette.dim, fontSize = 13.sp, lineHeight = 17.sp, textAlign = TextAlign.Center,
+            modifier = Modifier.padding(top = 6.dp, bottom = 14.dp),
+        )
+        val current = code
+        Box(Modifier.size(170.dp).clip(RoundedCornerShape(10.dp)).background(androidx.compose.ui.graphics.Color.White), contentAlignment = Alignment.Center) {
+            if (current != null) {
+                val qr = remember(current.url) { qrRowsBitmap(current.qr) }
+                Image(qr, "QR code for lumanest.tv/pair", modifier = Modifier.fillMaxSize(), filterQuality = FilterQuality.None)
+            } else CircularProgressIndicator(color = Palette.accent, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
+        }
+        Text("or go to lumanest.tv/pair and enter", color = Palette.faint, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp))
+        Text(current?.userCode ?: "····-····", color = Palette.text, fontSize = 28.sp, fontWeight = FontWeight.Bold, letterSpacing = 3.sp)
+        Text(status, color = Palette.dim, fontSize = 12.sp, lineHeight = 16.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 6.dp))
+    }
+}
+
+/** Draws the server's QR rows ("0"/"1" per module) with a quiet zone, one pixel per module. */
+private fun qrRowsBitmap(rows: List<String>): ImageBitmap {
+    val quiet = 2; val size = rows.size + quiet * 2
+    val bmp = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+    bmp.eraseColor(android.graphics.Color.WHITE)
+    rows.forEachIndexed { y, row -> row.forEachIndexed { x, c -> if (c == '1') bmp.setPixel(x + quiet, y + quiet, android.graphics.Color.BLACK) } }
+    return bmp.asImageBitmap()
 }
 
 private fun qrBitmap(text: String, size: Int): ImageBitmap {

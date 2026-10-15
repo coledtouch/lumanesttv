@@ -64,6 +64,13 @@
       "when": 1792078606378,
       "tag": "0008_chief_barracuda",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1792097155033,
+      "tag": "0009_device_pairings",
+      "breakpoints": true
     }
   ]
 }

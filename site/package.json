@@ -23,6 +23,7 @@
     "lucide-react": "^1.31.0",
     "mpegts.js": "^1.8.2",
     "next": "16.3.4",
+    "qrcode-generator": "2.0.4",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "zod": "^3.25.76"

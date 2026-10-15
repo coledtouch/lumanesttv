@@ -990,3 +990,103 @@ body.native-video #topbar {
 body.native-video #main {
   background: transparent;
 }
+/* Pair with your phone (js/pairing.js) */
+.pair-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 1030px;
+  margin: -6px 0 26px;
+  padding: 18px 18px 18px 30px;
+  border-radius: 22px;
+  background: linear-gradient(100deg, #2b2349, #1d1733);
+  border: 2px solid #4a3a78;
+}
+.pair-entry p {
+  font-size: 25px;
+  color: #ddd3f2;
+  margin-right: 24px;
+}
+button.primary-button {
+  flex: none;
+  background: #7c3aed;
+  color: #fff;
+  font-weight: 700;
+}
+.pair-layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 1080px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(900px 700px at 80% 15%, #3b2566, transparent 65%), #0e0c1af2;
+}
+.pair-panel {
+  display: flex;
+  align-items: center;
+  width: 1500px;
+  padding: 64px;
+  border-radius: 36px;
+  background: #171428;
+  border: 2px solid #3d3163;
+  box-shadow: 0 40px 120px #000a;
+}
+.pair-qr {
+  flex: none;
+  width: 480px;
+  height: 480px;
+  border-radius: 26px;
+  overflow: hidden;
+  background: #fff;
+  margin-right: 70px;
+}
+.pair-qr canvas {
+  display: block;
+  width: 480px;
+  height: 480px;
+}
+.pair-side h2 {
+  font-size: 54px;
+  line-height: 1.1;
+  margin: 10px 0 24px;
+}
+.pair-eyebrow {
+  font-size: 22px;
+  letter-spacing: 4px;
+  font-weight: 700;
+  color: #c4b5fd;
+}
+.pair-steps {
+  white-space: pre-line;
+  font-size: 28px;
+  line-height: 1.6;
+  color: #ddd3f2;
+}
+.pair-or {
+  margin-top: 30px !important;
+  font-size: 25px;
+  color: #a79fc0;
+}
+.pair-code {
+  margin-top: 8px;
+  font-size: 66px;
+  font-weight: 700;
+  letter-spacing: 8px;
+  color: #fff;
+}
+.pair-status {
+  margin-top: 14px !important;
+  min-height: 34px;
+  font-size: 25px;
+  color: #c4b5fd;
+}
+.pair-actions {
+  margin-top: 28px;
+}
+.pair-actions button {
+  margin-right: 16px;
+}

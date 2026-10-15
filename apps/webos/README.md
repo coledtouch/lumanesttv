@@ -15,7 +15,7 @@ npm test
 npm run build
 ```
 
-No external TV SDK or connection is needed for these commands. Validation checks the application identity, required assets, ES5 syntax, local script loading order, and content security policy. The build copies exactly eight runtime files to a fresh staging folder under the repository's ignored `output/webos` directory. Source tools, tests, dependencies, and account files do not enter that staging folder. To choose another output location, use `node tools/build.js <output-folder>`.
+No external TV SDK or connection is needed for these commands. Validation checks the application identity, required assets, ES5 syntax, local script loading order, and content security policy. The build copies exactly nine runtime files to a fresh staging folder under the repository's ignored `output/webos` directory. Source tools, tests, dependencies, and account files do not enter that staging folder. To choose another output location, use `node tools/build.js <output-folder>`.
 
 `npm run build` prepares source staging; it does not create or sign an IPK, install an SDK, connect to a TV, or install the app. The generated `build.json` contains the staging location and belongs in ignored output, not Git.
 

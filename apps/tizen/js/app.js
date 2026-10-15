@@ -1377,6 +1377,20 @@
         store.settings.source ? "Settings" : "Welcome to Tuner"
       )
     );
+    if (window.TunerPairing) {
+      var pairRow = el("div", "pair-entry");
+      pairRow.appendChild(
+        el(
+          "p",
+          "",
+          store.settings.source
+            ? "Switching lines? Pair with your phone instead of typing."
+            : "LumaNest TV customer? Scan a code with your phone and this TV sets itself up. No typing."
+        )
+      );
+      pairRow.appendChild(button("Pair with your phone", "pair-phone", openPairing, "primary-button"));
+      main.appendChild(pairRow);
+    }
     var grid = el("div", "settings-grid"),
       form = el("form", "settings-main");
     form.id = "source-form";
@@ -1500,7 +1514,20 @@
     grid.appendChild(side);
     main.appendChild(grid);
     if (S.zone === "nav") focus("tab-" + S.nav);
-    else focus("source-type");
+    else focus(!store.settings.source && window.TunerPairing ? "pair-phone" : "source-type");
+  }
+  function openPairing() {
+    window.TunerPairing.open({
+      device: "samsung",
+      onSource: function (source) {
+        if (!store.saveSettings({ source: source }))
+          return toast(store.lastError || "The playlist could not be saved.");
+        connect();
+        openTab(0);
+        toast("Paired with LumaNest TV. Loading your channels.");
+      },
+      onClose: function () { focus("pair-phone"); }
+    });
   }
   function saveSource() {
     var type = document.getElementById("source-type").value,
