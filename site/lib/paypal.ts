@@ -21,9 +21,13 @@ function paypalBase() {
   return liveFulfillment(settings().PAYPAL_MODE) ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
 }
 
+let cachedToken: {key: string; value: string; until: number} | undefined;
+export function clearPayPalToken() {cachedToken = undefined;}
 async function paypalToken() {
   const e = settings();
   if (!e.PAYPAL_CLIENT_ID || !e.PAYPAL_CLIENT_SECRET) throw new ServiceError(503, 'paypal_not_configured', 'PayPal checkout is not connected yet.');
+  const key = paypalBase() + ':' + e.PAYPAL_CLIENT_ID;
+  if (cachedToken?.key === key && cachedToken.until > Date.now()) return cachedToken.value;
   let response: Response;
   try {
     response = await fetch(paypalBase() + '/v1/oauth2/token', {
@@ -32,9 +36,12 @@ async function paypalToken() {
     });
   } catch { throw new ServiceError(503, 'paypal_auth_failed', 'PayPal could not be reached. Please try again shortly.'); }
   if (!response.ok) throw new ServiceError(503, 'paypal_auth_failed', 'PayPal authentication failed. Please contact support.');
-  let token: {access_token?: string};
+  let token: {access_token?: string; expires_in?: number};
   try { token = await response.json(); } catch { throw new ServiceError(502, 'paypal_auth_failed', 'PayPal returned an unreadable authentication response.'); }
   if (!token?.access_token) throw new ServiceError(502, 'paypal_auth_failed', 'PayPal did not confirm the connection.');
+  // Reuse the token within this isolate until shortly before PayPal expires it.
+  const lifetime = Number(token.expires_in);
+  if (Number.isFinite(lifetime) && lifetime > 120) cachedToken = {key, value: token.access_token, until: Date.now() + (Math.min(lifetime, 8 * 3600) - 60) * 1000};
   return token.access_token;
 }
 
@@ -63,14 +70,20 @@ async function logPayPalFailure(response: Response, path: string, method: string
 }
 
 export async function paypal(path: string, method = 'GET', body?: unknown, key?: string) {
-  const token = await paypalToken();
   let response: Response;
-  try {
-    response = await fetch(paypalBase() + path, {
-      method, headers: {Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', Prefer: 'return=representation', ...(key ? {'PayPal-Request-Id': key} : {})},
-      body: body === undefined ? undefined : JSON.stringify(body), redirect: 'manual', signal: AbortSignal.timeout(25000)
-    });
-  } catch { throw new ServiceError(504, 'paypal_outcome_unknown', 'The payment status could not be confirmed. Check your order before paying again.'); }
+  for (let attempt = 0; ; attempt++) {
+    const token = await paypalToken();
+    try {
+      response = await fetch(paypalBase() + path, {
+        method, headers: {Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', Prefer: 'return=representation', ...(key ? {'PayPal-Request-Id': key} : {})},
+        body: body === undefined ? undefined : JSON.stringify(body), redirect: 'manual', signal: AbortSignal.timeout(25000)
+      });
+    } catch { throw new ServiceError(504, 'paypal_outcome_unknown', 'The payment status could not be confirmed. Check your order before paying again.'); }
+    // PayPal rejects an expired or revoked token before processing the request, so one retry is safe.
+    if (response.status !== 401 || attempt) break;
+    clearPayPalToken();
+    await response.body?.cancel();
+  }
   if (!response.ok) {
     await logPayPalFailure(response, path, method);
     throw new ServiceError(502, 'paypal_error', 'PayPal could not complete this request. No activation has been confirmed.');
@@ -81,10 +94,15 @@ export async function paypal(path: string, method = 'GET', body?: unknown, key?:
   }
 }
 
+// Short-lived per-isolate snapshot so bursts of checkouts do not each hit the provider.
+let providerSnapshot: {until: number; value: Promise<unknown[]>} | undefined;
+export function clearProviderSnapshot() {providerSnapshot = undefined;}
 export async function createCheckout(input: {devices: number; months: number; email: string; name: string; lineId?: number}, origin: string) {
   if (!paypalReady()) throw new ServiceError(503, 'checkout_unavailable', 'Checkout is being connected. No payment has been taken.');
   if (liveFulfillment(settings().PAYPAL_MODE)) {
-    const [account, prices] = await Promise.all([bunny('/account'), bunny('/prices')]) as any[];
+    if (!providerSnapshot || providerSnapshot.until < Date.now()) providerSnapshot = {until: Date.now() + 5000, value: Promise.all([bunny('/account'), bunny('/prices')])};
+    const snapshot = providerSnapshot;
+    const [account, prices] = await snapshot.value.catch(error => {if (providerSnapshot === snapshot) providerSnapshot = undefined; throw error;}) as any[];
     if (!portalReady(account?.site, settings().CUSTOMER_PORTAL_URL, settings().CUSTOMER_PORTAL_PRIMARY_URL)) throw new ServiceError(503, 'portal_not_ready', 'The customer hub is being connected. Please contact support before paying.');
     if (!input.lineId && account.site.email_ready !== true) throw new ServiceError(503, 'invitations_not_ready', 'Customer invitations are being connected. Please contact support before paying.');
     let cost: unknown;
@@ -161,10 +179,12 @@ export async function captureCheckout(id: string, token: string) {
   if (row.kind === 'renew' && row.line_id && ['created', 'pending'].includes(row.state)) await (await import('./subscriptions.ts')).assertPayOnceAllowed(row.line_id);
   const lock = await db().prepare("UPDATE orders SET state='capturing' WHERE id=? AND state IN ('created','pending')").bind(id).run();
   if (lock.meta.changes !== 1) return status(id);
+  let captureSent = false;
   try {
     let result = await paypal('/v2/checkout/orders/' + token);
     verifiedOrder(row, result);
     if (result.status === 'APPROVED') {
+      captureSent = true;
       result = await paypal('/v2/checkout/orders/' + token + '/capture', 'POST', {}, 'capture-' + row.id);
       // Capture responses can omit purchase-unit metadata. Read the canonical
       // order before validating the stored reference and charging the wallet.
@@ -177,6 +197,13 @@ export async function captureCheckout(id: string, token: string) {
     }
     return await fulfill(row, result);
   } catch (e) {
+    // PayPal was unavailable before any capture request: release the lock so the
+    // return page or approval webhook can retry instead of stranding the approval.
+    if (!captureSent && e instanceof ServiceError && e.code.startsWith('paypal_')) {
+      const released = await db().prepare("UPDATE orders SET state=? WHERE id=? AND state='capturing'").bind(row.state, id).run();
+      if (released.meta.changes !== 1) return status(id);
+      throw e;
+    }
     const changed = await db().prepare("UPDATE orders SET state='needs_review',error=? WHERE id=? AND state='capturing'").bind(e instanceof ServiceError ? e.code : 'capture_not_verified', id).run();
     if (changed.meta.changes !== 1) return status(id);
     throw e;

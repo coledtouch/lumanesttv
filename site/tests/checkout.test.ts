@@ -13,7 +13,7 @@ const hooks = registerHooks({
     return next(specifier, context);
   }
 });
-const {createCheckout, captureCheckout, fulfill, webhook, paypalReady, setupPayPalWebhook} = await import('../lib/paypal.ts');
+const {createCheckout, captureCheckout, fulfill, webhook, paypalReady, setupPayPalWebhook, clearProviderSnapshot} = await import('../lib/paypal.ts');
 const {bunny} = await import('../lib/mybunny.ts');
 hooks.deregister();
 
@@ -24,6 +24,7 @@ let http: (url: string, init: RequestInit) => Promise<Response>;
 let requests: {url: string; init: RequestInit}[];
 
 test.beforeEach(() => {
+  clearProviderSnapshot();
   sqlite = new DatabaseSync(':memory:');
   sqlite.exec('CREATE TABLE orders (id TEXT PRIMARY KEY, paypal_id TEXT UNIQUE, email TEXT, name TEXT, kind TEXT, line_id INTEGER, devices INTEGER, months INTEGER, amount TEXT, state TEXT, created INTEGER, attempted INTEGER, capture_id TEXT, fulfilled_line_id INTEGER, error TEXT)');
   sqlite.exec('CREATE TABLE subscriptions (id TEXT PRIMARY KEY, line_slot INTEGER UNIQUE)');
@@ -141,6 +142,7 @@ test('an approved portal alias still requires customer invitations and sufficien
   runtime.__checkoutEnv.CUSTOMER_PORTAL_URL = 'https://portal.lumanest.tv';
   runtime.__checkoutEnv.CUSTOMER_PORTAL_PRIMARY_URL = 'https://tv.lumanest.tv';
   for (const [emailReady, balance, code] of [[false, 213.5, 'invitations_not_ready'], [true, 1, 'activation_unavailable']] as const) {
+    clearProviderSnapshot();
     http = async url => {
       if (url.endsWith('/account')) return Response.json({data: {balance, site: {status: 'approved', address: 'https://tv.lumanest.tv', email_ready: emailReady}}});
       if (url.endsWith('/prices')) return Response.json({data: {new_line: [{devices: 1, months: 12, price: 85}]}});
@@ -221,12 +223,43 @@ test('a signed completed webhook recovers a capture timeout before activation', 
     return defaultHttp(url, init);
   };
   await assert.rejects(captureCheckout(order.id, order.paypal_id), {code: 'paypal_outcome_unknown'});
-  assert.equal(saved().state, 'needs_review');
+  // Nothing was captured yet, so the order is released for a retry rather than stranded in review.
+  assert.equal(saved().state, 'created');
   assert.equal(saved().attempted, null);
   http = defaultHttp;
   await webhook(completedEvent(), signedHeaders());
   await webhook(completedEvent(), signedHeaders());
   assert.equal(saved().state, 'fulfilled');
+  assert.equal(lineWrites().length, 1);
+});
+
+test('a capture timeout after the capture request needs review', async () => {
+  const order = seed();
+  const defaultHttp = http;
+  http = async (url, init) => {
+    if (url.endsWith('/v2/checkout/orders/PAYPALORDER')) return Response.json(payment('APPROVED'));
+    if (url.endsWith('/capture')) throw new Error('Simulated timeout');
+    return defaultHttp(url, init);
+  };
+  await assert.rejects(captureCheckout(order.id, order.paypal_id), {code: 'paypal_outcome_unknown'});
+  assert.equal(saved().state, 'needs_review');
+});
+
+test('a PayPal outage before capture leaves the approval retryable', async () => {
+  const order = seed();
+  const defaultHttp = http;
+  let down = true;
+  http = async (url, init) => {
+    if (down && url.endsWith('/v2/checkout/orders/PAYPALORDER')) return new Response('{}', {status: 503});
+    if (url.endsWith('/v2/checkout/orders/PAYPALORDER')) return Response.json(payment(captured ? 'COMPLETED' : 'APPROVED'));
+    if (url.endsWith('/capture')) {captured = true; return Response.json(payment());}
+    return defaultHttp(url, init);
+  };
+  let captured = false;
+  await assert.rejects(captureCheckout(order.id, order.paypal_id), {code: 'paypal_error'});
+  assert.equal(saved().state, 'created');
+  down = false;
+  assert.equal((await captureCheckout(order.id, order.paypal_id)).state, 'fulfilled');
   assert.equal(lineWrites().length, 1);
 });
 
@@ -358,4 +391,25 @@ test('webhook setup refuses insecure or unconfirmed subscriptions', async () => 
     return defaultHttp(url, init);
   };
   await assert.rejects(setupPayPalWebhook('https://lumanest.tv'), {code: 'paypal_response_invalid'});
+});
+
+test('PayPal access tokens are reused until expiry and refreshed after a rejection', async () => {
+  const {paypal, clearPayPalToken} = await import('../lib/paypal.ts');
+  clearPayPalToken();
+  let tokens = 0, rejectNext = false;
+  http = async url => {
+    if (url.endsWith('/v1/oauth2/token')) return Response.json({access_token: 'token-' + ++tokens, expires_in: 32400});
+    if (url.endsWith('/v2/checkout/orders/PAYPALORDER')) {
+      if (rejectNext) {rejectNext = false; return new Response('{}', {status: 401});}
+      return Response.json(payment());
+    }
+    throw new Error('Unexpected mock HTTP request: ' + url);
+  };
+  await paypal('/v2/checkout/orders/PAYPALORDER');
+  await paypal('/v2/checkout/orders/PAYPALORDER');
+  assert.equal(tokens, 1);
+  rejectNext = true;
+  assert.equal((await paypal('/v2/checkout/orders/PAYPALORDER')).id, 'PAYPALORDER');
+  assert.equal(tokens, 2);
+  clearPayPalToken();
 });

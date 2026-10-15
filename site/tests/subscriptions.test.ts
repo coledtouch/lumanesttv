@@ -31,7 +31,7 @@ hooks.deregister();
 
 const nativeFetch = globalThis.fetch, nativeNow = Date.now;
 const origin = 'https://lumanest.tv', username = 'subscription-test-line', password = 'private-line-password';
-let sqlite: DatabaseSync, now: number, line: any, plans: Map<string, any>, subscriptions: Map<string, any>, transactions: Map<string, any[]>, orders: Map<string, any>, requests: {url: string; method: string; body: any; key: string | null}[], renewals: string[], suspendFail: boolean, renewalOutcome: boolean, scheduleDrift: boolean, webhookEvents: string[];
+let sqlite: DatabaseSync, now: number, line: any, plans: Map<string, any>, subscriptions: Map<string, any>, transactions: Map<string, any[]>, orders: Map<string, any>, requests: {url: string; method: string; body: any; key: string | null}[], renewals: string[], suspendFail: boolean, renewalOutcome: boolean, scheduleDrift: boolean, webhookEvents: string[], createFail = false;
 function plusMonths(value: string, months: number) {const date = new Date(value); date.setUTCMonth(date.getUTCMonth() + months); return date.toISOString();}
 function database() {
   return {prepare(sql: string) {
@@ -41,6 +41,7 @@ function database() {
   }};
 }
 test.beforeEach(async () => {
+  createFail = false;
   now = nativeNow(); Date.now = () => now;
   sqlite = new DatabaseSync(':memory:');
   for (const file of readdirSync(new URL('../drizzle/', import.meta.url)).filter(file => file.endsWith('.sql')).sort()) sqlite.exec(readFileSync(new URL('../drizzle/' + file, import.meta.url), 'utf8').replaceAll('--> statement-breakpoint', ''));
@@ -61,6 +62,7 @@ test.beforeEach(async () => {
     if (url.pathname === '/v1/catalogs/products') return Response.json({id: 'PROD-TEST42'});
     if (url.pathname === '/v1/billing/plans' && method === 'POST') {const id = 'P-TEST' + String(plans.size + 1).padStart(6, '0'); plans.set(id, {id, ...body}); return Response.json({id});}
     if (url.pathname.startsWith('/v1/billing/plans/')) return Response.json(plans.get(url.pathname.split('/').pop()!));
+    if (url.pathname === '/v1/billing/subscriptions' && method === 'POST' && createFail) return new Response('{}', {status: 500});
     if (url.pathname === '/v1/billing/subscriptions' && method === 'POST') {
       const id = 'I-TEST' + String(subscriptions.size + 1).padStart(6, '0'); subscriptions.set(id, {id, plan_id: body.plan_id, custom_id: body.custom_id, start_time: body.start_time, status: 'APPROVAL_PENDING', plan_overridden: false, billing_info: {next_billing_time: body.start_time}}); transactions.set(id, []);
       return Response.json({id, links: [{rel: 'approve', href: 'https://www.paypal.com/webapps/billing/subscriptions?ba_token=' + id}]});
@@ -133,6 +135,13 @@ test('recurring stays unavailable until webhook catalog binding is confirmed', a
   const result = await call(billing, '/api/player/renew/subscription', undefined, auth.cookie); assert.equal(result.data.available, false); assert.equal(result.data.pay_once_available, true);
   assert.equal((await call(enroll, '/api/player/renew/subscription', {months: 3, email: 'receipt@example.test', quoteToken: auth.data.quote_token, consent: true}, auth.cookie)).response.status, 503);
   assert.equal(subscriptions.size, 0);
+});
+test('a rejected enrollment request releases the line for a later enrollment or renewal', async () => {
+  await ready(); const auth = await signed(); createFail = true;
+  assert.equal((await call(enroll, '/api/player/renew/subscription', {months: 3, email: 'receipt@example.test', quoteToken: auth.data.quote_token, consent: true}, auth.cookie)).response.status, 502);
+  assert.deepEqual({...sqlite.prepare('SELECT state,line_slot FROM subscriptions').get()}, {state: 'CANCELLED', line_slot: null});
+  createFail = false;
+  assert.equal((await call(enroll, '/api/player/renew/subscription', {months: 3, email: 'receipt@example.test', quoteToken: auth.data.quote_token, consent: true}, auth.cookie)).response.status, 200);
 });
 test('enrollment requires explicit consent, authentic line and unchanged sealed paid-through date', async () => {
   await ready(); const auth = await signed();
