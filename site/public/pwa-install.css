@@ -1,11 +1,20 @@
-#lumanest-install{position:relative;display:grid;grid-template-columns:1fr auto auto;align-items:center;justify-items:end;gap:10px;margin:12px clamp(16px,4vw,48px);font:13px/1.6 system-ui,sans-serif;color:#f8f5ee}
+#lumanest-install{position:relative;font:13px/1.6 system-ui,sans-serif;color:#f8f5ee}
 #lumanest-install[hidden]{display:none}
 #lumanest-install button{font:inherit;cursor:pointer}
-#lumanest-install>button{display:flex;align-items:center;gap:8px;max-width:100%;border:1px solid #8e67be;background:#21172f;color:#fff;border-radius:999px;padding:10px 15px;box-shadow:0 4px 18px #0003}
-#lumanest-install button:focus-visible{outline:3px solid #c8a8fa;outline-offset:4px}
-#lumanest-install-dialog{grid-column:1/-1;box-sizing:border-box;width:100%;max-width:352px;padding:21px;background:#21172f;border:1px solid #6b4c87;border-radius:14px;box-shadow:0 8px 35px #0005}
+#lumanest-install button:focus-visible{outline:3px solid #c4b5fd;outline-offset:3px}
+#lumanest-install button:disabled{cursor:wait;opacity:.7}
+#lumanest-install-dialog{position:absolute;font:13px/1.6 system-ui,sans-serif;z-index:60;box-sizing:border-box;width:min(340px,calc(100vw - 24px));padding:20px;background:#21172f;border:1px solid #6b4c87;border-radius:14px;box-shadow:0 12px 40px #0006;text-align:left}
 #lumanest-install-dialog[hidden]{display:none}
-#lumanest-install-dialog h2{margin:0 0 10px;font-size:18px;line-height:1.3}
-#lumanest-install-dialog p{margin:0 0 15px;color:#e0d6ec}
+#lumanest-install-dialog h2{margin:0 0 8px;font-size:17px;line-height:1.3;letter-spacing:-.2px;color:#fff}
+#lumanest-install-dialog p{margin:0 0 14px;color:#e0d6ec}
 #lumanest-install-dialog button{background:#7c3aed;color:#fff;border:0;border-radius:8px;padding:7px 13px}
-#lumanest-install>.lumanest-install-dismiss{display:grid;place-items:center;width:36px;height:36px;border:1px solid #5d4775;background:#21172f;color:#e0d6ec;border-radius:50%;font-size:18px;line-height:1}
+#lumanest-install.lumanest-install-inline{display:inline-flex;align-items:center;font:inherit;color:inherit}
+.lumanest-install-inline>.lumanest-install-button{background:none;border:0;padding:6px 2px;color:inherit;text-decoration:underline;text-decoration-color:#7d6a96;text-underline-offset:5px}
+.lumanest-install-inline>.lumanest-install-button:hover{color:#d7c8fc}
+.lumanest-install-inline #lumanest-install-dialog{top:calc(100% + 14px);right:0}
+#lumanest-install.lumanest-install-banner{position:fixed;z-index:60;left:12px;right:12px;bottom:max(12px,env(safe-area-inset-bottom));display:flex;align-items:center;gap:10px;box-sizing:border-box;padding:10px 10px 10px 16px;background:#141224;border:1px solid #4a3c5b;border-radius:14px;box-shadow:0 10px 30px #0004}
+.lumanest-install-text{flex:1;min-width:0;margin:0;font-size:13px;line-height:1.4;color:#f8f5ee}
+.lumanest-install-banner>.lumanest-install-button{flex:0 0 auto;border:0;border-radius:8px;background:#7c3aed;color:#fff;padding:8px 14px;font-weight:600}
+.lumanest-install-banner>.lumanest-install-dismiss{flex:0 0 auto;display:grid;place-items:center;width:36px;height:36px;border:0;background:none;color:#c4b5fd;border-radius:50%;font-size:20px;line-height:1}
+.lumanest-install-banner #lumanest-install-dialog{bottom:calc(100% + 10px);left:0;width:100%}
+html.lumanest-install-open body::after{content:"";display:block;height:84px;background:var(--lumanest-install-fill,transparent)}

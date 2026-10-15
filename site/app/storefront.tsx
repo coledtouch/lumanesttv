@@ -2,14 +2,39 @@
 
 import {useEffect, useRef, useState, type FormEvent, type KeyboardEvent} from 'react';
 import {plans, periods} from '../lib/plans';
+import LoginExplainer from './login-explainer';
+import {SiteFooter, SiteHeader} from './site-chrome';
 
 type Availability = 'checking' | 'available' | 'unavailable' | 'error';
 
+const money = (value: number) => '$' + (Number.isInteger(value) ? String(value) : value.toFixed(2));
+const monthly = (price: number, months: number) => money(Math.round(price / months * 100) / 100);
+const starter = plans.reduce((low, item) => item.prices[0] < low.prices[0] ? item : low, plans[0]);
+const icon = {
+  tv: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>,
+  stick: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="11" rx="2"/><path d="M12 14v2"/><rect x="9" y="16" width="6" height="5" rx="1"/></svg>,
+  browser: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 9h20M6 6.5h.01M9 6.5h.01"/></svg>,
+  phone: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M11 18h2"/></svg>,
+  laptop: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="4" width="16" height="11" rx="1.5"/><path d="M2 19h20"/></svg>,
+  lock: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>,
+  once: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg>,
+  mail: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg>,
+};
+const worksOn: [string, string, keyof typeof icon, string][] = [
+  ['android', 'Android TV / Google TV', 'tv', 'TV app'],
+  ['android', 'Amazon Fire TV', 'stick', 'TV app'],
+  ['lg', 'LG webOS', 'tv', 'Developer install'],
+  ['browser', 'Any web browser', 'browser', 'No install needed'],
+  ['samsung', 'Samsung TV', 'tv', 'App temporarily unavailable'],
+];
+const included = ['Live channels, with your channel choices', 'Movies and series to browse', 'The web player in your browser', 'TV app setup for Android TV, Google TV, Fire TV and LG webOS', 'Online renewals and subscription management'];
+const guide = [['101', 'Evening news', 62], ['102', 'Nature hour', 35], ['103', 'Movie night', 48]] as const;
+
 const questions = [
-  ['What are simultaneous screens?', 'Lite supports one device watching at a time, Family two, Premium three, and Titan four. You can choose the plan that fits how your household watches.'],
+  ['What are simultaneous screens?', 'A screen is any device watching at the same time. For example, a TV, a phone and a laptop watching at once count as three screens. ' + plans.map(item => item.name + ' allows ' + ['one', 'two', 'three', 'four'][item.devices - 1]).join(', ').replace(/, ([^,]*)$/, ' and $1') + '.'],
   ['How do I renew?', 'Open Renew subscription and sign in with your line username and password. Choose 3, 6 or 12 months and pay once on PayPal. When available for your line, you can also choose optional auto-renew and explicitly enroll on PayPal. Your existing line is extended after each confirmed payment. You can turn off future automatic payments in your renewal settings or PayPal.'],
   ['How do I set up my TV app?', 'Your customer hub provides the server address, line username, and setup details. Choose your device on our setup page for installation help. Keep your line credentials private.'],
-  ['Is the price monthly?', 'The price is the total for the selected 3, 6 or 12 month period, in USD. The monthly equivalent is shown for comparison. New plans and pay-once renewals have one payment. Optional auto-renew charges the displayed total every selected period and requires your separate PayPal agreement.'],
+  ['Is the price monthly?', 'No. You pay the total for the selected 3, 6 or 12 month period, in USD. The monthly figure on each plan is shown for comparison only. New plans and pay-once renewals have one payment. Optional auto-renew charges the displayed total every selected period and requires your separate PayPal agreement.'],
   ['Can I add more screens?', 'Device upgrades are available up to four screens. Their price depends on your line and remaining time; request a quote from your customer hub before paying.'],
 ];
 
@@ -20,10 +45,8 @@ export default function Storefront({portal, ready, support}: {portal: string; re
   const [error, setError] = useState('');
   const [availability, setAvailability] = useState<Availability>('checking');
   const [availabilityAttempt, setAvailabilityAttempt] = useState(0);
-  const [menuOpen, setMenuOpen] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const submittingRef = useRef(false);
-  const menuToggleRef = useRef<HTMLButtonElement>(null);
   const supportEmail = support || 'support@lumanest.tv';
   const plan = selected === null ? null : plans[selected];
 
@@ -63,13 +86,6 @@ export default function Storefront({portal, ready, support}: {portal: string; re
     window.addEventListener('pageshow', restore);
     return () => window.removeEventListener('pageshow', restore);
   }, []);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const close = (event: globalThis.KeyboardEvent) => {if (event.key === 'Escape') {setMenuOpen(false); menuToggleRef.current?.focus();}};
-    document.addEventListener('keydown', close);
-    return () => document.removeEventListener('keydown', close);
-  }, [menuOpen]);
 
   function closeCheckout() {
     if (!submittingRef.current) setSelected(null);
@@ -114,27 +130,21 @@ export default function Storefront({portal, ready, support}: {portal: string; re
   }
 
   return <div className="storefront">
-    <a className="skip-link" href="#main-content">Skip to content</a>
-    <header className="site-header">
-      <a href="/" aria-label="LumaNest TV home"><img className="logo" src="/logo.png" alt="LumaNest TV" width="204" height="64"/></a>
-      <button ref={menuToggleRef} className="mobile-menu-toggle" aria-expanded={menuOpen} aria-controls="primary-navigation" onClick={() => setMenuOpen(!menuOpen)}>{menuOpen ? 'Close' : 'Menu'}<span aria-hidden="true">{menuOpen ? '×' : '☰'}</span></button>
-      <nav id="primary-navigation" className={menuOpen ? 'is-open' : ''} aria-label="Main navigation" onClick={() => setMenuOpen(false)}>
-        <a href="#plans">Plans</a><a href="/watch">Watch now</a><a href="/renew">Renew</a><a href="/apps">Set up my TV</a><a href={'mailto:' + supportEmail}>Help</a>
-        <a className="nav-cta" href={portal || '#customer-access'}>Customer sign in <span aria-hidden="true">↗</span></a>
-      </nav>
-    </header>
+    <SiteHeader portal={portal}/>
     <main id="main-content">
       <section className="hero" aria-labelledby="hero-title">
         <div className="hero-copy">
           <p className="eyebrow"><i className="status-dot" aria-hidden="true"/> YOUR EVENING. YOUR CHANNEL.</p>
           <h1 id="hero-title">Make yourself<br/>at <em>home.</em></h1>
-          <p className="intro">Settle in. Your next favorite starts here.</p>
-          <p className="hero-detail">Live channels, movies, and series. Watch in your browser or connect your TV, with a plan that fits your home.</p>
+          <p className="intro">Live channels, movies and series on your TV app or right in your browser — from <strong>{money(starter.prices[0])}</strong> for {periods[0]} months.</p>
+          <p className="hero-detail">Pay once with PayPal. As soon as your line is ready, your customer hub shows your line login, so you can press play in the web player or connect your TV.</p>
           <div className="actions"><a className="button primary" href="#plans">Find your plan <span aria-hidden="true">↗</span></a><a href="/watch" className="text-link">Already a customer? Watch now <span aria-hidden="true">↗</span></a></div>
-          <div className="hero-note"><span>1–4 simultaneous screens</span><span>Pay once to get started</span></div>
+          <div className="hero-note"><span>1–4 simultaneous screens</span><span>About {monthly(starter.prices[0], periods[0])}/mo on {starter.name}</span></div>
         </div>
-        <div className="hero-art" role="img" aria-label="A cozy room with a television, sofa, and moonlit window">
-          <div className="art-label">THE NIGHT IS YOURS <span>● LIVE / ON DEMAND</span></div><div className="moon"/><div className="window-frame"><i/><i/></div><div className="landscape"><div className="ridge back"/><div className="ridge front"/></div><div className="tv-frame"><div className="tv-screen"><div className="screen-orbit">▶</div><p>Your next favorite.</p></div></div><div className="lamp"><i/></div><div className="sofa"/><div className="art-caption"><span>PRESS PAUSE ON THE DAY.</span><span>LumaNest / 01</span></div>
+        <div className="hero-art" role="img" aria-label="A cozy room with a sofa, a moonlit window and a television showing a channel guide">
+          <div className="art-label" aria-hidden="true">THE NIGHT IS YOURS <span>● LIVE / ON DEMAND</span></div><div className="moon"/><div className="window-frame"><i/><i/></div><div className="landscape"><div className="ridge back"/><div className="ridge front"/></div>
+          <div className="tv-frame" aria-hidden="true"><div className="tv-screen tv-guide"><div className="guide-bar"><span><i/>LIVE</span><span>TONIGHT</span></div>{guide.map(([number, title, progress], index) => <div key={number} className={'guide-row' + (index === 2 ? ' is-now' : '')}><b>{number}</b><span>{title}{index === 2 && <small>▶ Now playing</small>}</span><em><i style={{width: progress + '%'}}/></em></div>)}</div></div>
+          <div className="lamp"><i/></div><div className="sofa"/><div className="art-caption"><span>PRESS PAUSE ON THE DAY.</span><span>LumaNest / 01</span></div>
         </div>
       </section>
 
@@ -143,22 +153,26 @@ export default function Storefront({portal, ready, support}: {portal: string; re
         <a href="/watch"><small>READY TO WATCH?</small><h2>Press play</h2><p>Sign in with your line login and open the web player.</p><span>Watch now <b aria-hidden="true">↗</b></span></a>
         <a href="/apps"><small>MADE FOR YOUR SOFA</small><h2>Connect your TV</h2><p>Get installation steps for your device.</p><span>Start setup <b aria-hidden="true">↗</b></span></a>
       </section>
-      <div className="strip"><span>LIVE CHANNELS</span><b aria-hidden="true">✦</b><span>MOVIES & SERIES</span><b aria-hidden="true">✦</b><span>YOUR CHANNEL CHOICES</span><b aria-hidden="true">✦</b><span>EASY RENEWALS</span></div>
+      <section className="works-on" aria-labelledby="works-on-title">
+        <h2 id="works-on-title">Works on</h2>
+        <ul>{worksOn.map(([id, name, glyph, note]) => <li key={name} className={id === 'samsung' ? 'is-paused' : ''}><a href={'/apps#' + id}><span className="works-icon" aria-hidden="true">{icon[glyph]}</span><span><strong>{name}</strong><small>{note}</small></span></a></li>)}</ul>
+      </section>
 
       <section className="section plans-section" id="plans" aria-labelledby="plans-title">
         <div className="section-top">
           <div><p className="eyebrow">A PLAN FOR YOUR PLACE</p><h2 id="plans-title">More screens.<br/>Same cozy feeling.</h2></div>
-          <div className="plan-length"><p className="muted">Pick your subscription length.<br/>All prices are the full total in USD.</p><div className="periods" role="group" aria-label="Subscription length">{periods.map((months, index) => <button key={months} aria-pressed={period === index} onClick={() => setPeriod(index)}>{months} months{months === 12 && <small>Best value</small>}</button>)}</div></div>
+          <div className="plan-length"><p className="muted">Pick your subscription length.<br/>You pay the full total once, in USD.</p><div className="periods" role="group" aria-label="Subscription length">{periods.map((months, index) => <button key={months} aria-pressed={period === index} onClick={() => setPeriod(index)}>{months} months{months === 12 && <small>Best value</small>}</button>)}</div></div>
         </div>
-        <p className="sr-only" role="status">Showing total prices for a {periods[period]} month subscription.</p>
-        <div className="plan-grid">{plans.map((item, index) => <article key={item.name} className={'plan-card ' + (index === 1 ? 'featured' : '')} aria-labelledby={'plan-' + item.name}>
-          <div className="plan-top"><span>{item.devices} {item.devices === 1 ? 'SCREEN' : 'SCREENS'}</span>{index === 1 && <small>THE SHARED FAVORITE</small>}</div>
-          <h3 id={'plan-' + item.name}>{item.name}</h3><p className="plan-description">{item.copy}</p>
-          <div className="price">${item.prices[period]}<span> / {periods[period]} months</span></div><p className="equivalent">About ${(item.prices[period] / periods[period]).toFixed(2)} per month</p><hr/>
-          <ul><li><span aria-hidden="true">✓</span> {item.devices} {item.devices === 1 ? 'screen' : 'screens'} at a time</li><li><span aria-hidden="true">✓</span> Your channel choices</li><li><span aria-hidden="true">✓</span> Movies and series browsing</li><li><span aria-hidden="true">✓</span> Subscription management</li></ul>
+        <div className="screens-explainer" role="img" aria-label="Screens are devices watching at the same time. For example, a TV, a phone and a laptop watching at once count as 3 screens."><span aria-hidden="true">{icon.tv}</span><b aria-hidden="true">+</b><span aria-hidden="true">{icon.phone}</span><b aria-hidden="true">+</b><span aria-hidden="true">{icon.laptop}</span><b aria-hidden="true">=</b><strong aria-hidden="true">3 screens</strong><small aria-hidden="true">watching at the same time</small></div>
+        <p className="sr-only" role="status">Showing prices for a {periods[period]} month subscription.</p>
+        <div className="plan-grid">{plans.map((item, index) => <article key={item.name} className={'plan-card ' + (index === 1 ? 'featured' : '')} aria-labelledby={'plan-' + item.devices}>
+          <div className="plan-top"><span><i className="screen-dots" aria-hidden="true">{Array.from({length: item.devices}, (_, dot) => <i key={dot}/>)}</i>{item.devices} {item.devices === 1 ? 'SCREEN' : 'SCREENS'}</span>{index === 1 && <small>THE SHARED FAVORITE</small>}</div>
+          <h3 id={'plan-' + item.devices}>{item.name}</h3><p className="plan-description">{item.copy}</p>
+          <div className="price">{monthly(item.prices[period], periods[period])}<span>/mo</span></div><p className="equivalent"><strong>{money(item.prices[period])}</strong> paid once for {periods[period]} months</p>
           <button className={'button ' + (index === 1 ? 'primary' : 'secondary')} aria-haspopup="dialog" onClick={() => {setSelected(index); setError(''); setAvailability('checking');}}>Choose {item.name} <span aria-hidden="true">↗</span></button>
         </article>)}</div>
-        <p className="plan-reassurance"><span>PayPal checkout</span><span>Paid once for your chosen period</span><span>No recurring charge</span></p>
+        <div className="plan-includes"><h3>Every plan includes</h3><ul>{included.map(item => <li key={item}><span aria-hidden="true">✓</span>{item}</li>)}</ul></div>
+        <ul className="plan-reassurance" aria-label="Checkout and support"><li><span aria-hidden="true">{icon.lock}</span>Secure checkout with PayPal</li><li><span aria-hidden="true">{icon.once}</span>Pay once — no automatic charges unless you choose auto-renew</li><li><span aria-hidden="true">{icon.mail}</span><a href={'mailto:' + supportEmail}>Support by email</a></li></ul>
       </section>
 
       <section className="how section" id="how" aria-labelledby="how-title">
@@ -168,14 +182,17 @@ export default function Storefront({portal, ready, support}: {portal: string; re
 
       <section className="access section" id="customer-access" aria-labelledby="access-title">
         <p className="eyebrow">ALREADY PART OF THE NEST?</p><h2 id="access-title">Your subscription.<br/>One familiar place.</h2><p>Find your line login, manage your subscription, and make yourself at home.</p>
-        <div className="actions access-actions">{portal && <a className="button primary" href={portal}>Open customer hub <span aria-hidden="true">↗</span></a>}<a className="button access-secondary" href="/renew">Renew subscription <span aria-hidden="true">↗</span></a><a className="button access-secondary" href="/watch">Watch now <span aria-hidden="true">↗</span></a><a className="button access-secondary" href="/apps">Set up my TV <span aria-hidden="true">↗</span></a></div>
-        {!portal && <p className="notice">Customer sign-in is being connected. <a href={'mailto:' + supportEmail}>Contact support for help with your subscription.</a></p>}
-        <p className="access-help">Your customer account and your line login may use different passwords.</p>
+        {portal && <div className="actions access-actions"><a className="button primary" href={portal}>Open customer hub <span aria-hidden="true">↗</span></a></div>}
+        {!portal && <p className="notice">The customer hub is being connected. <a href={'mailto:' + supportEmail}>Contact support for help with your subscription.</a></p>}
+        <nav className="access-links" aria-label="More for customers"><a href="/renew">Renew subscription <span aria-hidden="true">↗</span></a><a href="/watch">Watch now <span aria-hidden="true">↗</span></a><a href="/apps">Set up my TV <span aria-hidden="true">↗</span></a></nav>
+        <p className="access-help">Your customer account and your line login may use different passwords. <a href="#logins">Which login goes where?</a></p>
       </section>
+
+      <LoginExplainer portal={portal}/>
 
       <section className="faq section" id="faq" aria-labelledby="faq-title"><div><p className="eyebrow">GOOD TO KNOW</p><h2 id="faq-title">A few things<br/>before you settle in.</h2><a className="text-link faq-support" href={'mailto:' + supportEmail}>Need a hand? Contact support <span aria-hidden="true">↗</span></a></div><div>{questions.map(([question, answer]) => <details key={question}><summary>{question}<span aria-hidden="true">+</span></summary><p>{answer}</p></details>)}</div></section>
     </main>
-    <footer className="site-footer"><div className="footer-brand"><a href="/" aria-label="LumaNest TV home"><img className="logo" src="/logo.png" alt="LumaNest TV" width="204" height="64"/></a><p>Settle in. Stay curious.</p></div><nav aria-label="Footer navigation"><a href={'mailto:' + supportEmail}>Contact support</a><a href="/renew">Renew subscription</a><a href="/watch">Web player</a><a href="/apps">TV setup</a>{portal && <a href={portal}>Customer hub</a>}</nav><span className="copyright">© {new Date().getFullYear()} LumaNest TV</span></footer>
+    <SiteFooter portal={portal} support={supportEmail}/>
 
     {plan && <dialog className="checkout-dialog modal" ref={dialogRef} aria-labelledby="plan-title" aria-describedby="checkout-summary" onKeyDown={trapCheckoutFocus} onCancel={event => {event.preventDefault(); closeCheckout();}} onClick={event => {if (event.target === event.currentTarget) {const bounds = event.currentTarget.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) closeCheckout();}}}>
       <button className="close" type="button" aria-label="Close checkout" disabled={busy} onClick={closeCheckout}>×</button><p className="eyebrow">YOUR NEXT EVENING STARTS HERE</p><h2 id="plan-title">Make room for {plan.name}.</h2>

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import "./storefront.css";
+import "./site-chrome.css";
 import PwaSupport from './pwa-support';
 import {SITE_URL, openGraph, siteDescription, siteTitle} from './site';
 
@@ -9,7 +10,7 @@ export const metadata: Metadata = {
   title: siteTitle,
   description: siteDescription,
   openGraph,
-  twitter: {card: 'summary', title: siteTitle, description: siteDescription, images: ['/logo.png']},
+  twitter: {card: 'summary_large_image', title: siteTitle, description: siteDescription, images: ['/og-image.png']},
   manifest: '/manifest.webmanifest',
   appleWebApp: {capable: true, statusBarStyle: 'black-translucent', title: 'LumaNest TV'},
   icons: {

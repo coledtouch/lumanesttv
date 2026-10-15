@@ -1,12 +1,13 @@
 'use client';
 
 import {useCallback, useEffect, useRef, useState, type FormEvent} from 'react';
-import {ArrowRight, RefreshCw, ShieldCheck} from 'lucide-react';
+import {ArrowRight, ChevronDown, RefreshCw, ShieldCheck} from 'lucide-react';
 import {plans} from '../../lib/plans';
 import {canStartAutoRenew, isBillingOptions, isEnrollmentStatus, recurringTerms, type BillingOptions} from './billing-view';
 import BillingAgreement from './billing-agreement';
 import AutoRenewManagement from './management';
 import styles from './renewal.module.css';
+import {SiteFooter, SiteHeader} from '../site-chrome';
 
 type Offer = {months: 3 | 6 | 12; amount: number; currency: 'USD'; available: boolean};
 type Quote = {
@@ -63,6 +64,7 @@ export default function Renewal({portal, support}: {portal: string; support: str
   const [error, setError] = useState('');
   const [reviewMessage, setReviewMessage] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [guideOpen, setGuideOpen] = useState(true);
   const activeRequest = useRef<AbortController | null>(null);
   const billingRequest = useRef<AbortController | null>(null);
   const submitting = useRef(false);
@@ -141,6 +143,13 @@ export default function Renewal({portal, support}: {portal: string; support: str
     else {setBilling(null); setBillingMode('once'); setBillingError(''); setBillingLoading(false);}
     return () => {billingRequest.current?.abort(); billingRequest.current = null;};
   }, [quote, loadBilling]);
+
+  useEffect(() => {
+    const narrow = window.matchMedia('(max-width: 700px)');
+    const sync = () => setGuideOpen(!narrow.matches);
+    sync(); narrow.addEventListener('change', sync);
+    return () => narrow.removeEventListener('change', sync);
+  }, []);
 
   useEffect(() => {
     const restore = (event: PageTransitionEvent) => {if (event.persisted && submitting.current) {activeRequest.current = null; submitting.current = false; setBusy(null);}};
@@ -278,30 +287,27 @@ export default function Renewal({portal, support}: {portal: string; support: str
   const supportLink = 'mailto:' + support + '?subject=LumaNest%20renewal%20help';
 
   return <div className={styles.shell}>
-    <a className={styles.skip} href="#renew-content">Skip to renewal</a>
-    <header className={styles.header}>
-      <a href="/" aria-label="LumaNest TV home"><img className={styles.logo} src="/logo.png" alt="LumaNest TV" width="204" height="64"/></a>
-      <nav aria-label="Main navigation"><a href="/watch">Watch now</a><a className={styles.hubLink} href={portal}>Customer hub <ArrowRight size={15} aria-hidden="true"/></a></nav>
-    </header>
-    <main id="renew-content" className={styles.main}>
+    <SiteHeader portal={portal} current="/renew"/>
+    <main id="main-content" className={styles.main}>
       <div className={styles.title}><p className={styles.eyebrow}><RefreshCw size={15} aria-hidden="true"/> YOUR NEXT CHAPTER</p><h1>Keep your<br/><em>evenings going.</em></h1><p>Renew your existing subscription in a few simple steps. Your line login and screen allowance stay the same.</p></div>
       <div className={styles.layout}>
-        <aside className={styles.guide} aria-label="How renewal works">
+        <aside className={styles.guide} aria-label="How renewal works"><details className={styles.guideDetails} open={guideOpen} onToggle={event => setGuideOpen(event.currentTarget.open)}>
+          <summary className={styles.guideSummary}><RefreshCw size={16} aria-hidden="true"/>How renewal works<ChevronDown className={styles.guideChevron} size={17} aria-hidden="true"/></summary><div className={styles.guideBody}>
           <div className={styles.guideIcon}><RefreshCw size={26} aria-hidden="true"/></div><h2>More time.<br/>Same familiar place.</h2>
           <ol><li><span aria-hidden="true">1</span><div><strong>Find your subscription</strong><p>Use your line login, even if your subscription has expired.</p></div></li><li><span aria-hidden="true">2</span><div><strong>Choose your time</strong><p>Pick 3, 6 or 12 months. Pay once, or choose optional auto-renew when available.</p></div></li><li><span aria-hidden="true">3</span><div><strong>Approve on PayPal</strong><p>Your line is extended after each confirmed payment. Auto-renew needs your separate agreement on PayPal.</p></div></li></ol>
           <div className={styles.guideNote}><ShieldCheck size={19} aria-hidden="true"/><p>You choose how to pay. Automatic billing stays off unless you explicitly enroll.</p></div>
-        </aside>
+        </div></details></aside>
         <section className={styles.card} aria-busy={managementView ? undefined : checking || !!busy || billingLoading} aria-label={managementView ? 'Automatic payment settings' : checking && !quote ? 'Subscription renewal' : undefined} aria-labelledby={managementView || checking && !quote ? undefined : quote ? 'renew-select-title' : 'renew-login-title'}>
           {managementView ? <AutoRenewManagement supportLink={supportLink} onBack={() => {setManagementView(false); void loadQuote();}}/> : checking && !quote ? <div className={styles.loading} role="status"><span className={styles.spinner} aria-hidden="true"/><p>Checking your renewal session…</p></div> : !quote ? <>
-            <p className={styles.step}>STEP 1 OF 2</p><h2 id="renew-login-title" ref={loginHeading} tabIndex={-1}>Find your subscription.</h2><p className={styles.cardIntro}>Enter the <strong>line username and line password</strong> from your TV/app setup details. Your customer hub email login can be different.</p>
+            <p className={styles.step}>STEP 1 OF 2</p><h2 id="renew-login-title" ref={loginHeading} tabIndex={-1}>Find your subscription.</h2><p className={styles.cardIntro}>Enter the <strong>line username and line password</strong> from your TV/app setup details. Your customer hub email login can be different. <a className={styles.whichLogin} href="/#logins">Which login is this?</a></p>
             <form ref={loginForm} onSubmit={event => void submit(event, 'login')}>
               <label htmlFor="renew-username">Line username<input id="renew-username" name="username" required maxLength={100} autoComplete="username" autoCapitalize="none" spellCheck={false} disabled={disabled}/></label>
               <label htmlFor="renew-password">Line password</label><div className={styles.password}><input id="renew-password" name="password" type={showPassword ? 'text' : 'password'} required maxLength={150} autoComplete="current-password" disabled={disabled}/><button type="button" aria-controls="renew-password" aria-pressed={showPassword} aria-label={showPassword ? 'Hide line password' : 'Show line password'} disabled={disabled} onClick={() => setShowPassword(current => !current)}>{showPassword ? 'Hide' : 'Show'}</button></div>
               {error && <p className={styles.error} role="alert">{error}</p>}
               <button type="submit" className={styles.primary} disabled={disabled}>{busy === 'login' ? 'Checking your line…' : 'View my renewal options'}<ArrowRight size={18} aria-hidden="true"/></button>
             </form>
-            <p className={styles.loginHelp}><a href={portal}>Find my line login in the customer hub <ArrowRight size={14} aria-hidden="true"/></a></p><div className={styles.managementLinks}><button className={styles.textButton} type="button" disabled={disabled} onClick={() => setManagementView(true)}>Manage or cancel auto-renew</button></div><p className={styles.privacy}>Renew an existing line here. <a href="/#plans">New customer? Choose a new plan.</a></p>
-            {error && <button type="button" className={styles.textButton} disabled={disabled} onClick={() => void loadQuote()}>Try checking my session again</button>}
+            <p className={styles.loginHelp}><a href={portal}>Find my line login in the customer hub <ArrowRight size={14} aria-hidden="true"/></a></p>
+            <p className={styles.helpRow}><button className={styles.textButton} type="button" disabled={disabled} onClick={() => setManagementView(true)}>Manage auto-renew</button><span aria-hidden="true">·</span><a href="/#plans">New customer? Choose a plan</a>{error && <><span aria-hidden="true">·</span><button type="button" className={styles.textButton} disabled={disabled} onClick={() => void loadQuote()}>Check my session again</button></>}</p>
           </> : <>
             <div className={styles.cardHeading}><p className={styles.step}>STEP 2 OF 2</p><button type="button" className={styles.textButton} disabled={disabled} onClick={() => void logout()}>{busy === 'logout' ? 'Signing out…' : 'Use a different line'}</button></div>
             <h2 id="renew-select-title" ref={selectionHeading} tabIndex={-1}>A little more time.</h2>
@@ -335,6 +341,6 @@ export default function Renewal({portal, support}: {portal: string; support: str
         </section>
       </div>
     </main>
-    <footer className={styles.footer}><span>© {new Date().getFullYear()} LumaNest TV</span><a href="/">Plans & pricing</a><a href="/apps">TV setup</a><a href={supportLink}>Contact support</a></footer>
+    <SiteFooter portal={portal} support={support}/>
   </div>;
 }

@@ -2,10 +2,11 @@
 
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {isEnrollmentStatus} from '../billing-view';
+import {SiteFooter, SiteHeader} from '../../site-chrome';
 
 type Status = 'checking' | 'active' | 'pending' | 'cancelled' | 'needs_review' | 'sign_in' | 'error' | 'invalid';
 
-export default function Confirmation({support}: {support: string}) {
+export default function Confirmation({portal, support}: {portal: string; support: string}) {
   const [status, setStatus] = useState<Status>('checking');
   const [message, setMessage] = useState('Confirming your automatic payment agreement with PayPal…');
   const [busy, setBusy] = useState(true);
@@ -68,13 +69,14 @@ export default function Confirmation({support}: {support: string}) {
   const supportLink = 'mailto:' + support + '?subject=LumaNest%20automatic%20payment%20help';
   const heading = status === 'active' ? 'Auto-renew is arranged.' : status === 'cancelled' ? 'Auto-renew is off.' : status === 'sign_in' ? 'One step to finish.' : status === 'needs_review' ? 'Let’s check your agreement.' : status === 'invalid' ? 'Let’s find your agreement.' : 'Your payment agreement.';
   return <div className="checkout-result">
-    <header className="checkout-result-header"><a href="/" aria-label="LumaNest TV home"><img className="logo" src="/logo.png" alt="LumaNest TV" width="204" height="64"/></a><a href={supportLink}>Contact support ↗</a></header>
-    <main className="checkout-result-main"><section className="checkout-result-card" aria-labelledby="agreement-result-title">
+    <SiteHeader portal={portal} current="/renew" install={false}/>
+    <main id="main-content" className="checkout-result-main"><section className="checkout-result-card" aria-labelledby="agreement-result-title">
       <p className="eyebrow">YOUR AUTOMATIC PAYMENT AGREEMENT</p><h1 id="agreement-result-title">{heading}</h1>
       <div className="checkout-result-status" data-state={status === 'active' ? 'fulfilled' : status} role="status" aria-live="polite" aria-busy={busy}><p>{busy ? busyMessage : message}</p></div>
       <p>{status === 'cancelled' ? 'Future automatic payments are stopped. Any already-paid viewing time stays available.' : status === 'active' ? 'Your payment agreement schedules future automatic renewals. Your existing line is extended only after each payment is confirmed. Sign in to see the next payment date or stop future charges.' : 'PayPal approval and enrollment confirmation are separate steps. Automatic billing begins after enrollment is finished. Your existing line is extended only after a payment is confirmed.'}</p>
       <div className="actions"><a className="button primary" href="/renew?manage_auto=1">{status === 'sign_in' ? 'Sign in to finish enrollment ↗' : 'Open my payment settings ↗'}</a>{!['active', 'cancelled', 'invalid', 'sign_in'].includes(status) && <button className="button secondary" type="button" disabled={busy} onClick={() => void check()}>{busy ? 'Checking agreement…' : 'Check agreement status ↻'}</button>}<a className="button secondary" href="https://www.paypal.com/myaccount/autopay" target="_blank" rel="noreferrer">Manage payments in PayPal ↗</a></div>
       <p className="checkout-order-reference">Need help with a payment already received? <a href={supportLink}>Contact LumaNest support before paying again.</a></p>
-    </section></main><footer className="checkout-result-footer">LumaNest TV · Settle in. Stay curious.</footer>
+    </section></main>
+    <SiteFooter portal={portal} support={support}/>
   </div>;
 }

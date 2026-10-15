@@ -1,0 +1,43 @@
+/* Shared public header and footer (app/site-chrome.tsx). */
+.chrome-header{position:relative;z-index:20;display:flex;align-items:center;gap:22px;min-height:94px;padding:0 5vw;background:#141224;color:#fff}
+.chrome-header .chrome-home{margin-right:auto;flex:0 0 auto}
+.chrome-header .logo,.chrome-footer .logo{width:204px;height:auto}
+.chrome-header nav{display:flex;align-items:center;gap:24px;font-size:13px;white-space:nowrap}
+.chrome-header nav>a{transition:color .18s,background .18s}
+.chrome-header nav>a:hover,.chrome-install button:hover{color:#ded2ff}
+.chrome-header nav>a[aria-current=page]{color:#d7c8fc;text-decoration:underline;text-decoration-color:#8b5cf6;text-decoration-thickness:2px;text-underline-offset:8px}
+.chrome-header .chrome-hub{display:inline-flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid #726581;border-radius:8px;padding:12px 17px;background:#ffffff08}
+.chrome-header .chrome-hub:hover{background:#ffffff14}
+.chrome-install:empty{display:none}
+.chrome-actions{display:flex;align-items:center;gap:10px}
+.chrome-actions button{min-height:42px;padding:10px 15px;border:1px solid #4a3c5b;border-radius:8px;background:#221b32;color:#fff;font-size:12px;white-space:nowrap}
+.chrome-actions button:hover:not(:disabled){background:#2c2340}
+.chrome-menu-toggle{display:none}
+:is(.chrome-header,.chrome-footer) :is(a,button):focus-visible{outline:3px solid #a78bfa;outline-offset:4px;border-radius:3px}
+.chrome-footer{display:grid;grid-template-columns:minmax(220px,1fr) auto;align-items:center;gap:28px 45px;padding:47px 5vw 30px;background:#141224;color:#b6afc3;font-size:12px}
+.chrome-footer-brand p{margin:17px 0 0;font-family:Georgia,serif;font-size:19px;color:#c2b7ce}
+.chrome-footer nav{display:flex;flex-wrap:wrap;gap:12px 27px;font-size:13px}
+.chrome-footer a:hover{color:#c4a8f5}
+.chrome-copyright{grid-column:1/-1;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px 24px;border-top:1px solid #372b44;padding-top:24px;color:#a699b3}
+.chrome-copyright nav{gap:12px 22px}
+.chrome-copyright a{color:#c9bdd6}
+.chrome-footer a[aria-current=page]{color:#fff;text-decoration:underline;text-underline-offset:4px}
+@media(max-width:1100px){.chrome-header .logo{width:170px}.chrome-header nav{gap:18px}}
+@media(max-width:980px){
+  .chrome-header{min-height:82px;gap:12px}
+  .chrome-header .logo{width:165px}
+  .chrome-menu-toggle{order:2;display:flex;align-items:center;gap:12px;min-height:44px;padding:11px 14px;border:1px solid #665575;border-radius:8px;background:#ffffff08;color:#fff;font-size:13px}
+  .chrome-menu-toggle>span:last-child{font-size:17px;line-height:1}
+  .chrome-actions{order:1}
+  .chrome-header nav{display:none;position:absolute;left:0;right:0;top:100%;flex-direction:column;align-items:stretch;gap:3px;padding:12px 5vw 24px;background:#141224;border-top:1px solid #352840;box-shadow:0 16px 24px #14122420;white-space:normal}
+  .chrome-header nav.is-open{display:flex}
+  .chrome-header nav>a:not(.chrome-hub){display:block;padding:14px 4px;font-size:14px}
+  .chrome-install{padding:8px 4px;font-size:14px}
+  .chrome-header .chrome-hub{margin-top:8px;padding:14px 17px;font-size:14px}
+}
+@media(max-width:800px){.chrome-footer{grid-template-columns:1fr;gap:29px;padding:38px 6vw 28px}.chrome-footer nav{gap:17px 24px}.chrome-footer .logo{width:178px}.chrome-copyright{padding-top:21px}}
+@media(max-width:540px){.chrome-copyright{flex-direction:column;align-items:flex-start}}
+@media(max-width:420px){.chrome-header{padding:0 4vw;gap:10px}.chrome-header .logo{width:140px}.chrome-menu-toggle{padding:10px 12px;gap:10px}.chrome-actions button{padding:9px 11px;font-size:11px}
+  .chrome-header:has(.chrome-actions) .logo{width:120px}
+  .chrome-header:has(.chrome-actions) .chrome-menu-label{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}}
+@media(prefers-reduced-motion:reduce){.chrome-header nav>a{transition:none}}
