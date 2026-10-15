@@ -97,6 +97,12 @@ test('a bare Xtream host is treated as HTTPS', async () => {
   assert.equal((await call('/api/pair/poll', {body: {deviceCode}, worker: 'pairing-bare-host'})).data.account.server, 'https://xtream.lumanest.tv');
 });
 
+test('a Roku pairs and is named on the approval page', async () => {
+  const start = await call('/api/pair/start', {body: {device: 'roku'}, ip: '198.51.100.9'});
+  assert.equal(start.status, 200);
+  assert.equal((await call('/api/player/pair?code=' + start.data.userCode, {method: 'GET', headers: signedIn})).data.device, 'Roku');
+});
+
 test('pairing rejects bad input and limits codes per network', async () => {
   assert.equal((await call('/api/pair/start', {body: {device: 'vizio'}})).status, 400);
   assert.equal((await call('/api/pair/poll', {body: {deviceCode: 'short'}})).status, 400);
