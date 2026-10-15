@@ -1,0 +1,4 @@
+import type {Metadata} from 'next';import {redirect} from 'next/navigation';import {getOwner} from '../../lib/owner-auth';import {settings} from '../../lib/mybunny';import Console from './console';
+export const dynamic='force-dynamic';
+export const metadata:Metadata={title:'Owner console | LumaNest TV',robots:{index:false,follow:false},referrer:'no-referrer'};
+export default async function Manage(){const user=await getOwner();if(!user)redirect('/manage/login');const e=settings();return <Console configured={Boolean(e.MYBUNNY_API_KEY)} ownerConfigured={Boolean(e.ADMIN_USER_ID)||user.method==='password'} paypalConfigured={Boolean(e.PAYPAL_CLIENT_ID&&e.PAYPAL_CLIENT_SECRET)} paypalMode={e.PAYPAL_MODE==='live'?'live':'sandbox'} webhookConfigured={Boolean(e.PAYPAL_WEBHOOK_ID)} loginMethod={user.method}/>}

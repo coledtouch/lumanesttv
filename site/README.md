@@ -1,0 +1,94 @@
+# LumaNest TV website
+
+The first-party LumaNest TV application: landing page, app downloads and setup, customer checkout and renewals, optional recurring billing, owner console, and browser player. It uses React, Vinext/Vite, Cloudflare Workers, D1, and R2. The `cloudflare/` directory also contains the customer portal PWA overlay and the authenticated stream relay.
+
+This source snapshot does not change the live website or its hosting. GitHub Actions validates changes without deploying, processing payments, renewing lines, or connecting to production accounts. GitHub Pages cannot run this application's server routes, database, or stream proxy.
+
+The customer portal and channel selector at the provider's white-label service are external software. Their proprietary source is not included here. The PWA worker adds installation metadata to that existing service; it does not replace it.
+
+## Install and preview
+
+Run these commands from `site/` with Node.js 24 and npm:
+
+```sh
+npm run install:ci
+npm run dev
+```
+
+The portable preview starts on loopback at port 5173. A clean clone defaults to the portable execution profile, including on Linux. Do not copy `.sites-runtime/` from another checkout. `npm run install:ci` installs the locked development and optional dependencies, including the native test/build runtimes.
+
+On Windows on ARM, use an x64 Node.js process and install dependencies using that same process. Workerd/Miniflare tests require a supported native runtime; the CI workflow uses Ubuntu x64 with Node.js 24. Server-side features also require local bindings and private configuration; public pages can be developed without production credentials.
+
+## Check and build
+
+```sh
+npm run typecheck
+npm test
+npm run build
+```
+
+The test runner discovers the TypeScript and JavaScript tests in `tests/` without relying on shell wildcard expansion. Tests use synthetic identities and fake provider/PayPal responses. Runtime tests bundle Workers with esbuild and run them in Miniflare/D1. They do not require production credentials or authorize financial transactions.
+
+The production build writes `dist/client/`, `dist/server/`, and `dist/.openai/`. To preview that built Worker locally:
+
+```sh
+npm start
+```
+
+`npm start` runs Wrangler locally, keeps disposable data in `.wrangler/state`, and does not deploy. Use the URL it prints. Local authentication/bootstrap helpers simulate a hosting identity only on loopback development requests; they are not a production identity provider.
+
+## Configuration and private state
+
+`.openai/hosting.json` retains the portable `DB` and `BUCKET` binding declarations. No live Sites project ID is included. Vite imports this file and the maintained Sites build plugin copies it into the build, so keep it when building this snapshot.
+
+The following environment variable names describe the runtime contract. Supply real values privately in the target hosting environment or an ignored local configuration file. Never commit environment files, credentials, owner recovery codes, provider playlists, customer exports, database dumps, or signing material.
+
+| Names | Purpose |
+| --- | --- |
+| `MYBUNNY_API_KEY` | Server-side upstream reseller API access. |
+| `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_MODE`, `PAYPAL_WEBHOOK_ID` | PayPal account, environment, and verified payment events. |
+| `CHECKOUT_ENABLED` | Explicit gate for customer payment checkout. |
+| `CUSTOMER_PORTAL_URL`, `CUSTOMER_PORTAL_PRIMARY_URL` | Public hub and primary provider connection. |
+| `SUPPORT_EMAIL` | Customer support destination displayed by the application. |
+| `PLAYER_COOKIE_KEY` | Encryption key for player and renewal sessions; requires 64 lowercase hexadecimal characters. |
+| `PLAYER_ALLOWED_HOSTS`, `PLAYER_ALLOWED_HTTP_HOSTS`, `PLAYER_STREAM_ORIGIN_MAP` | Restricted provider stream origins and optional approved origin aliases. |
+| `PLAYER_STREAM_RELAY_URL`, `PLAYER_STREAM_RELAY_KEY` | First-party stream bridge endpoint and shared authentication secret. |
+| `STREAM_RELAY_KEY` | Matching shared secret on the separate relay Worker; requires 64 lowercase hexadecimal characters. |
+| `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | Private operator configuration when deploying the standalone Cloudflare workers. |
+| `ADMIN_USER_ID` | Legacy hosting-owned bootstrap identity only. Keep unset on a standalone deployment; ordinary owner sign-in uses its private D1 credential record. |
+
+The application expects D1 binding `DB` and R2 binding `BUCKET`. Production D1 contains owner credentials/sessions, order and subscription state, payment deduplication, and rate limits. Its contents are not part of this repository. Recurring PayPal agreements and the merchant catalog are external state as well. Preserve or migrate these privately before a hosting cutover; an empty database is not a working replacement for the current owner account or billing records.
+
+First-time owner setup in the retained code depends on the original hosting service's trusted bootstrap identity. A new standalone deployment needs a secure bootstrap implementation or private credential migration. Never accept a visitor-supplied identity header as proof of ownership.
+
+## Database schema changes
+
+Edit `db/schema.ts`, then generate migrations:
+
+```sh
+npm run db:generate
+```
+
+Keep `drizzle/` SQL, snapshots, and its journal together. For a local preview, build first and apply each pending SQL migration in journal order to the local database. For example, the first migration is:
+
+```sh
+node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_mature_donald_blake.sql
+```
+
+Apply each migration only once to that database. This command does not migrate production. Do not commit local database files.
+
+## Downloads and additional Workers
+
+The LG package is in `public/downloads/`. The approved Android APK is served by `/api/tuner` from R2; the source manifest in `lib/tuner.ts` verifies its version, size, and checksum. The APK object itself is not stored in this website directory. Application sources live in the monorepo's `apps/` directory. Changing a download manifest requires a matching approved artifact.
+
+`cloudflare/wrangler.jsonc` describes the PWA overlay, and `cloudflare/stream-relay.wrangler.jsonc` describes the separate stream relay. Their private account IDs have been removed. Configure deployment ownership privately and preserve the existing domains/routes until a tested cutover. The relay uses Cloudflare's TCP socket runtime; the main Sites application calls it over HTTPS. Its destination and request restrictions are intentional.
+
+The browser PWA caches only public offline assets and icons. Customer pages, channel lists, checkout requests, and media remain network-only. Preserve the cancellation tests and the `enable_request_signal`/`request_signal_passthrough` compatibility settings when maintaining the streaming path.
+
+## Files to preserve
+
+- `build/`: maintained Vinext/Sites integration and its upstream license, not generated output.
+- `scripts/build-privacy.mts`: removes private checkout paths from generated diagnostic metadata and rejects remaining build-path leaks.
+- `package-lock.json`, `vendor/`, `drizzle/`, and `tests/`: reproducible dependencies, licenses, schema history, and regression coverage.
+
+Keep generated `dist/`, `.next/`, `.vinext/`, `.wrangler/`, `.sites-runtime/`, `node_modules/`, and TypeScript build-info files out of Git. Do not copy the old checkout's Git history, platform credentials, or generated deployment archives into this repository.

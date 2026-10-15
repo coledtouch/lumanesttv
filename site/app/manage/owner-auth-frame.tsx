@@ -1,0 +1,19 @@
+import type {ReactNode} from 'react';
+import styles from './owner-auth.module.css';
+
+export default function OwnerAuthFrame({children}:{children:ReactNode}) {
+  return <div className={styles.shell}>
+    <header className={styles.header}>
+      <a className={styles.brand} href="/" aria-label="LumaNest TV home"><img src="/logo.png" alt="LumaNest TV"/></a>
+      <a href="/">Return to website ↗</a>
+    </header>
+    <main className={styles.main}>
+      <div className={styles.intro}>
+        <p className={styles.eyebrow}>LumaNest owner access</p>
+        <h1>Your business.<br/>Your <em>space.</em></h1>
+        <p>Manage customers, subscriptions, and payments from your private LumaNest console.</p>
+      </div>
+      <section className={styles.card} aria-label="Owner access">{children}</section>
+    </main>
+  </div>;
+}

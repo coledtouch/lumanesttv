@@ -1,0 +1,2 @@
+import {channelList, PLAYER_EXPIRED_COOKIE} from '../../../../lib/player';import {errorResponse} from '../../../../lib/admin';import {ServiceError} from '../../../../lib/mybunny';
+export async function GET(req:Request){try{return Response.json(await channelList(req),{headers:{'Cache-Control':'no-store'}})}catch(e){const response=errorResponse(e);if(e instanceof ServiceError&&e.status===401)response.headers.set('Set-Cookie',PLAYER_EXPIRED_COOKIE);return response}}

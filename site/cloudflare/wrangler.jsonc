@@ -1,0 +1,13 @@
+{
+  "name": "lumanest-app-support",
+  "main": "lumanest-pwa-worker.mjs",
+  "compatibility_date": "2026-10-14",
+  "compatibility_flags": ["enable_request_signal", "request_signal_passthrough"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {"enabled": false},
+  "routes": [
+    {"pattern": "portal.lumanest.tv/*", "zone_name": "lumanest.tv"},
+    {"pattern": "tv.lumanest.tv/*", "zone_name": "lumanest.tv"}
+  ]
+}

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=1920, initial-scale=1" />
+    <title>Tuner</title>
+    <link rel="stylesheet" href="css/app.css" />
+    <link rel="icon" href="assets/icon.png" />
+    <script src="$WEBAPIS/webapis/webapis.js"></script>
+  </head>
+  <body>
+    <div id="background"></div>
+    <object id="av-player" type="application/avplayer"></object>
+    <video id="html-player" playsinline></video>
+    <object id="dual-object-0" type="application/avplayer"></object>
+    <object id="dual-object-1" type="application/avplayer"></object>
+    <video id="dual-video-0" playsinline></video>
+    <video id="dual-video-1" playsinline></video>
+    <div id="app">
+      <header id="topbar"></header>
+      <main id="main"></main>
+      <div id="player-overlay" class="hidden"></div>
+      <div id="dialog-layer" class="hidden"></div>
+      <div id="toast" class="hidden" role="status" aria-live="polite"></div>
+    </div>
+    <script src="js/data.js"></script>
+    <script src="js/player.js"></script>
+    <script src="js/app.js"></script>
+  </body>
+</html>

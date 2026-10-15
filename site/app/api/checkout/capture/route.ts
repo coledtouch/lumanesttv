@@ -1,0 +1,2 @@
+import {z} from 'zod';import {sameOrigin,errorResponse} from '../../../../lib/admin';import {captureCheckout} from '../../../../lib/paypal';
+export async function POST(req:Request){try{sameOrigin(req);const d=z.object({order:z.string().uuid(),token:z.string().regex(/^[A-Z0-9]{10,40}$/)}).strict().parse(await req.json());return Response.json(await captureCheckout(d.order,d.token),{headers:{'Cache-Control':'no-store'}})}catch(e){return errorResponse(e)}}

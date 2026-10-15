@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=1920, initial-scale=1" />
+    <title>Tuner</title>
+    <link rel="stylesheet" href="css/app.css" />
+    <link rel="icon" href="assets/icon.png" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src http: https:; img-src 'self' data: http: https:; media-src http: https: blob:; object-src 'none'" />
+  </head>
+  <body>
+    <div id="background"></div>
+
+    <video id="html-player" playsinline></video>
+
+
+    <video id="dual-video-0" playsinline></video>
+    <video id="dual-video-1" playsinline></video>
+    <div id="app">
+      <header id="topbar"></header>
+      <main id="main"></main>
+      <div id="player-overlay" class="hidden"></div>
+      <div id="dialog-layer" class="hidden"></div>
+      <div id="toast" class="hidden" role="status" aria-live="polite"></div>
+    </div>
+    <script src="js/data.js"></script>
+    <script src="js/player.js"></script>
+    <script src="js/webos-platform.js"></script><script src="js/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<widget xmlns="http://www.w3.org/ns/widgets" xmlns:tizen="http://tizen.org/ns/widgets"
+        id="https://tuner.tv/widget" version="1.4.8" viewmodes="maximized">
+    <tizen:application id="TunerTv001.Tuner" package="TunerTv001" required_version="2.3" />
+    <name>Tuner</name>
+    <content src="index.html" />
+    <icon src="assets/icon.png" />
+    <access origin="*" subdomains="true" />
+    <tizen:profile name="tv-samsung" />
+    <tizen:privilege name="http://tizen.org/privilege/internet" />
+    <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice" />
+    <tizen:setting screen-orientation="landscape" background-support="disable"
+                   encryption="disable" hwkey-event="enable" />
+    <tizen:content-security-policy>default-src 'self'; script-src 'self' file:; style-src 'self' 'unsafe-inline'; connect-src http: https:; img-src 'self' data: http: https:; media-src 'self' blob: http: https:; object-src 'self'; frame-src 'none'; base-uri 'self'; form-action 'none'</tizen:content-security-policy>
+</widget>

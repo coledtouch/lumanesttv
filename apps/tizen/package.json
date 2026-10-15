@@ -1,0 +1,18 @@
+{
+  "name": "tuner-samsung-tv",
+  "version": "1.4.8",
+  "private": true,
+  "description": "Tuner Samsung Tizen TV widget and local packaging tools",
+  "scripts": {
+    "check": "node tools/check.js",
+    "test": "node --test",
+    "build": "node tools/build.js",
+    "serve": "node tools/serve.js"
+  },
+  "devDependencies": {
+    "acorn": "8.15.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

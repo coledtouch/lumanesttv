@@ -1,0 +1,2 @@
+import {requireAdmin,errorResponse} from '../../../lib/admin';import {db} from '../../../lib/paypal';
+export async function GET(){try{await requireAdmin();const data=await db().prepare('SELECT id,paypal_id,email,kind,line_id,devices,months,amount,state,capture_id,fulfilled_line_id,error,created FROM orders ORDER BY created DESC LIMIT 100').all();return Response.json({data:data.results},{headers:{'Cache-Control':'no-store'}})}catch(e){return errorResponse(e)}}

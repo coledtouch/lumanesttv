@@ -1,0 +1,3 @@
+export const periods=[3,6,12] as const;
+export const plans=[{name:'Lite',devices:1,prices:[35,59,95],copy:'Your personal front-row seat.'},{name:'Family',devices:2,prices:[59,99,159],copy:'Room for two different favorites.'},{name:'Premium',devices:3,prices:[79,139,219],copy:'A little more room to unwind.'},{name:'Titan',devices:4,prices:[99,175,275],copy:'The whole house, in the picture.'}];
+export function retailPrice(devices:number,months:number){const p=plans.find(p=>p.devices===devices);const i=periods.indexOf(months as 3|6|12);if(!p||i<0)throw new Error('Choose 1–4 screens and 3, 6 or 12 months.');return p.prices[i]}

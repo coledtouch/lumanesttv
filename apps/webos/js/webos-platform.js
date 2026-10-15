@@ -1,0 +1,1 @@
+!function(e){"use strict";e.TunerWebOS={exit:function(){return e.PalmSystem&&"function"==typeof e.PalmSystem.close?(e.PalmSystem.close(),!0):(e.close(),!1)}};var n=e.TunerPlayer.create;e.TunerPlayer.create=function(e){return(e=e||{}).nativePlayer=null,n(e)},e.TunerPlayer.createDual=null}(window);

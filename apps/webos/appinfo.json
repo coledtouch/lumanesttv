@@ -1,0 +1,15 @@
+{
+  "id": "tv.lumanest.tuner",
+  "version": "1.0.1",
+  "vendor": "LumaNest TV",
+  "type": "web",
+  "main": "index.html",
+  "title": "Tuner",
+  "icon": "assets/icon.png",
+  "appDescription": "Live TV, movies and series from your own provider account.",
+  "resolution": "1920x1080",
+  "disableBackHistoryAPI": true,
+  "bgColor": "#0e0d18",
+  "splashColor": "#0e0d18",
+  "requiredACG": []
+}
