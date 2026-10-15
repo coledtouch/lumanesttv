@@ -13,7 +13,7 @@ The [Samsung Tizen TV app](../tizen/README.md) provides Live TV, Movies, Series,
 
 ```powershell
 adb connect <TV-IP>:<DEBUG-PORT>
-adb install -r .\Tuner-1.6.0.apk
+adb install -r .\Tuner-1.6.1.apk
 ```
 
 Accept the debugging prompt on the TV the first time. Tuner shows up in your Apps row.
