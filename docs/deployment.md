@@ -18,6 +18,18 @@ Production moved to the independent Cloudflare resources below on October 15, 20
 
 Run the normal build, then `npm run cloudflare:prepare -- --database-id 226b9f80-d3c9-471d-b5b4-c4a0c17f9e9d` from `site/`. This generates a standalone config beside the built server with real resource bindings and no production route. `npm run cloudflare:deploy -- --dry-run` validates it. Runtime secrets/settings are supplied privately and preserved with `--keep-vars`. The `--production` preparation flag is the explicit step that selects the apex custom domain; it does not change portal or relay routes. See [`site/README.md`](../site/README.md#direct-cloudflare-deployment) for staging, cutover, and rollback commands. The framework's original `dist/server/wrangler.json` remains local/managed build configuration with placeholder bindings; use the separate generated `wrangler-cloudflare.json` for direct hosting.
 
+**Routine production deploy** (from `site/`, after the cutover):
+
+```
+npm ci
+npm run build
+npm run cloudflare:prepare -- --database-id 226b9f80-d3c9-471d-b5b4-c4a0c17f9e9d --production
+npx wrangler d1 migrations apply lumanest-tv-production --remote --config dist/server/wrangler-cloudflare.json
+npm run cloudflare:deploy
+```
+
+Always pass `--production` for a live deploy: without it the generated config enables the `workers.dev` address. Apply migrations only when the list shows new files from this checkout. On Windows on ARM, run these with x64 Node 22, because `workerd` has no Windows ARM build.
+
 Existing customer/order records and owner password hashes live in D1. App downloads may live in R2. Neither is included in this repository. Any production data move needs a private backup, restore and verification process. Do not put database exports, payment details or credentials into GitHub.
 
 The approved Android R2 object is `Tuner-1.5.3.apk`, with the size/checksum and custom metadata required by `site/lib/tuner.ts`. Its version remains 1.5.3 during the hosting migration. Historical Android 1.5.2 remains archived in R2. LG's IPK ships with the website's public assets. Native applications continue to run on customers' devices; their full first-party sources remain in `apps/` on GitHub.
