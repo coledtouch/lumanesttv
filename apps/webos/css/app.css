@@ -971,15 +971,15 @@ body.multiview-fullscreen .dual-frames.controls-hidden .dual-frame {
 }
 .settings-side p {
   font-size: 24px;
-  margin: 15px 0;
+  margin: 10px 0;
 }
 .settings-side h2 {
   font-size: 30px;
 }
 .settings-side .local-button {
   font-size: 25px;
-  padding: 20px;
-  margin: 14px 0;
+  padding: 15px 20px;
+  margin: 9px 0;
 }
 body.native-video #background {
   display: none;

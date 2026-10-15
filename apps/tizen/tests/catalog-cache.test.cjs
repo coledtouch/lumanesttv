@@ -114,7 +114,7 @@ async function seed(saved, database) {
 function canonicalIdentity(data, input, options = {}) {
     const normalized = data.normalizeSource(input), ordered = {};
     Object.keys(normalized).sort().forEach(key => { if (!['__proto__', 'constructor', 'prototype'].includes(key)) ordered[key] = normalized[key]; });
-    return JSON.stringify({ schema: 1, source: ordered, zip: options.zip === undefined ? '01608' : String(options.zip == null ? '' : options.zip).trim(), liveFormat: options.liveFormat || normalized.liveFormat || 'm3u8' });
+    return JSON.stringify({ schema: 1, source: ordered, zip: options.zip === undefined ? '01608' : String(options.zip == null ? '' : options.zip).trim(), liveFormat: options.liveFormat || normalized.liveFormat || 'm3u8', lineup: options.usOnly ? 'us' : 'all' });
 }
 
 test('catalog identities match a SHA-256 crypto oracle across UTF-8 and message block boundaries', () => {

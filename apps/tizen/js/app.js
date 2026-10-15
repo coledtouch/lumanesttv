@@ -178,7 +178,7 @@
   }
   function liveCategories() {
     return D.categoryItems
-      ? D.categoryItems(S.cats.live, true)
+      ? D.categoryItems(S.cats.live, true, store.settings.categoryOrder)
       : [
           { id: "__all", name: "All Channels" },
           { id: "__fav", name: "Favorites" },
@@ -1475,6 +1475,40 @@
     );
     side.appendChild(
       button(
+        store.settings.usOnly ? "Channels: USA only" : "Channels: All",
+        "lineup-setting",
+        function () {
+          store.saveSettings({ usOnly: !store.settings.usOnly });
+          connect();
+          renderSettings();
+          focus("lineup-setting");
+          toast(store.settings.usOnly ? "Showing USA channels only." : "Showing all channels on your line.");
+        },
+        "local-button"
+      )
+    );
+    side.appendChild(
+      button(
+        "Category order: " +
+          (store.settings.categoryOrder === "provider"
+            ? "Customer hub"
+            : store.settings.categoryOrder === "az"
+            ? "A to Z"
+            : "Featured"),
+        "category-order-setting",
+        function () {
+          var order = store.settings.categoryOrder;
+          store.saveSettings({
+            categoryOrder: order === "provider" ? "az" : order === "az" ? "featured" : "provider",
+          });
+          renderSettings();
+          focus("category-order-setting");
+        },
+        "local-button"
+      )
+    );
+    side.appendChild(
+      button(
         "Theme: " +
           (store.settings.theme === "black" ? "Black" : "LumaNest"),
         "theme-setting",
@@ -1493,13 +1527,6 @@
         "p",
         "",
         "Arrow keys browse. OK opens or watches. Back returns to tabs. Hold OK on a live channel to save a Favorite. Channel +/− pages the guide."
-      )
-    );
-    side.appendChild(
-      el(
-        "p",
-        "muted",
-        "Movies, Series and audio have no language restriction. Your playlist login stays on this TV."
       )
     );
     side.appendChild(
@@ -1561,7 +1588,7 @@
   }
   function connect(force) {
     if (!store.settings.source) return;
-    var sameCatalog = client && client.catalogIdentity === D.catalogIdentity(store.settings.source, { zip: store.settings.zip });
+    var sameCatalog = client && client.catalogIdentity === D.catalogIdentity(store.settings.source, { zip: store.settings.zip, usOnly: !!store.settings.usOnly });
     stopDual();
     player.stop();
     S.watched = null;
@@ -1585,6 +1612,7 @@
     S.offset = 0;
     client = D.createClient(store.settings.source, {
       zip: store.settings.zip,
+      usOnly: !!store.settings.usOnly,
       onCatalog: function (kind, items, categories) {
         S.catalogs[kind] = items;
         S.cats[kind] = categories;
