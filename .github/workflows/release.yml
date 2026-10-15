@@ -1,0 +1,230 @@
+name: Release
+
+# One tag per app, because each app has its own version:
+#   android-v1.6.0   tizen-v1.4.8   webos-v1.0.1
+# The tag version must match the version in that app's source. The workflow builds
+# the unsigned or development installer, records SHA-256 checksums and opens a DRAFT
+# release. The owner reviews the draft, adds any signed installer, then publishes it.
+on:
+  push:
+    tags:
+      - 'android-v*'
+      - 'tizen-v*'
+      - 'webos-v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      platform: ${{ steps.tag.outputs.platform }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - name: Parse the release tag
+        id: tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$TAG" =~ ^(android|tizen|webos)-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "::error::Release tags look like android-v1.6.0, tizen-v1.4.8 or webos-v1.0.1"
+            exit 1
+          fi
+          echo "platform=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          echo "version=${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+
+  android:
+    needs: prepare
+    if: needs.prepare.outputs.platform == 'android'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: apps/android
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check the tag matches versionName
+        run: |
+          source_version=$(sed -n 's/^ *versionName = "\(.*\)"$/\1/p' app/build.gradle.kts)
+          if [ "$source_version" != "$VERSION" ]; then
+            echo "::error::Tag version $VERSION does not match versionName $source_version"
+            exit 1
+          fi
+      - uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: 'false'
+      - name: Install the target Android SDK
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6
+        with:
+          # Release artifacts are built without restoring any Gradle cache entries.
+          cache-disabled: true
+      - name: Make the checked-in wrapper executable
+        run: chmod +x gradlew
+      - name: Unit tests and unsigned release build
+        # Signing keys never reach CI, so this is always the unsigned release APK.
+        run: ./gradlew --no-daemon testDebugUnitTest assembleRelease
+      - name: Name the unsigned APK
+        run: |
+          mkdir -p "$RUNNER_TEMP/release"
+          cp app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/release/Tuner-$VERSION-UNSIGNED.apk"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-files
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 7
+
+  tizen:
+    needs: prepare
+    if: needs.prepare.outputs.platform == 'tizen'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/tizen
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install the pinned validation dependency
+        run: npm install --ignore-scripts --no-package-lock --no-audit --no-fund
+      - name: Check, test and build the unsigned widget
+        run: |
+          npm run check
+          npm test
+          node tools/build.js "$RUNNER_TEMP/tizen"
+      - name: Check the tag matches the widget version
+        run: |
+          built=$(node -p 'require(process.argv[1]).version' "$RUNNER_TEMP/tizen/build.json")
+          package=$(node -p 'require("./package.json").version')
+          if [ "$built" != "$VERSION" ] || [ "$package" != "$VERSION" ]; then
+            echo "::error::Tag version $VERSION does not match config.xml $built / package.json $package"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/release"
+          cp "$RUNNER_TEMP/tizen/Tuner-$VERSION-tizen-UNSIGNED.wgt" "$RUNNER_TEMP/release/"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-files
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 7
+
+  webos:
+    needs: prepare
+    if: needs.prepare.outputs.platform == 'webos'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/webos
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      # LG's official packager, pinned to an exact release.
+      WEBOS_CLI: '@webos-tools/cli@3.2.6'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install the pinned validation dependency
+        run: npm install --ignore-scripts --no-package-lock --no-audit --no-fund
+      - name: Check, test and stage a clean package
+        run: |
+          npm run check
+          npm test
+          node tools/build.js "$RUNNER_TEMP/webos"
+      - name: Check the tag matches the app version
+        run: |
+          built=$(node -p 'require(process.argv[1]).version' "$RUNNER_TEMP/webos/build.json")
+          package=$(node -p 'require("./package.json").version')
+          if [ "$built" != "$VERSION" ] || [ "$package" != "$VERSION" ]; then
+            echo "::error::Tag version $VERSION does not match appinfo.json $built / package.json $package"
+            exit 1
+          fi
+      - name: Package the development IPK with ares-package
+        run: |
+          npm install --prefix "$RUNNER_TEMP/webos-cli" --ignore-scripts --no-package-lock --no-audit --no-fund "$WEBOS_CLI"
+          staging=$(node -p 'require(process.argv[1]).staging' "$RUNNER_TEMP/webos/build.json")
+          mkdir -p "$RUNNER_TEMP/release"
+          "$RUNNER_TEMP/webos-cli/node_modules/.bin/ares-package" --no-minify -o "$RUNNER_TEMP/release" "$staging"
+          test -f "$RUNNER_TEMP/release/tv.lumanest.tuner_${VERSION}_all.ipk"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-files
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [prepare, android, tizen, webos]
+    # Exactly one build job runs; the other two are skipped by design.
+    if: ${{ !cancelled() && needs.prepare.result == 'success' && !contains(needs.*.result, 'failure') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-files
+          path: release
+      - name: Write SHA-256 checksums
+        working-directory: release
+        run: |
+          sha256sum -- * > "$RUNNER_TEMP/SHA256SUMS"
+          mv "$RUNNER_TEMP/SHA256SUMS" SHA256SUMS
+          cat SHA256SUMS
+      - name: Create a draft release
+        working-directory: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          PLATFORM: ${{ needs.prepare.outputs.platform }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          case "$PLATFORM" in
+            android) title="Tuner $VERSION for Android TV"
+                     note="The attached APK is UNSIGNED and will not update an installed copy. The owner signs it with the existing release key and uploads Tuner-$VERSION.apk before publishing." ;;
+            tizen)   title="Tuner $VERSION for Samsung Tizen"
+                     note="The attached widget is UNSIGNED. It needs a Samsung author/distributor certificate before it can be installed on a TV." ;;
+            webos)   title="Tuner $VERSION for LG webOS"
+                     note="The attached IPK is a development package created with LG's ares-package; it is not an LG Content Store release." ;;
+          esac
+          {
+            echo "$note"
+            echo
+            echo "SHA-256 checksums of the files built by CI:"
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "$title" --notes-file "$RUNNER_TEMP/notes.md" -- *

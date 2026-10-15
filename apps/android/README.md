@@ -126,6 +126,12 @@ Tests (parsers, content policy, name matching, remote navigation, and Robolectri
 
 Screenshot coverage includes Live TV, Movies, Series, playback controls, themes, and a compact 720 × 405 dp layout. Robolectric's native dependencies require a supported host architecture; on Windows ARM, use an x64 JDK under Windows emulation for these tests.
 
+Device tests in `app/src/androidTest` are opt-in through instrumentation arguments so they never disturb a TV's saved playlist by accident. The **Android device tests** workflow runs the self-contained ones nightly (and on demand) on an emulator: `AudioFallbackTest`, `GuideRemoteTest`, `MultiViewFullscreenTest`, `PictureInPictureTest` and `TwoChannelPlaybackTest`, which play the packaged fixture from a loopback server. Suites that need a saved provider account, its cached catalogue or live provider streams, or that change saved settings (`CatalogTimingTest`, `DeviceNavigationTest`, `InstalledCatalogTest`, `StartupSpeedTest`, `TwoChannelProviderTest`) run only on a configured TV. To run the CI set against a connected device or emulator:
+
+```powershell
+.\gradlew.bat connectedDebugAndroidTest "-Pandroid.testInstrumentationRunnerArguments.guideRemoteCheck=true" "-Pandroid.testInstrumentationRunnerArguments.multiViewFullscreenCheck=true" "-Pandroid.testInstrumentationRunnerArguments.pictureInPictureCheck=true" "-Pandroid.testInstrumentationRunnerArguments.twoChannelCheck=true"
+```
+
 ## Notes
 
 - Playlist logins are stored in the app's private storage on the TV. Passwords are encrypted with an Android Keystore key, and app preferences are excluded from cloud backup and device transfer.

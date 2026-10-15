@@ -10,7 +10,7 @@ Website, checkout, owner tools, web player, and TV applications for [LumaNest TV
 | [`apps/tizen/`](apps/tizen/) | Tuner 1.4.8 for Samsung TVs, source, tests and packaging tools |
 | [`apps/webos/`](apps/webos/) | Tuner 1.0.1 for LG webOS TVs |
 | [`releases/`](releases/) | Installer versions, checksums and release information |
-| [`.github/workflows/`](.github/workflows/) | Website and TV app build checks |
+| [`.github/workflows/`](.github/workflows/) | Website and TV app build checks, nightly Android emulator tests and tag-driven draft releases |
 
 Start with the README in the relevant directory. The website uses Node.js 24 and npm. Android requires JDK 17 and Android SDK 35. Samsung and LG packaging need their platform tools; release signing material stays outside the repository.
 
@@ -24,7 +24,7 @@ See [architecture and deployment](docs/deployment.md) for service boundaries and
 
 ## App downloads
 
-Installers are distributed through [LumaNest apps](https://lumanest.tv/apps) and the repository's [Releases page](https://github.com/coledtouch/lumanesttv/releases). The Android APK is kept as a release asset to avoid storing large generated binaries in source history. The current LG installer is also retained in the website's public downloads directory.
+Installers are distributed through [LumaNest apps](https://lumanest.tv/apps) and the repository's [Releases page](https://github.com/coledtouch/lumanesttv/releases). The Android APK is kept as a release asset to avoid storing large generated binaries in source history. The current LG installer is also retained in the website's public downloads directory. Tags such as `android-v1.6.0` build draft releases; see [releases](releases/README.md#cutting-a-release).
 
 The Samsung widget included for development is unsigned. Samsung installation requires a valid business signing certificate and supported TV setup.
 

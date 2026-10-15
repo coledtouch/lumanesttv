@@ -1,0 +1,109 @@
+"use strict";
+// Behaviour of the shipped js/webos-platform.js, loaded as the TV loads it: after
+// js/player.js, in a plain window object. No browser or TV runtime is involved.
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
+
+const read = name => fs.readFileSync(path.join(__dirname, "..", "js", name), "utf8");
+const platformSource = read("webos-platform.js");
+const playerSource = read("player.js");
+
+function stubWindow(extra = {}) {
+    const calls = [];
+    const dual = () => "dual";
+    const window = Object.assign({
+        TunerPlayer: {create(options) { calls.push(options); return {options}; }, createDual: dual},
+        close() { window.closed = (window.closed || 0) + 1; }
+    }, extra);
+    vm.runInNewContext(platformSource, {window}, {filename: "webos-platform.js"});
+    return {window, calls, dual};
+}
+
+test("TunerPlayer.create always selects the HTML video player and keeps other options", () => {
+    const {window, calls} = stubWindow();
+    const onState = () => {};
+    const video = {id: "html-player"};
+    const created = window.TunerPlayer.create({nativePlayer: {open() {}}, videoElement: video, onState, mute: true});
+    assert.equal(calls.length, 1);
+    assert.equal(created.options, calls[0]);
+    assert.equal(calls[0].nativePlayer, null);
+    assert.equal(calls[0].videoElement, video);
+    assert.equal(calls[0].onState, onState);
+    assert.equal(calls[0].mute, true);
+});
+
+test("TunerPlayer.create without options still disables the native player", () => {
+    const {window, calls} = stubWindow();
+    window.TunerPlayer.create();
+    window.TunerPlayer.create(undefined);
+    assert.equal(calls.length, 2);
+    for (const options of calls) assert.equal(options.nativePlayer, null);
+});
+
+test("the Samsung dual-player entry point is removed", () => {
+    const {window, dual} = stubWindow();
+    assert.notEqual(window.TunerPlayer.createDual, dual);
+    assert.equal(window.TunerPlayer.createDual, null);
+});
+
+test("exit closes through PalmSystem when webOS provides it", () => {
+    let palmCloses = 0;
+    const {window} = stubWindow({PalmSystem: {close() { palmCloses++; }}});
+    assert.equal(window.TunerWebOS.exit(), true);
+    assert.equal(palmCloses, 1);
+    assert.equal(window.closed, undefined);
+});
+
+test("exit falls back to window.close and reports that PalmSystem was unavailable", () => {
+    for (const PalmSystem of [undefined, {}, {close: "not a function"}]) {
+        const {window} = stubWindow(PalmSystem === undefined ? {} : {PalmSystem});
+        assert.equal(window.TunerWebOS.exit(), false);
+        assert.equal(window.closed, 1);
+    }
+});
+
+// The real player.js with a Samsung-style AVPlay object present: the webOS patch
+// must route playback to the <video> element and never touch AVPlay.
+function realPlayer() {
+    const avplayCalls = [];
+    const avplay = new Proxy({}, {get(target, name) { return (...args) => { avplayCalls.push(name); return name === "getState" ? "NONE" : undefined; }; }});
+    const style = () => ({});
+    const video = {
+        style: style(), attributes: {}, listeners: [], loads: 0, paused: true,
+        addEventListener(type, fn) { this.listeners.push([type, fn]); },
+        removeEventListener(type, fn) { this.listeners = this.listeners.filter(entry => entry[0] !== type || entry[1] !== fn); },
+        removeAttribute(name) { delete this.attributes[name]; if (name === "src") this.src = ""; },
+        load() { this.loads++; },
+        play() { this.paused = false; return Promise.resolve(); },
+        pause() { this.paused = true; }
+    };
+    const object = {style: style()};
+    const window = {
+        webapis: {avplay}, Promise, performance: {now: () => 0},
+        setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, clearInterval() {}, close() {}
+    };
+    const context = {window, Date, Math, JSON, Promise, setTimeout: window.setTimeout, clearTimeout: window.clearTimeout};
+    vm.runInNewContext(playerSource, context, {filename: "player.js"});
+    vm.runInNewContext(platformSource, context, {filename: "webos-platform.js"});
+    return {window, avplayCalls, video, object};
+}
+
+test("with the real player, AVPlay is ignored and the stream goes to the HTML video element", () => {
+    const {window, avplayCalls, video, object} = realPlayer();
+    const states = [];
+    const player = window.TunerPlayer.create({objectElement: object, videoElement: video, onState: state => states.push(state.status)});
+    player.play({id: "live:1", url: "http://example.invalid/live/1.m3u8", live: true});
+    assert.deepEqual(avplayCalls, []);
+    assert.equal(video.src, "http://example.invalid/live/1.m3u8");
+    assert.ok(video.loads >= 1);
+    assert.equal(video.style.display, "block");
+    assert.equal(object.style.display, "none");
+    assert.ok(states.includes("loading"));
+    player.stop();
+    assert.deepEqual(avplayCalls, []);
+    assert.equal(video.src, "");
+    assert.equal(window.TunerPlayer.createDual, null);
+});
