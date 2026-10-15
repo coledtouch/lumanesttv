@@ -1389,7 +1389,6 @@
         )
       );
       pairRow.appendChild(button("Pair with your phone", "pair-phone", openPairing, "primary-button"));
-      main.appendChild(pairRow);
     }
     var grid = el("div", "settings-grid"),
       form = el("form", "settings-main");
@@ -1539,6 +1538,8 @@
       })
     );
     grid.appendChild(side);
+    // The pairing row heads the form column, so the side panel lines up with it.
+    if (pairRow) form.insertBefore(pairRow, form.firstChild);
     main.appendChild(grid);
     if (S.zone === "nav") focus("tab-" + S.nav);
     else focus(!store.settings.source && window.TunerPairing ? "pair-phone" : "source-type");

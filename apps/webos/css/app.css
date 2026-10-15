@@ -995,8 +995,7 @@ body.native-video #main {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  width: 1030px;
-  margin: -6px 0 26px;
+  margin: 0 0 26px;
   padding: 18px 18px 18px 30px;
   border-radius: 22px;
   background: linear-gradient(100deg, #2b2349, #1d1733);
