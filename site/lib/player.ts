@@ -13,7 +13,7 @@ const httpHosts = () => settings().PLAYER_ALLOWED_HTTP_HOSTS?.split(',').map(h =
 const portal = () => settings().CUSTOMER_PORTAL_PRIMARY_URL || settings().CUSTOMER_PORTAL_URL || 'https://tv.lumanest.tv';
 const useRelay = () => relayConfigured(settings().PLAYER_STREAM_RELAY_URL, settings().PLAYER_STREAM_RELAY_KEY);
 function approvedStreamURL(value: string) {
-  const relay = useRelay() ? providerRelaySource(value) : null;
+  const relay = useRelay() ? providerRelaySource(value, settings().STREAM_RELAY_ALLOWED_HOSTS) : null;
   return trustedStreamURL(value, hosts(), relay ? [...httpHosts(), relay.hostname] : httpHosts());
 }
 const streamURL = (value: string) => approvedStreamURL(normalizeProviderURL(value, portal()).href);
@@ -87,8 +87,8 @@ export async function safeFetch(url: string, options: RequestInit = {}, hops = 0
     } catch {}
     throw error;
   }
-  if (useRelay() && providerRelaySource(source.href)) {
-    const response = await fetchPlayerRelay(source, settings().PLAYER_STREAM_RELAY_URL, settings().PLAYER_STREAM_RELAY_KEY, options);
+  if (useRelay() && providerRelaySource(source.href, settings().STREAM_RELAY_ALLOWED_HOSTS)) {
+    const response = await fetchPlayerRelay(source, settings().PLAYER_STREAM_RELAY_URL, settings().PLAYER_STREAM_RELAY_KEY, options, fetch, settings().STREAM_RELAY_ALLOWED_HOSTS);
     relaySources.set(response, source.href);
     const type = (response.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
     trace?.onResponse({origin: source.origin, status: response.status, contentType: diagnosticTypes.has(type) ? type : 'other'});
