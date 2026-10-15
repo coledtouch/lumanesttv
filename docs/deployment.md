@@ -78,4 +78,4 @@ The TV apps set themselves up through `lumanest.tv/pair`, modelled on the OAuth 
 
 The pairing table arrives in migration `0009_device_pairings.sql`. Apply it before deploying the code that uses it: `npx wrangler d1 migrations apply lumanest-tv-production --remote --config dist/server/wrangler-cloudflare.json` from a prepared `site/` checkout.
 
-By default a paired TV receives the same M3U URL the web player loads (`<portal>/m3u?u=…&p=…`). If the TV service exposes an Xtream Codes API, set `TV_APP_XTREAM_SERVER` to its base URL (for example `https://tv.lumanest.tv`). Paired TVs then use Xtream mode, which adds Movies and Series.
+By default a paired TV receives the same M3U URL the web player loads (`<portal>/m3u?u=…&p=…`). If the TV service exposes an Xtream Codes API, set `TV_APP_XTREAM_SERVER` to its base URL (for example `https://tv.lumanest.tv`; a bare host such as `tv.lumanest.tv` means HTTPS). Paired TVs then use Xtream mode, which adds Movies and Series.

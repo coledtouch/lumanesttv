@@ -231,7 +231,9 @@ export async function media(req: Request) {
 // Device pairing (lib/pairing.ts) hands a TV app the same line login this web player session proved.
 export const playerSecret = () => secret();
 export function tvAccount(credentials: PlayerSession) {
-  const xtream = (settings().TV_APP_XTREAM_SERVER || '').trim().replace(/\/+$/, '');
+  // Accept "tv.lumanest.tv" as well as "https://tv.lumanest.tv"; a bare host means HTTPS.
+  let xtream = (settings().TV_APP_XTREAM_SERVER || '').trim().replace(/\/+$/, '');
+  if (xtream && !/^[a-z][a-z0-9+.-]*:/i.test(xtream)) xtream = 'https://' + xtream;
   if (/^https?:\/\/[^\s/?#]+$/i.test(xtream)) return {type: 'xtream' as const, name: 'LumaNest TV', server: xtream, username: credentials.username, password: credentials.password};
   const playlist = new URL('/m3u', portal());
   playlist.searchParams.set('u', credentials.username); playlist.searchParams.set('p', credentials.password);

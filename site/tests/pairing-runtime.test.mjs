@@ -42,10 +42,10 @@ test.before(async () => {
     }}]
   });
   const worker = (name, bindings) => ({name, compatibilityDate:'2026-05-15', compatibilityFlags:['nodejs_compat'], modules:true, script:bundle.outputFiles[0].text, scriptPath:fileURLToPath(new URL('../pairing-runtime-worker.js', import.meta.url)), d1Databases:{DB:name+'-db'}, bindings:{PLAYER_COOKIE_KEY:'b'.repeat(64), CUSTOMER_PORTAL_URL:'https://tv.lumanest.tv', ...bindings}});
-  runtime = new Miniflare({workers:[worker('pairing', {}), worker('pairing-xtream', {TV_APP_XTREAM_SERVER:'https://xtream.lumanest.tv/'})]});
+  runtime = new Miniflare({workers:[worker('pairing', {}), worker('pairing-xtream', {TV_APP_XTREAM_SERVER:'https://xtream.lumanest.tv/'}), worker('pairing-bare-host', {TV_APP_XTREAM_SERVER:' xtream.lumanest.tv '})]});
   const migrations = [];
   for (const file of (await readdir(new URL('../drizzle/', import.meta.url))).filter(file => file.endsWith('.sql')).sort()) migrations.push(await readFile(new URL('../drizzle/' + file, import.meta.url), 'utf8'));
-  for (const name of ['pairing', 'pairing-xtream']) {
+  for (const name of ['pairing', 'pairing-xtream', 'pairing-bare-host']) {
     const database = await runtime.getD1Database('DB', name);
     for (const migration of migrations) await database.batch(migration.split('--> statement-breakpoint').map(sql => database.prepare(sql.trim())));
   }
@@ -89,6 +89,12 @@ test('an Xtream server setting pairs the TV in Xtream mode', async () => {
   const {data: {deviceCode, userCode}} = await call('/api/pair/start', {body: {device: 'android'}, worker: 'pairing-xtream'});
   assert.equal((await call('/api/player/pair', {body: {code: userCode}, headers: signedIn, worker: 'pairing-xtream'})).data.device, 'Android TV / Google TV / Fire TV');
   assert.deepEqual((await call('/api/pair/poll', {body: {deviceCode}, worker: 'pairing-xtream'})).data.account, {type: 'xtream', name: 'LumaNest TV', server: 'https://xtream.lumanest.tv', username: 'pair-user', password: 'pair-secret'});
+});
+
+test('a bare Xtream host is treated as HTTPS', async () => {
+  const {data: {deviceCode, userCode}} = await call('/api/pair/start', {body: {device: 'lg'}, worker: 'pairing-bare-host'});
+  assert.equal((await call('/api/player/pair', {body: {code: userCode}, headers: signedIn, worker: 'pairing-bare-host'})).status, 200);
+  assert.equal((await call('/api/pair/poll', {body: {deviceCode}, worker: 'pairing-bare-host'})).data.account.server, 'https://xtream.lumanest.tv');
 });
 
 test('pairing rejects bad input and limits codes per network', async () => {
