@@ -80,6 +80,8 @@ fun SettingsScreen(state: AppState) {
     val favorites by Repo.prefs.favorites.collectAsState()
     val epgStatus by Repo.epgStatus.collectAsState()
     val localZip by Repo.prefs.localZip.collectAsState()
+    val usOnly by Repo.prefs.usOnly.collectAsState()
+    val categoryOrder by Repo.prefs.categoryOrder.collectAsState()
     var sheetFor by remember { mutableStateOf<Source?>(null) }
     var confirmDelete by remember { mutableStateOf<Source?>(null) }
     var themeSheet by remember { mutableStateOf(false) }
@@ -184,6 +186,34 @@ fun SettingsScreen(state: AppState) {
             }
 
             header("Guide")
+            item(key = "us-only") {
+                SettingRow(
+                    "Channels",
+                    if (usOnly) "USA channels only. International channels are hidden. Press OK to show all channels."
+                    else "All channels on your line. Press OK to show USA channels only.",
+                    trailing = if (usOnly) "USA only" else "All",
+                    onClick = {
+                        Repo.prefs.setUsOnly(!usOnly); Repo.load()
+                        Toasts.show(if (!usOnly) "Showing USA channels only" else "Showing all channels")
+                    },
+                )
+            }
+            item(key = "category-order") {
+                val next = when (categoryOrder) { "featured" -> "provider"; "provider" -> "az"; else -> "featured" }
+                SettingRow(
+                    "Category order",
+                    when (categoryOrder) {
+                        "provider" -> "As in your customer hub. Press OK for A to Z."
+                        "az" -> "Alphabetical. Press OK for Featured."
+                        else -> "Sports, Premium and News first. Press OK for your customer hub's order."
+                    },
+                    trailing = when (categoryOrder) { "provider" -> "Hub order"; "az" -> "A to Z"; else -> "Featured" },
+                    onClick = {
+                        Repo.prefs.setCategoryOrder(next)
+                        Toasts.show(when (next) { "provider" -> "Categories in your customer hub's order"; "az" -> "Categories A to Z"; else -> "Featured categories first" })
+                    },
+                )
+            }
             item(key = "local-market") {
                 val market = LocalLineup.marketForZip(localZip)
                 SettingRow(

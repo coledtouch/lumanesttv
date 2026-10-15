@@ -1,7 +1,7 @@
 name: Release
 
 # One tag per app, because each app has its own version:
-#   android-v1.6.0   tizen-v1.4.9   webos-v1.0.2
+#   android-v1.6.0   tizen-v1.4.9   webos-v1.0.3
 # The tag version must match the version in that app's source. The workflow builds
 # the unsigned or development installer, records SHA-256 checksums and opens a DRAFT
 # release. The owner reviews the draft, adds any signed installer, then publishes it.
@@ -33,7 +33,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           if [[ ! "$TAG" =~ ^(android|tizen|webos)-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
-            echo "::error::Release tags look like android-v1.6.0, tizen-v1.4.9 or webos-v1.0.2"
+            echo "::error::Release tags look like android-v1.6.0, tizen-v1.4.9 or webos-v1.0.3"
             exit 1
           fi
           echo "platform=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"

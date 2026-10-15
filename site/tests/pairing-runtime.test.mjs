@@ -104,7 +104,7 @@ test('a Roku pairs and is named on the approval page', async () => {
 });
 
 test('pairing rejects bad input and limits codes per network', async () => {
-  assert.equal((await call('/api/pair/start', {body: {device: 'vcr'}})).status, 400);
+  assert.equal((await call('/api/pair/start', {body: {device: 'vizio'}})).status, 400);
   assert.equal((await call('/api/pair/poll', {body: {deviceCode: 'short'}})).status, 400);
   assert.equal((await call('/api/pair/poll', {method: 'OPTIONS'})).status, 204);
   assert.deepEqual((await call('/api/pair/poll', {body: {deviceCode: 'A'.repeat(43)}})).data, {status: 'expired'});

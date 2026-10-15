@@ -16,6 +16,8 @@ test.before(async () => {
         import {GET as channelsGET} from './app/api/player/channels/route.ts';
         import {GET as streamGET} from './app/api/player/stream/route.ts';
         import {POST as logoutPOST} from './app/api/player/logout/route.ts';
+        import {POST as castPOST} from './app/api/player/cast/route.ts';
+        import {GET as castGET} from './app/api/cast/stream/route.ts';
         import {seal} from './lib/player-crypto.ts';
         import {PLAYER_COOKIE} from './lib/player.ts';
         import {env} from 'cloudflare:workers';
@@ -31,6 +33,8 @@ test.before(async () => {
           // Miniflare rejects Origin on direct worker fetches; the test adds the same-site header here instead.
           if (headers.get('test-same-origin')) headers.set('Origin', new URL(request.url).origin);
           const pathname = new URL(request.url).pathname;
+          if (pathname === '/api/player/cast') return castPOST(new Request(request, {headers}));
+          if (pathname === '/api/cast/stream') return castGET(new Request(request, {headers}));
           return (pathname.endsWith('/logout') ? logoutPOST : pathname.endsWith('/channels') ? channelsGET : pathname.endsWith('/stream') ? streamGET : diagnosticsGET)(new Request(request, {headers}));
         }};
       `,
@@ -263,4 +267,27 @@ test('player sign-out revokes the sealed session for channel lists, stream start
   // Segment tokens already handed out stay usable; new live segments need a playlist refresh, which is checked.
   assert.equal((await worker.fetch('https://lumanest.tv'+segment,{headers})).status,200);
   assert.equal((await worker.fetch('https://lumanest.tv/api/player/channels',{headers:{'test-player-session':'valid'}})).status,200);
+});
+
+test('casting hands a TV a cookie-free, CORS-enabled HLS link that stops when the player signs out',async()=>{
+  const worker=await runtime.getWorker('player-runtime'),headers={'test-player-session':'valid'};
+  const {channels}=await (await worker.fetch('https://lumanest.tv/api/player/channels',{headers})).json();
+  const token=channels[1].token;assert.equal(typeof token,'string');
+  const cast=body=>worker.fetch('https://lumanest.tv/api/player/cast',{method:'POST',headers:{...headers,'test-same-origin':'1','Content-Type':'application/json'},body:JSON.stringify(body)});
+  assert.equal((await worker.fetch('https://lumanest.tv/api/player/cast',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({token})})).status,403);
+  assert.equal((await cast({token:'not-a-token'})).status,403);
+  const created=await cast({token});assert.equal(created.status,200);
+  const link=await created.json();
+  assert.match(link.url,/^https:\/\/lumanest\.tv\/api\/cast\/stream\?t=/);
+  assert.equal(link.contentType,'application/x-mpegURL');assert.equal(link.live,true);
+  for(const secret of ['runtime-private-user','runtime-secret-password','runtime-private-token'])assert.ok(!JSON.stringify(link).includes(secret));
+  const played=await worker.fetch(link.url);
+  assert.equal(played.status,200);assert.equal(played.headers.get('Access-Control-Allow-Origin'),'*');
+  const playlist=await played.text();
+  assert.match(playlist,/^#EXTM3U/);assert.ok(playlist.includes('/api/cast/stream?t='));
+  for(const secret of ['runtime-private-user','runtime-secret-password','runtime-private-token'])assert.ok(!playlist.includes(secret));
+  const forged=await worker.fetch('https://lumanest.tv/api/cast/stream?t=forged');
+  assert.equal(forged.status,403);assert.equal(forged.headers.get('Access-Control-Allow-Origin'),'*');
+  assert.equal((await worker.fetch('https://lumanest.tv/api/player/logout',{method:'POST',headers:{...headers,'test-same-origin':'1','Content-Type':'application/json'},body:'{}'})).status,200);
+  assert.equal((await worker.fetch(link.url)).status,401);
 });

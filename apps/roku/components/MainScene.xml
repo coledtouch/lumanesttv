@@ -1,52 +1,49 @@
-<?xml version="1.0" encoding="utf-8" ?>
-<!--
-  Tuner for Roku. Live TV and Movies come from the customer's own playlist (Xtream line login or M3U link),
-  added by pairing with a phone or by typing it in Settings. Nothing about the account is packaged.
--->
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tuner for Roku: pair with your phone, then Live TV, Movies, Series and Settings in three columns. -->
 <component name="MainScene" extends="Scene">
-  <interface>
-    <field id="exitApp" type="boolean" value="false" />
-  </interface>
-  <script type="text/brightscript" uri="pkg:/components/common/Util.brs" />
-  <script type="text/brightscript" uri="MainScene.brs" />
+  <script type="text/brightscript" uri="pkg:/components/MainScene.brs" />
   <children>
-    <Rectangle width="1920" height="1080" color="0x0E0D18FF" />
-    <Poster translation="[80,48]" width="330" height="85" uri="pkg:/images/header_logo.png" />
+    <Rectangle id="bg" width="1920" height="1080" color="0x0E0C1AFF" />
+    <Rectangle id="glow" width="1920" height="6" color="0x7C3AEDFF" />
 
-    <Group id="tabs" translation="[520,70]">
-      <Label id="tab0" text="Live TV" font="font:MediumBoldSystemFont" />
-      <Label id="tab1" translation="[220,0]" text="Movies" font="font:MediumBoldSystemFont" />
-      <Label id="tab2" translation="[420,0]" text="Settings" font="font:MediumBoldSystemFont" />
-      <Rectangle id="tabBar" translation="[0,52]" width="140" height="5" color="0x7C3AEDFF" />
+    <Group id="pair" visible="false">
+      <Rectangle id="pairPanel" translation="[160,200]" width="1600" height="680" color="0x171428FF" />
+      <Rectangle id="qrBox" translation="[230,280]" width="520" height="520" color="0xFFFFFFFF" />
+      <Group id="qr" translation="[230,280]" />
+      <Label id="pairEyebrow" translation="[830,300]" text="PAIR WITH YOUR PHONE" color="0xC4B5FDFF" font="font:SmallBoldSystemFont" />
+      <Label id="pairTitle" translation="[830,350]" width="860" text="Scan to connect this TV" color="0xF6F3FBFF" font="font:LargeBoldSystemFont" />
+      <Label id="pairSteps" translation="[830,440]" width="860" wrap="true" color="0xDDD3F2FF" font="font:MediumSystemFont"
+        text="1. Point your phone's camera at the code.&#10;2. Sign in with your LumaNest TV line login.&#10;3. Tap Connect my TV. Your channels load here automatically." />
+      <Label id="pairOr" translation="[830,620]" width="860" text="No camera? Go to lumanest.tv/pair and enter:" color="0xA79FC0FF" font="font:SmallSystemFont" />
+      <Label id="pairCode" translation="[830,660]" width="860" text="····-····" color="0xFFFFFFFF" font="font:LargeBoldSystemFont" />
+      <Label id="pairStatus" translation="[830,750]" width="860" wrap="true" text="Getting a code…" color="0xC4B5FDFF" font="font:SmallSystemFont" />
     </Group>
 
-    <Group id="browse">
-      <LabelList id="cats" translation="[80,190]" itemSize="[520,68]" numRows="12"
-        vertFocusAnimationStyle="floatingFocus" color="0xCFCBE0FF" focusedColor="0xFFFFFFFF"
-        focusBitmapBlendColor="0x7C3AEDFF" font="font:MediumSystemFont" focusedFont="font:MediumBoldSystemFont" />
-      <MarkupList id="items" translation="[660,190]" itemComponentName="ChannelItem" itemSize="[1180,96]"
-        itemSpacing="[0,6]" numRows="8" vertFocusAnimationStyle="floatingFocus" focusBitmapBlendColor="0x7C3AEDFF" />
-      <Label id="message" translation="[660,200]" width="1180" wrap="true" color="0xCFCBE0FF" font="font:MediumSystemFont" />
+    <Group id="home" visible="false">
+      <Label id="brand" translation="[80,48]" text="tuner" color="0xF6F3FBFF" font="font:LargeBoldSystemFont" />
+      <Label id="by" translation="[82,104]" text="by LumaNest TV" color="0xC4B5FDFF" font="font:SmallSystemFont" />
+      <Label id="status" translation="[420,70]" width="1420" wrap="true" color="0xC4B5FDFF" font="font:SmallSystemFont" />
+      <LabelList id="nav" translation="[80,190]" itemSize="[290,70]" itemSpacing="[0,8]" numRows="6"
+        color="0xBBB2CFFF" focusedColor="0x141224FF" focusBitmapBlendColor="0xB79CFBFF" font="font:MediumBoldSystemFont" focusedFont="font:MediumBoldSystemFont">
+        <ContentNode role="content">
+          <ContentNode title="Live TV" />
+          <ContentNode title="Movies" />
+          <ContentNode title="Series" />
+          <ContentNode title="Settings" />
+        </ContentNode>
+      </LabelList>
+      <LabelList id="cats" translation="[420,190]" itemSize="[460,62]" itemSpacing="[0,6]" numRows="12" vertFocusAnimationStyle="floatingFocus"
+        color="0xBBB2CFFF" focusedColor="0x141224FF" focusBitmapBlendColor="0xB79CFBFF" font="font:SmallSystemFont" focusedFont="font:SmallBoldSystemFont" />
+      <LabelList id="items" translation="[920,190]" itemSize="[920,62]" itemSpacing="[0,6]" numRows="12" vertFocusAnimationStyle="floatingFocus"
+        color="0xF6F3FBFF" focusedColor="0x141224FF" focusBitmapBlendColor="0xFFFFFFFF" font="font:SmallSystemFont" focusedFont="font:SmallBoldSystemFont" />
+      <Label id="hint" translation="[80,1010]" width="1760" color="0x857D9EFF" font="font:SmallestSystemFont"
+        text="Arrows browse · OK opens or plays · Back returns" />
     </Group>
-
-    <Group id="settings" visible="false">
-      <Label id="account" translation="[80,200]" width="1700" wrap="true" color="0xCFCBE0FF" font="font:MediumSystemFont" />
-      <LabelList id="settingsList" translation="[80,300]" itemSize="[900,72]" numRows="8"
-        vertFocusAnimationStyle="floatingFocus" color="0xCFCBE0FF" focusedColor="0xFFFFFFFF"
-        focusBitmapBlendColor="0x7C3AEDFF" font="font:MediumSystemFont" focusedFont="font:MediumBoldSystemFont" />
-      <Label id="version" translation="[80,960]" color="0x8F8AA8FF" font="font:SmallSystemFont" />
-    </Group>
-
-    <PairScreen id="pair" visible="false" />
 
     <Video id="video" width="1920" height="1080" visible="false" />
 
-    <Group id="banner" visible="false" translation="[0,840]">
-      <Rectangle width="1920" height="240" color="0x0E0D18E6" />
-      <Label id="bannerNumber" translation="[80,40]" width="200" color="0xAB73EFFF" font="font:LargeBoldSystemFont" />
-      <Label id="bannerTitle" translation="[300,40]" width="1540" color="0xFFFFFFFF" font="font:LargeBoldSystemFont" />
-      <Label id="bannerDetail" translation="[300,120]" width="1540" wrap="true" color="0xCFCBE0FF" font="font:SmallSystemFont" />
-    </Group>
-    <Timer id="bannerTimer" duration="5" />
+    <Rectangle id="toastBg" translation="[460,940]" width="1000" height="80" color="0x2B2349F2" visible="false">
+      <Label id="toast" width="1000" height="80" horizAlign="center" vertAlign="center" color="0xF6F3FBFF" font="font:MediumSystemFont" />
+    </Rectangle>
   </children>
 </component>

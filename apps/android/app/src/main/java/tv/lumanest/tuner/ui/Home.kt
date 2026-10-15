@@ -90,6 +90,7 @@ fun HomeScreen(state: AppState) {
             // Keep the content call in the same composition slot as the bar disappears.
             // Moving MultiViewScreen to another branch would dispose both video surfaces.
             if (!watchingMultiView) TopBar(state)
+            if (!watchingMultiView) FirstLoadBanner()
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (state.tab) {
                     Tab.GUIDE -> GuideScreen(state)
@@ -109,6 +110,54 @@ internal fun HomeNavigationBackHandler(state: AppState) {
     BackHandler(enabled = !state.navigationFocused || state.tab != Tab.GUIDE) {
         if (state.navigationFocused) state.tab = Tab.GUIDE
         state.requestNavigation()
+    }
+}
+
+/**
+ * Shown only while a section loads for the first time (its list is still empty), such as right after
+ * pairing. A full provider catalogue can take a minute or two, and live channels start slowly meanwhile.
+ * Background refreshes of a saved library keep the small top-bar indicator instead.
+ */
+@Composable
+private fun FirstLoadBanner() {
+    val live by Repo.liveStatus.collectAsState()
+    val vod by Repo.vodStatus.collectAsState()
+    val seriesStatus by Repo.seriesStatus.collectAsState()
+    val channels by Repo.channels.collectAsState()
+    val movies by Repo.movies.collectAsState()
+    val series by Repo.series.collectAsState()
+    val steps = listOf(
+        Triple("Channels", live, channels.isNotEmpty()),
+        Triple("Movies", vod, movies.isNotEmpty()),
+        Triple("Series", seriesStatus, series.isNotEmpty()),
+    )
+    val firstLoad = steps.any { (_, status, hasItems) -> status is LoadStatus.Loading && !hasItems }
+    AnimatedVisibility(firstLoad, enter = fadeIn(), exit = fadeOut()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 4.dp)
+                .clip(RoundedCornerShape(12.dp)).background(Palette.surface)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            CircularProgressIndicator(color = Palette.accent, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+            Column(Modifier.weight(1f).padding(start = 12.dp, end = 12.dp)) {
+                Text("Setting up your library", color = Palette.text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "The first load can take a minute or two. Channels may be slow to start until it finishes.",
+                    color = Palette.dim, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                )
+            }
+            steps.forEach { (label, status, hasItems) ->
+                // A section this playlist does not have (for example Series on an M3U link) stays hidden.
+                if (status is LoadStatus.Idle && !hasItems) return@forEach
+                val (mark, color) = when {
+                    status is LoadStatus.Loading && !hasItems -> "…" to Palette.dim
+                    status is LoadStatus.Error && !hasItems -> "!" to Palette.live
+                    else -> "✓" to Palette.good
+                }
+                Text("$label $mark", color = color, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, modifier = Modifier.padding(start = 14.dp))
+            }
+        }
     }
 }
 

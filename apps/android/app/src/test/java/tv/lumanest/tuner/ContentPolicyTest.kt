@@ -33,6 +33,15 @@ class ContentPolicyTest {
         Series(name, name, null, null, null, ids.firstOrNull().orEmpty(), null, null, null, categoryIds = ids, country = country, language = language)
     private fun temp(text: String): File = File.createTempFile("tuner-policy", ".txt").apply { writeText(text); deleteOnExit() }
 
+    @Test fun withoutUsOnlyLiveShowsTheWholeLineupTheHubChose() {
+        val items = listOf(channel("USA CNN", listOf("us")), channel("BBC", listOf("uken")), channel("Unlabelled feed"),
+            channel("[UK] Sky News", listOf("uk"), country = "GB"), channel("Loose feed", emptyList()))
+        val result = ContentPolicy.live(items, categories, usOnly = false)
+        assertEquals(items.map { it.name }, result.items.map { it.name })
+        assertEquals(setOf("us", "uken", "genre", "uk", "__tuner_live"), result.categories.map { it.id }.toSet())
+        assertEquals(listOf("USA CNN"), ContentPolicy.live(items, categories, usOnly = true).items.map { it.name })
+    }
+
     @Test fun unknownLiveCountryStaysHiddenButVodDoesNotNeedLanguageEvidence() {
         assertTrue(ContentPolicy.live(listOf(channel()), categories).items.isEmpty())
         assertEquals(3, ContentPolicy.movies(listOf(movie("The English Patient"), movie("Us (2019)"), movie("The Last of Us: Part One")), categories).items.size)

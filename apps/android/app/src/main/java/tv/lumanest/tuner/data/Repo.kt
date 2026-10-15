@@ -47,7 +47,7 @@ object Repo {
     /** Native benchmark output contains no account identifiers, names, URLs or credentials. */
     fun snapshotDiagnostics(): String = (snapshots.readDiagnostics + startupPhases).toSortedMap().entries.joinToString { "${it.key}=${it.value}" }
     private data class LoadRequest(val source: Source, val identity: CatalogSnapshots.Identity,
-        val format: String, val zip: String, val generation: Long, val force: Boolean)
+        val format: String, val zip: String, val generation: Long, val force: Boolean, val usOnly: Boolean = false)
 
     val liveCategories = MutableStateFlow<List<Category>>(emptyList())
     val channels = MutableStateFlow<List<Channel>>(emptyList())
@@ -104,7 +104,8 @@ object Repo {
         val src = activeSource
         val format = prefs.liveFormat
         val zip = prefs.localZip.value
-        val identity = src?.let { CatalogSnapshots.identity(it, format, zip) }
+        val usOnly = prefs.usOnly.value
+        val identity = src?.let { CatalogSnapshots.identity(it, format, zip, usOnly) }
         generation++
         startupPhases.clear(); snapshots.readDiagnostics.clear()
         // A refresh keeps the usable lineup. An account/format/market change cannot expose it.
@@ -117,7 +118,7 @@ object Repo {
         }
         catalogueIdentity = identity
         if (src == null || identity == null) { job = null; return }
-        val request = LoadRequest(src, identity, format, zip, generation, force)
+        val request = LoadRequest(src, identity, format, zip, generation, force, usOnly)
         job = scope.launch {
             if (!current(request)) return@launch
             val dir = withContext(Dispatchers.IO) {
@@ -150,7 +151,7 @@ object Repo {
     private const val LOGOS_URL = "https://iptv-org.github.io/api/logos.json"
 
     private fun current(request: LoadRequest) = generation == request.generation && activeSource == request.source &&
-        prefs.liveFormat == request.format && prefs.localZip.value == request.zip
+        prefs.liveFormat == request.format && prefs.localZip.value == request.zip && prefs.usOnly.value == request.usOnly
 
     private inline fun commit(request: LoadRequest, action: () -> Unit) = synchronized(this) {
         if (current(request)) action()
@@ -239,7 +240,7 @@ object Repo {
                 val listFile = File(dir, "live.json"); val categoriesFile = File(dir, "live_cats.json")
                 var availableAt = cached?.storedAt
                 if (cached == null && !request.force && cachedFile(listFile) != null && cachedFile(categoriesFile) != null) {
-                    publishLive(ContentPolicy.live(x.parseLive(listFile, request.format), x.parseCategories(categoriesFile)), request, storedAt(listFile, categoriesFile))
+                    publishLive(ContentPolicy.live(x.parseLive(listFile, request.format), x.parseCategories(categoriesFile), request.usOnly), request, storedAt(listFile, categoriesFile))
                     liveAvailable.complete(Unit)
                     availableAt = storedAt(listFile, categoriesFile)
                     if (fresh(storedAt(listFile, categoriesFile), LIVE_AGE)) return@launch
@@ -251,7 +252,7 @@ object Repo {
                     val cats = catsF.await(); val list = listF.await()
                     coroutineContext.ensureActive()
                     if (storedAt(list, cats) != availableAt || before != (list.lastModified() to cats.lastModified()))
-                        publishLive(ContentPolicy.live(x.parseLive(list, request.format), x.parseCategories(cats)), request, storedAt(list, cats))
+                        publishLive(ContentPolicy.live(x.parseLive(list, request.format), x.parseCategories(cats), request.usOnly), request, storedAt(list, cats))
                     liveAvailable.complete(Unit)
                 }
                 commit(request) { liveStatus.value = LoadStatus.Ready }
@@ -358,7 +359,7 @@ object Repo {
                 fun publish(file: File) {
                     if (!current(request)) return
                     val r = M3u.parse(file)
-                    publishLive(ContentPolicy.live(r.channels, r.liveCategories), request, file.lastModified())
+                    publishLive(ContentPolicy.live(r.channels, r.liveCategories, request.usOnly), request, file.lastModified())
                     liveAvailable.complete(Unit)
                     val vod = ContentPolicy.movies(r.movies, r.movieCategories)
                     val cleaned = Cleanup.movies(vod.items)
@@ -456,7 +457,7 @@ object Repo {
             val playlist = M3u.parse(f)
             val now = System.currentTimeMillis()
             val dead = prefs.deadChannels(now)
-            val parsed = LocalLineup.filterCatalogue(ContentPolicy.live(playlist.channels, playlist.liveCategories), request.zip).items
+            val parsed = LocalLineup.filterCatalogue(ContentPolicy.live(playlist.channels, playlist.liveCategories, request.usOnly), request.zip).items
                 .filterNot { Cleanup.isIdleEvent(it.name) || Cleanup.isOffAir(it.name, now) }
                 .sortedBy { it.key.substringAfterLast(':').toIntOrNull() ?: 0 }
             fun sid(url: String) = url.substringBefore('?').substringAfterLast('/').substringBefore('.')

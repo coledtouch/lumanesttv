@@ -8,12 +8,12 @@ Website, checkout, owner tools, web player, and TV applications for [LumaNest TV
 | [`site/cloudflare/`](site/cloudflare/) | Portal PWA support and authenticated stream relay Workers |
 | [`apps/android/`](apps/android/) | Android TV and Google TV development source, Kotlin/Compose/Media3, including tests; approved download is 1.6.0 |
 | [`apps/tizen/`](apps/tizen/) | Tuner 1.4.9 for Samsung TVs, source, tests and packaging tools |
-| [`apps/webos/`](apps/webos/) | Tuner 1.0.2 for LG webOS TVs |
-| [`apps/roku/`](apps/roku/) | LumaNest TV 1.0.0 Roku channel (BrightScript/SceneGraph), with tests and ZIP packaging; not yet published to the Roku Channel Store |
+| [`apps/webos/`](apps/webos/) | Tuner 1.0.3 for LG webOS TVs |
+| [`apps/roku/`](apps/roku/) | Tuner 1.0.1 for Roku (sideload for testing; Roku Channel Store submission pending) |
 | [`releases/`](releases/) | Installer versions, checksums and release information |
 | [`.github/workflows/`](.github/workflows/) | Website and TV app build checks, nightly Android emulator tests and tag-driven draft releases |
 
-Start with the README in the relevant directory. The website uses Node.js 24 and npm. Android requires JDK 17 and Android SDK 35. Samsung and LG packaging need their platform tools; Roku packaging needs only Node.js, and Roku signing happens on a developer-mode Roku; release signing material stays outside the repository.
+Start with the README in the relevant directory. The website uses Node.js 24 and npm. Android requires JDK 17 and Android SDK 35. Samsung and LG packaging need their platform tools; release signing material stays outside the repository.
 
 ## Services and hosting
 

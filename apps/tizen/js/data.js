@@ -139,6 +139,11 @@
         });
         return { items: accepted, categories: usedCategories(accepted, categories, '__tuner_us', 'USA') };
     }
+    // Default lineup: everything the line includes, as chosen in the LumaNest customer hub. usPolicy is the optional "USA channels only" view.
+    function allPolicy(items, categories) {
+        var accepted = items.map(function (item) { var ids = unique(item.categoryIds || []); item.categoryIds = ids.length ? ids : ['__tuner_live']; item.categoryId = item.categoryIds[0]; return item; });
+        return { items: accepted, categories: usedCategories(accepted, categories, '__tuner_live', 'Live TV') };
+    }
     function usedCategories(items, categories, fallbackId, fallbackName) { var used = Object.create(null), seen = Object.create(null); items.forEach(function (item) { item.categoryIds.forEach(function (id) { used[id] = true; }); }); var result = categories.filter(function (cat) { if (!used[cat.id] || seen[cat.id]) return false; seen[cat.id] = true; return true; }); if (used[fallbackId] && !seen[fallbackId]) result.push({ id: fallbackId, name: fallbackName }); return result; }
     var nearbyStations = ('WCVB WBZ WBTS WHDH WFXT WGBH WGBX WMUR WUNI WUTF WNEU WENH WLED WEKW WCCA WLVI WSBK WWJE WMFP').split(' '), newsStations = ('WCVB WBZ WBTS WHDH WFXT WMUR WUNI WNEU').split(' '), notStations = ('KEY KILL KIDS WEST WITH WILD WISH WILL WARS WAVE WORK WEEK WALK WELL WHAT WHEN WALL WOKE WORD WINE WOLF WWE').split(' ');
     function upper(value) { return text(value).toUpperCase().replace(/\s+/g, ' '); }
@@ -210,7 +215,8 @@
         return { items: result, categories: usedCategories(result, catalog.categories, '__tuner_us', 'USA'), merged: merged };
     }
     function foldMovies(items) { var groups = Object.create(null), order = []; items.forEach(function (item) { var key = text(item.name).toLowerCase().replace(/[^a-z0-9]/g, '') || item.id; if (!groups[key]) { groups[key] = []; order.push(key); } groups[key].push(item); }); return order.map(function (key) { var copies = groups[key].sort(function (a, b) { return (b.added || 0) - (a.added || 0); }), kept = copy(copies[0]), ids = [], urls = []; copies.forEach(function (item) { ids = ids.concat(item.categoryIds); urls = urls.concat([item.url], item.backups || []); }); kept.categoryIds = unique(ids); kept.categoryId = kept.categoryIds[0] || ''; kept.backups = unique(urls.filter(function (url) { return url && url !== kept.url; })); return kept; }); }
-    function categoryItems(categories, hasMostWatched) { var ranked = ['SPORTS', 'PREMIUM', 'NEWS', 'MOVIES', 'ENTERTAINMENT', 'DOCUMENTARIES', 'LOCAL NEWS'], seen = Object.create(null), result = [{ id: '__all', name: 'All Channels' }, { id: '__fav', name: 'Favorites' }]; if (hasMostWatched !== false) result.push({ id: '__hot', name: 'Most Watched' }); var remaining = categories.filter(function (cat) { if (/^__(all|fav|hot)$/.test(cat.id) || seen[cat.id]) return false; seen[cat.id] = true; return true; }).map(function (cat, index) { var value = upper(cat.name).replace(/[^A-Z0-9]+/g, ' ').trim().replace(/^USA? /, ''), rank = ranked.indexOf(value); return { cat: cat, index: index, rank: rank < 0 ? 7 : rank }; }).sort(function (a, b) { return a.rank - b.rank || a.index - b.index; }); return result.concat(remaining.map(function (value) { return value.cat; })); }
+    // order: 'featured' (main cable groups first, the default), 'provider' (as the line delivers them) or 'az'.
+    function categoryItems(categories, hasMostWatched, order) { var ranked = ['SPORTS', 'PREMIUM', 'NEWS', 'MOVIES', 'ENTERTAINMENT', 'DOCUMENTARIES', 'LOCAL NEWS'], seen = Object.create(null), result = [{ id: '__all', name: 'All Channels' }, { id: '__fav', name: 'Favorites' }]; if (hasMostWatched !== false) result.push({ id: '__hot', name: 'Most Watched' }); var remaining = categories.filter(function (cat) { if (/^__(all|fav|hot)$/.test(cat.id) || seen[cat.id]) return false; seen[cat.id] = true; return true; }).map(function (cat, index) { var value = upper(cat.name).replace(/[^A-Z0-9]+/g, ' ').trim().replace(/^USA? /, ''), rank = ranked.indexOf(value); return { cat: cat, index: index, rank: order === 'provider' || order === 'az' ? 0 : rank < 0 ? 7 : rank, key: text(cat.name).replace(/^[^A-Za-z0-9]+/, '').toLowerCase() }; }).sort(function (a, b) { return a.rank - b.rank || (order === 'az' && a.key !== b.key ? (a.key < b.key ? -1 : 1) : 0) || a.index - b.index; }); return result.concat(remaining.map(function (value) { return value.cat; })); }
 
     // Finished catalogues stay private to this widget. IndexedDB avoids the small settings quota.
     var catalogDatabase = null, catalogMemory = Object.create(null), catalogMemoryIdentity = '';
@@ -272,7 +278,7 @@
         options = options || {};
         var source = normalizeSource(input), ordered = {};
         Object.keys(source).sort().forEach(function (key) { if (!/^(?:__proto__|constructor|prototype)$/.test(key)) ordered[key] = source[key]; });
-        return catalogDigest(JSON.stringify({ schema: 1, source: ordered, zip: options.zip === undefined ? '01608' : text(options.zip), liveFormat: options.liveFormat || source.liveFormat || 'm3u8' }));
+        return catalogDigest(JSON.stringify({ schema: 1, source: ordered, zip: options.zip === undefined ? '01608' : text(options.zip), liveFormat: options.liveFormat || source.liveFormat || 'm3u8', lineup: options.usOnly ? 'us' : 'all' }));
     }
     function openCatalogDatabase() {
         var databaseApi = catalogStorageApi();
@@ -509,7 +515,7 @@
         function publish(kind, items, cats, token) {
             if (token !== generation || cancelled) return;
             var merged = {};
-            if (kind === 'live') { var folded = foldLive(localPolicy(usPolicy(items, cats), options.zip === undefined ? '01608' : options.zip)); merged = folded.merged; items = folded.items; cats = folded.categories; }
+            if (kind === 'live') { var folded = foldLive(localPolicy(options.usOnly ? usPolicy(items, cats) : allPolicy(items, cats), options.zip === undefined ? '01608' : options.zip)); merged = folded.merged; items = folded.items; cats = folded.categories; }
             else if (kind === 'movies') { items = foldMovies(items); cats = usedCategories(items, cats, '__tuner_movies', 'Movies'); }
             else cats = usedCategories(items, cats, '__tuner_series', 'Series');
             items.forEach(function (item) { item.sourceKey = key; });
@@ -578,6 +584,6 @@
             movieInfo: function (movie) { if (cancelled) return root.Promise.reject(aborted()); if (source.type !== 'xtream') return root.Promise.resolve(copy(movie)); var cacheKey = 'm:' + movie.id, token = generation; if (details[cacheKey]) return root.Promise.resolve(details[cacheKey]); return json(api(source, 'get_vod_info', { vod_id: movie.streamId || movie.id.replace(/^m:/, '') }), 25000).then(function (payload) { if (cancelled || token !== generation) throw aborted(); var info = payload.info || {}, result = { plot: text(info.plot || info.description), cast: text(info.cast || info.actors), director: text(info.director), genre: text(info.genre), year: text(info.releasedate || info.release_date || info.year).substring(0, 4), duration: text(info.duration), rating: text(info.rating), image: safeUrl(info.movie_image || info.cover_big), backdrop: safeUrl(first(info.backdrop_path)) }; details[cacheKey] = result; return result; }); } };
     }
     root.TunerData = { createStore: createStore, createClient: createClient, sourceKey: sourceKey, catalogIdentity: catalogIdentity, normalizeSource: normalizeSource, categoryItems: categoryItems,
-        parseXtream: parseXtream, parseCategories: parseCategories, parseM3u: parseM3u, usPolicy: usPolicy, localPolicy: localPolicy, foldLive: foldLive, foldMovies: foldMovies,
+        parseXtream: parseXtream, parseCategories: parseCategories, parseM3u: parseM3u, usPolicy: usPolicy, allPolicy: allPolicy, localPolicy: localPolicy, foldLive: foldLive, foldMovies: foldMovies,
         parseGuide: parseGuide, parseSeriesInfo: parseSeriesInfo, parseXmltv: parseXmltv, parseXmltvAsync: parseXmltvAsync, xmlTime: xmlTime, marketForZip: marketForZip, displayName: displayName, idleEvent: idleEvent, offAir: offAir };
 }(typeof window !== 'undefined' ? window : this));

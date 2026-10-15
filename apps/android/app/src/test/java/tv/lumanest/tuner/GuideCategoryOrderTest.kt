@@ -30,4 +30,11 @@ class GuideCategoryOrderTest {
     @Test fun personalMostWatchedIsAvailableBeforeAnyProviderTrendingFeed() {
         assertEquals(listOf(CAT_ALL, CAT_FAV, CAT_HOT), guideCategoryItems(emptyList(), false).map { it.first })
     }
+
+    @Test fun customersCanKeepTheHubOrderOrSortAlphabetically() {
+        val categories = listOf("s" to "US Sports", "k" to "Kids", "n" to "US News", "a" to "| Action |")
+        assertEquals(listOf(CAT_ALL, CAT_FAV, CAT_HOT, "s", "k", "n", "a"), guideCategoryItems(categories, false, "provider").map { it.first })
+        assertEquals(listOf(CAT_ALL, CAT_FAV, CAT_HOT, "a", "k", "n", "s"), guideCategoryItems(categories, false, "az").map { it.first })
+        assertEquals(listOf(CAT_ALL, CAT_FAV, CAT_HOT, "s", "n", "k", "a"), guideCategoryItems(categories, false, "featured").map { it.first })
+    }
 }

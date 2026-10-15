@@ -13,7 +13,7 @@ Later releases:
 | Installer | Version | Purpose |
 | --- | --- | --- |
 | `Tuner-1.6.0.apk` | 1.6.0, Android version code 15 | Signed Android TV / Google TV / Fire TV app: LumaNest branding, phone pairing, Torrentio removed |
-| `LumaNestTV-1.0.0-roku.zip` | 1.0.0 | Roku channel ZIP for developer-mode sideloading, served from the website's public downloads directory; build it with `npm run build` in `apps/roku` |
+| `tuner-roku-1.0.1.zip` | 1.0.1 | Roku app ZIP for developer-mode sideloading, served from the website's public downloads directory; built with `npm run build` in `apps/roku` |
 
 [`SHA256SUMS`](SHA256SUMS) records the installer checksums. GitHub also generates a source archive for each tagged release; it contains the website and all three app source trees.
 

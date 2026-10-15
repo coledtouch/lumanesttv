@@ -2,7 +2,11 @@ package tv.lumanest.tuner.data
 
 import java.util.Locale
 
-/** Live TV stays in the USA lineup. Movies, series and audio have no language restrictions. */
+/**
+ * By default the provider's lineup is shown as delivered: the LumaNest customer hub decides which channels and
+ * categories a line includes. Customers can switch Live TV to "USA channels only" in Settings, which keeps U.S.
+ * programming and hides international channels. Movies, series and audio have no language restrictions.
+ */
 object ContentPolicy {
     data class Catalogue<T>(val items: List<T>, val categories: List<Category>)
     private data class Labels(val us: Boolean, val foreign: Boolean)
@@ -127,7 +131,14 @@ object ContentPolicy {
     private fun conflictingCountry(country: String?): Boolean = metadataParts(country).any { countryAliases[it] != "US" }
     private fun isEnglish(value: String): Boolean = value in englishAliases || englishMetadata.matches(value)
 
-    fun live(items: List<Channel>, categories: List<Category>): Catalogue<Channel> {
+    fun live(items: List<Channel>, categories: List<Category>, usOnly: Boolean = true): Catalogue<Channel> {
+        if (!usOnly) {
+            val all = items.distinctBy { it.key }.map { channel ->
+                val ids = channel.categoryIds.distinct().ifEmpty { listOf("__tuner_live") }
+                channel.copy(categoryId = ids.first(), categoryIds = ids)
+            }
+            return Catalogue(all, usedCategories(all.flatMap { it.categoryIds }, categories, "__tuner_live", "Live TV"))
+        }
         val categoriesById = categories.associate { it.id to labels(it.name) }
         val accepted = items.mapNotNull { channel ->
             val named = nameLabels(channel.name)

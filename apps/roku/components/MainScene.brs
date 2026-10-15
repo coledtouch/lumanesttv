@@ -1,457 +1,470 @@
-' Screens: Live TV and Movies (category list + item list), Settings, pairing, and the full-screen player.
-' m.zone records which part has the remote: "tabs", "cats", "items", "settings", "pair" or "video".
+' Tuner for Roku. The saved LumaNest line lives in the "tuner" registry section; settings sit beside it.
 
 sub init()
-    m.tabs = [m.top.FindNode("tab0"), m.top.FindNode("tab1"), m.top.FindNode("tab2")]
-    m.tabsGroup = m.top.FindNode("tabs")
-    m.tabBar = m.top.FindNode("tabBar")
-    m.browse = m.top.FindNode("browse")
-    m.cats = m.top.FindNode("cats")
-    m.items = m.top.FindNode("items")
-    m.message = m.top.FindNode("message")
-    m.settings = m.top.FindNode("settings")
-    m.account = m.top.FindNode("account")
-    m.settingsList = m.top.FindNode("settingsList")
-    m.pair = m.top.FindNode("pair")
-    m.video = m.top.FindNode("video")
-    m.banner = m.top.FindNode("banner")
-    m.bannerNumber = m.top.FindNode("bannerNumber")
-    m.bannerTitle = m.top.FindNode("bannerTitle")
-    m.bannerDetail = m.top.FindNode("bannerDetail")
-    m.bannerTimer = m.top.FindNode("bannerTimer")
-
-    info = CreateObject("roAppInfo")
-    m.top.FindNode("version").text = "Tuner for Roku " + info.GetVersion()
-
-    m.cats.ObserveField("itemFocused", "onCategoryFocused")
-    m.items.ObserveField("itemSelected", "onItemSelected")
-    m.settingsList.ObserveField("itemSelected", "onSettingSelected")
-    m.pair.ObserveField("paired", "onPaired")
-    m.pair.ObserveField("closed", "onPairClosed")
-    m.video.ObserveField("state", "onVideoState")
-    m.bannerTimer.ObserveField("fire", "hideBanner")
-
-    m.sections = ["live", "movies"]
-    m.content = {}
-    m.errors = {}
+    m.reg = CreateObject("roRegistrySection", "tuner")
+    m.pairView = m.top.findNode("pair")
+    m.homeView = m.top.findNode("home")
+    m.qr = m.top.findNode("qr")
+    m.pairCode = m.top.findNode("pairCode")
+    m.pairStatus = m.top.findNode("pairStatus")
+    m.status = m.top.findNode("status")
+    m.nav = m.top.findNode("nav")
+    m.cats = m.top.findNode("cats")
+    m.items = m.top.findNode("items")
+    m.video = m.top.findNode("video")
+    m.toast = m.top.findNode("toast")
+    m.toastBg = m.top.findNode("toastBg")
     m.tasks = {}
-    m.tab = 0
-    m.zone = "tabs"
-    m.entry = invalid
-    m.source = utilLoadSource()
-    if m.source = invalid
-        showSettings()
-    else
-        selectTab(0)
-        loadSection("live")
-    end if
+    m.catalog = invalid
+    m.currentItems = []
+    m.seriesItems = invalid
+    m.settings = {usOnly: m.reg.Read("usOnly") = "1", order: m.reg.Read("order")}
+    if m.settings.order = "" then m.settings.order = "featured"
+
+    m.pollTimer = CreateObject("roSGNode", "Timer")
+    m.pollTimer.repeat = false
+    m.pollTimer.observeField("fire", "doPoll")
+    m.refreshTimer = CreateObject("roSGNode", "Timer")
+    m.refreshTimer.repeat = false
+    m.refreshTimer.observeField("fire", "startPair")
+    m.toastTimer = CreateObject("roSGNode", "Timer")
+    m.toastTimer.duration = 3
+    m.toastTimer.observeField("fire", "hideToast")
+
+    m.nav.observeField("itemFocused", "onNavFocused")
+    m.cats.observeField("itemFocused", "onCategoryFocused")
+    m.cats.observeField("itemSelected", "onCategorySelected")
+    m.items.observeField("itemSelected", "onItemSelected")
+    m.video.observeField("state", "onVideoState")
+
+    saved = m.reg.Read("account")
+    m.account = invalid
+    if saved <> "" then m.account = ParseJson(saved)
+    if m.account <> invalid then showHome() else showPair()
 end sub
 
-' ---------- Tabs and lists ----------
+' ------------------------------------------------------------------ tasks and toasts
 
-sub selectTab(index as Integer)
-    m.tab = index
-    for i = 0 to m.tabs.Count() - 1
-        if i = index
-            m.tabs[i].color = "0xFFFFFFFF"
-        else
-            m.tabs[i].color = "0x8F8AA8FF"
-        end if
-    end for
-    m.tabBar.translation = [m.tabs[index].translation[0], 52]
-    if index = 2
-        showSettings()
-    else
-        m.settings.visible = false
-        m.browse.visible = true
-        renderSection()
-    end if
-    setZone("tabs")
+sub runTask(request as object, handler as string)
+    task = CreateObject("roSGNode", "ApiTask")
+    task.observeField("response", handler)
+    task.request = request
+    task.control = "RUN"
+    m.tasks[request.mode] = task
 end sub
 
-function currentSection() as String
-    if m.tab = 1 then return "movies"
-    return "live"
-end function
+sub showToast(message as string)
+    m.toast.text = message
+    m.toastBg.visible = true
+    m.toastTimer.control = "start"
+end sub
 
-sub renderSection()
-    section = currentSection()
-    root = m.content[section]
-    if root = invalid
-        m.cats.content = invalid
-        m.items.content = invalid
-        if m.errors[section] <> invalid
-            m.message.text = m.errors[section]
-        else
-            if section = "movies"
-                m.message.text = "Loading movies…"
-            else
-                m.message.text = "Loading channels… The first load of a large lineup can take a minute."
-            end if
-            loadSection(section)
-        end if
+sub hideToast()
+    m.toastBg.visible = false
+end sub
+
+' ------------------------------------------------------------------ pairing
+
+sub showPair()
+    m.homeView.visible = false
+    m.pairView.visible = true
+    m.pairView.setFocus(true)
+    startPair()
+end sub
+
+sub startPair()
+    m.pollTimer.control = "stop"
+    m.refreshTimer.control = "stop"
+    m.pairCode.text = "····-····"
+    m.pairStatus.text = "Getting a code…"
+    m.qr.removeChildrenIndex(m.qr.getChildCount(), 0)
+    runTask({mode: "pairStart"}, "onPairStart")
+end sub
+
+sub onPairStart(event as object)
+    r = event.getData()
+    if not r.ok
+        m.pairStatus.text = r.error + " Retrying…"
+        m.refreshTimer.duration = 15
+        m.refreshTimer.control = "start"
         return
     end if
-    m.message.text = ""
-    m.cats.content = root
-    showCategory(0)
+    drawQr(r.data.qr)
+    m.pairCode.text = r.data.userCode
+    m.pairStatus.text = "Waiting for you to approve on your phone…"
+    m.deviceCode = r.data.deviceCode
+    m.interval = 5
+    if r.data.interval <> invalid then m.interval = r.data.interval
+    ' Codes last 10 minutes; take a fresh one a little early so the one on screen always works.
+    m.refreshTimer.duration = 580
+    if r.data.expiresIn <> invalid and r.data.expiresIn > 80 then m.refreshTimer.duration = r.data.expiresIn - 20
+    m.refreshTimer.control = "start"
+    m.pollTimer.duration = m.interval
+    m.pollTimer.control = "start"
 end sub
 
-sub showCategory(index as Integer)
-    root = m.cats.content
-    if root = invalid or index < 0 or index >= root.GetChildCount() then return
-    m.items.content = root.GetChild(index)
+' Draws the server's QR rows ("0"/"1" per module) as squares on the white box, with a quiet zone.
+sub drawQr(rows as object)
+    m.qr.removeChildrenIndex(m.qr.getChildCount(), 0)
+    size = rows.Count()
+    if size = 0 then return
+    cell = Int(520 / (size + 6))
+    offset = Int((520 - cell * size) / 2)
+    for r = 0 to size - 1
+        row = rows[r]
+        c = 0
+        while c < size
+            if Mid(row, c + 1, 1) = "1"
+                ' Join a horizontal run of dark modules into one rectangle to keep the node count low.
+                start = c
+                while c < size and Mid(row, c + 1, 1) = "1"
+                    c = c + 1
+                end while
+                block = m.qr.createChild("Rectangle")
+                block.color = "0x141224FF"
+                block.translation = [offset + start * cell, offset + r * cell]
+                block.width = (c - start) * cell
+                block.height = cell
+            else
+                c = c + 1
+            end if
+        end while
+    end for
 end sub
+
+sub doPoll()
+    if m.deviceCode = invalid or not m.pairView.visible then return
+    runTask({mode: "pairPoll", deviceCode: m.deviceCode}, "onPoll")
+end sub
+
+sub onPoll(event as object)
+    if not m.pairView.visible then return
+    r = event.getData()
+    if not r.ok
+        m.pairStatus.text = "Can't reach LumaNest TV. Retrying…"
+        m.pollTimer.duration = 15
+        m.pollTimer.control = "start"
+        return
+    end if
+    if r.data.status = "approved" and r.data.account <> invalid
+        m.account = r.data.account
+        m.reg.Write("account", FormatJson(m.account))
+        m.reg.Flush()
+        m.pollTimer.control = "stop"
+        m.refreshTimer.control = "stop"
+        showHome()
+        showToast("Paired with LumaNest TV. Loading your channels.")
+    else if r.data.status = "expired"
+        startPair()
+    else
+        m.pollTimer.duration = m.interval
+        m.pollTimer.control = "start"
+    end if
+end sub
+
+' ------------------------------------------------------------------ library
+
+sub showHome()
+    m.pairView.visible = false
+    m.homeView.visible = true
+    m.nav.setFocus(true)
+    loadCatalog()
+end sub
+
+sub loadCatalog()
+    m.catalog = invalid
+    setList(m.cats, [])
+    setList(m.items, [])
+    m.status.text = "Setting up your library… The first load can take a minute or two."
+    runTask({mode: "catalog", account: m.account}, "onCatalog")
+end sub
+
+sub onCatalog(event as object)
+    r = event.getData()
+    if not r.ok
+        m.status.text = r.error
+        return
+    end if
+    m.catalog = r.data
+    m.status.text = ""
+    showSection()
+end sub
+
+function sectionKey() as string
+    index = m.nav.itemFocused
+    if index = 0 then return "live"
+    if index = 1 then return "movies"
+    if index = 2 then return "series"
+    return "settings"
+end function
+
+sub onNavFocused()
+    m.seriesItems = invalid
+    showSection()
+end sub
+
+sub showSection()
+    key = sectionKey()
+    if key = "settings"
+        m.sectionCats = []
+        setList(m.cats, settingsLabels())
+        setList(m.items, [])
+        return
+    end if
+    if m.catalog = invalid then return
+    m.sectionCats = orderedCategories(key)
+    labels = []
+    for each cat in m.sectionCats
+        labels.Push(cat.name)
+    end for
+    setList(m.cats, labels)
+    if m.sectionCats.Count() = 0
+        setList(m.items, ["Nothing here yet"])
+        m.currentItems = []
+    else
+        showCategory(0)
+    end if
+end sub
+
+' Live TV can be limited to US categories; the order is the customer's choice in Settings.
+function orderedCategories(key as string) as object
+    data = m.catalog[key]
+    result = []
+    index = 0
+    for each cat in data.categories
+        if key <> "live" or not m.settings.usOnly or isUsCategory(cat.name)
+            result.Push({id: cat.id, name: cat.name, rank: categoryRank(cat.name), index: index, sortName: LCase(stripLeading(cat.name))})
+        end if
+        index = index + 1
+    end for
+    if m.settings.order = "az"
+        result.SortBy("sortName")
+    else if m.settings.order = "featured"
+        for each cat in result
+            cat.key = cat.rank * 100000 + cat.index
+        end for
+        result.SortBy("key")
+    end if
+    return result
+end function
+
+function stripLeading(name as string) as string
+    re = CreateObject("roRegex", "^[^A-Za-z0-9]+", "")
+    return re.Replace(name, "")
+end function
+
+function categoryRank(name as string) as integer
+    re = CreateObject("roRegex", "[^A-Z0-9]+", "")
+    normalized = re.ReplaceAll(UCase(name), " ").Trim()
+    if Left(normalized, 4) = "USA " then normalized = Mid(normalized, 5)
+    if Left(normalized, 3) = "US " then normalized = Mid(normalized, 4)
+    ranks = ["SPORTS", "PREMIUM", "NEWS", "MOVIES", "ENTERTAINMENT", "DOCUMENTARIES", "LOCAL NEWS"]
+    for i = 0 to ranks.Count() - 1
+        if ranks[i] = normalized then return i
+    end for
+    return 7
+end function
+
+' A category counts as US programming when it is labelled US/USA/United States or is a US sports league.
+function isUsCategory(name as string) as boolean
+    upper = UCase(name)
+    labelled = CreateObject("roRegex", "(^|[^A-Z])(US|USA|U\.S\.A?\.?|UNITED STATES)([^A-Z]|$)", "")
+    leagues = CreateObject("roRegex", "(^|[^A-Z])(NFL|NBA|WNBA|NHL|MLB|MLS|NCAA|ESPN|PPV)([^A-Z]|$)", "")
+    return labelled.IsMatch(upper) or leagues.IsMatch(upper)
+end function
 
 sub onCategoryFocused()
+    if sectionKey() = "settings" or m.catalog = invalid then return
+    m.seriesItems = invalid
     showCategory(m.cats.itemFocused)
 end sub
 
-sub loadSection(section as String)
-    if m.source = invalid or m.tasks[section] <> invalid then return
-    task = CreateObject("roSGNode", "CatalogTask")
-    task.source = m.source
-    task.section = section
-    task.ObserveField("content", "onCatalogDone")
-    task.ObserveField("error", "onCatalogDone")
-    m.tasks[section] = task
-    task.control = "run"
-end sub
-
-sub onCatalogDone(event as Object)
-    task = event.GetRoSGNode()
-    for each section in m.sections
-        if m.tasks[section] <> invalid and m.tasks[section].IsSameNode(task)
-            m.tasks.Delete(section)
-            if event.GetField() = "error"
-                m.errors[section] = task.error
-            else
-                m.content[section] = task.content
-            end if
-            if m.tab < 2 and currentSection() = section and m.zone <> "video" then renderSection()
-        end if
+sub showCategory(index as integer)
+    if index < 0 or index >= m.sectionCats.Count() then return
+    list = m.catalog[sectionKey()].byCat[m.sectionCats[index].id]
+    if list = invalid then list = []
+    m.currentItems = list
+    labels = []
+    for each item in list
+        labels.Push(item.name)
     end for
+    setList(m.items, labels)
 end sub
 
-sub resetCatalogs()
-    for each section in m.sections
-        if m.tasks[section] <> invalid
-            m.tasks[section].UnobserveField("content")
-            m.tasks[section].UnobserveField("error")
-            m.tasks[section].control = "stop"
-        end if
-    end for
-    m.tasks = {}
-    m.content = {}
-    m.errors = {}
-end sub
-
-' ---------- Focus ----------
-
-sub setZone(zone as String)
-    m.zone = zone
-    m.tabBar.opacity = 0.5
-    if zone = "tabs"
-        m.tabBar.opacity = 1
-        m.top.SetFocus(true)
-    else if zone = "cats"
-        m.cats.SetFocus(true)
-    else if zone = "items"
-        m.items.SetFocus(true)
-    else if zone = "settings"
-        m.settingsList.SetFocus(true)
-    else if zone = "pair"
-        m.pair.SetFocus(true)
-    else if zone = "video"
-        m.video.SetFocus(true)
-    end if
-end sub
-
-function hasItems() as Boolean
-    return m.items.content <> invalid and m.items.content.GetChildCount() > 0
-end function
-
-function onKeyEvent(key as String, press as Boolean) as Boolean
-    if not press then return false
-    if m.zone = "video" then return videoKey(key)
-    if m.zone = "tabs"
-        if key = "left" and m.source <> invalid and m.tab > 0
-            selectTab(m.tab - 1)
-        else if key = "right" and m.source <> invalid and m.tab < 2
-            selectTab(m.tab + 1)
-        else if key = "down" or key = "OK"
-            if m.tab = 2
-                setZone("settings")
-            else if m.cats.content <> invalid and m.cats.content.GetChildCount() > 0
-                setZone("cats")
-            end if
-        else if key = "back"
-            m.top.exitApp = true
-        else
-            return false
-        end if
-        return true
-    else if m.zone = "cats"
-        if key = "right" and hasItems()
-            setZone("items")
-        else if key = "up" or key = "back"
-            setZone("tabs")
-        else
-            return false
-        end if
-        return true
-    else if m.zone = "items"
-        if key = "left" or key = "back"
-            setZone("cats")
-            return true
-        end if
-    else if m.zone = "settings"
-        if key = "back" and m.source = invalid
-            m.top.exitApp = true
-            return true
-        else if key = "up" or key = "back"
-            if m.source <> invalid then setZone("tabs")
-            return true
-        end if
-    end if
-    return false
-end function
-
-' ---------- Settings ----------
-
-sub showSettings()
-    m.browse.visible = false
-    m.settings.visible = true
-    m.tabsGroup.visible = m.source <> invalid
-    root = CreateObject("roSGNode", "ContentNode")
-    m.settingActions = ["pair", "xtream", "m3u"]
-    labels = ["Pair with your phone (recommended)", "Enter line login", "Enter M3U playlist link"]
-    if m.source = invalid
-        m.account.text = "Welcome to LumaNest TV. Pair this Roku with your phone, or enter the line login from your customer hub's TV/app setup details."
-    else
-        if m.source.type = "xtream"
-            m.account.text = "Signed in as " + m.source.username + " on " + m.source.server
-        else
-            m.account.text = "Using an M3U playlist link."
-        end if
-        m.settingActions.Append(["reload", "signout"])
-        labels.Append(["Reload channels and movies", "Sign out of this Roku"])
-    end if
+sub setList(list as object, labels as object)
+    content = CreateObject("roSGNode", "ContentNode")
     for each label in labels
-        root.CreateChild("ContentNode").title = label
+        child = content.createChild("ContentNode")
+        child.title = label
     end for
-    m.settingsList.content = root
-    if m.source = invalid then setZone("settings")
+    list.content = content
 end sub
-
-sub onSettingSelected()
-    action = m.settingActions[m.settingsList.itemSelected]
-    if action = "pair"
-        m.pair.visible = true
-        m.pair.active = true
-        setZone("pair")
-    else if action = "xtream"
-        server = ""
-        if m.source <> invalid and m.source.type = "xtream" then server = m.source.server
-        m.entry = {kind: "xtream", step: 0}
-        askText("Server address", "The server from your line login, for example http://example.com:8080", server, false)
-    else if action = "m3u"
-        m.entry = {kind: "m3u", step: 0}
-        askText("M3U playlist link", "The full http:// or https:// link to your playlist.", "", false)
-    else if action = "reload"
-        resetCatalogs()
-        selectTab(0)
-    else if action = "signout"
-        resetCatalogs()
-        utilClearSource()
-        m.source = invalid
-        showSettings()
-    end if
-end sub
-
-sub useSource(source as Object)
-    utilSaveSource(source)
-    m.source = source
-    resetCatalogs()
-    m.tabsGroup.visible = true
-    selectTab(0)
-    if m.cats.content = invalid then m.message.text = "Connected. Loading channels…"
-end sub
-
-sub onPaired()
-    m.pair.active = false
-    m.pair.visible = false
-    useSource(m.pair.paired)
-end sub
-
-sub onPairClosed()
-    m.pair.active = false
-    m.pair.visible = false
-    setZone("settings")
-end sub
-
-' ---------- Typed logins ----------
-
-sub askText(title as String, message as String, initial as String, secure as Boolean)
-    dialog = CreateObject("roSGNode", "StandardKeyboardDialog")
-    dialog.title = title
-    dialog.message = [message]
-    dialog.text = initial
-    dialog.buttons = ["Continue", "Cancel"]
-    if secure and dialog.textEditBox <> invalid then dialog.textEditBox.secureMode = true
-    dialog.ObserveField("buttonSelected", "onDialogButton")
-    dialog.ObserveField("wasClosed", "onDialogClosed")
-    m.top.dialog = dialog
-end sub
-
-sub closeDialog()
-    dialog = m.top.dialog
-    if dialog = invalid then return
-    dialog.UnobserveField("buttonSelected")
-    dialog.UnobserveField("wasClosed")
-    dialog.close = true
-end sub
-
-sub onDialogClosed()
-    m.entry = invalid
-    setZone("settings")
-end sub
-
-sub onDialogButton()
-    dialog = m.top.dialog
-    text = dialog.text.Trim()
-    pressed = dialog.buttonSelected
-    closeDialog()
-    entry = m.entry
-    if pressed <> 0 or entry = invalid
-        m.entry = invalid
-        setZone("settings")
-        return
-    end if
-    if entry.kind = "m3u"
-        m.entry = invalid
-        login = utilFromGetPhp(text)
-        if login <> invalid
-            useSource(login)
-        else if utilStartsWithI(text, "http://") or utilStartsWithI(text, "https://")
-            useSource({type: "m3u", name: "LumaNest TV", m3uUrl: text})
-        else
-            m.account.text = "That playlist link must start with http:// or https://."
-            setZone("settings")
-        end if
-        return
-    end if
-    if text = "" and entry.step < 2
-        m.entry = invalid
-        m.account.text = "The server address and username are required."
-        setZone("settings")
-        return
-    end if
-    if entry.step = 0
-        login = utilFromGetPhp(text)
-        if login <> invalid
-            m.entry = invalid
-            useSource(login)
-            return
-        end if
-        entry.server = utilNormalizeServer(text)
-        entry.step = 1
-        askText("Username", "Your line username.", "", false)
-    else if entry.step = 1
-        entry.username = text
-        entry.step = 2
-        askText("Password", "Your line password.", "", true)
-    else
-        m.entry = invalid
-        useSource({type: "xtream", name: "LumaNest TV", server: entry.server, username: entry.username, password: text})
-    end if
-end sub
-
-' ---------- Player ----------
 
 sub onItemSelected()
-    m.playList = m.items.content
-    m.playIndex = m.items.itemSelected
-    m.playCategory = m.cats.content.GetChild(m.cats.itemFocused).title
-    startPlayback()
+    index = m.items.itemSelected
+    if index < 0 or index >= m.currentItems.Count() then return
+    item = m.currentItems[index]
+    if item.kind = "series"
+        m.status.text = "Loading " + item.name + "…"
+        m.seriesItems = m.currentItems
+        m.seriesIndex = index
+        runTask({mode: "seriesInfo", account: m.account, seriesId: item.seriesId}, "onSeriesInfo")
+    else
+        play(item)
+    end if
 end sub
 
-sub startPlayback()
-    item = m.playList.GetChild(m.playIndex)
-    if item = invalid then return
-    m.video.control = "stop"
-    m.video.content = item
+sub onSeriesInfo(event as object)
+    r = event.getData()
+    m.status.text = ""
+    if not r.ok or r.data.Count() = 0
+        showToast("No episodes are available for this series.")
+        m.seriesItems = invalid
+        return
+    end if
+    m.currentItems = r.data
+    labels = []
+    for each episode in r.data
+        labels.Push(episode.name)
+    end for
+    setList(m.items, labels)
+    m.items.jumpToItem = 0
+end sub
+
+' ------------------------------------------------------------------ playback
+
+sub play(item as object)
+    content = CreateObject("roSGNode", "ContentNode")
+    content.url = item.url
+    content.title = item.name
+    lower = LCase(item.url)
+    if lower.InStr(".m3u8") >= 0
+        content.streamFormat = "hls"
+    else if lower.InStr(".mkv") >= 0
+        content.streamFormat = "mkv"
+    else if lower.InStr(".ts") >= 0
+        content.streamFormat = "ts"
+    else
+        content.streamFormat = "mp4"
+    end if
+    if item.kind = "live" then content.live = true
+    m.video.content = content
     m.video.visible = true
     m.video.control = "play"
-    setZone("video")
-    if item.live then showBanner("")
+    m.video.setFocus(true)
 end sub
 
-sub stopPlayback()
+sub stopVideo()
     m.video.control = "stop"
     m.video.visible = false
-    hideBanner()
-    m.items.jumpToItem = m.playIndex
-    setZone("items")
+    m.items.setFocus(true)
 end sub
 
 sub onVideoState()
     state = m.video.state
     if state = "error"
-        detail = m.video.errorMsg
-        if detail = "" then detail = "The stream didn't start."
-        showBanner("Couldn't play this. " + detail + " Try another channel, or press Back.")
+        message = m.video.errorMsg
+        stopVideo()
+        showToast("This channel couldn't be played. " + message)
     else if state = "finished"
-        item = m.video.content
-        if item = invalid or not item.live then stopPlayback()
-    else if state = "playing"
-        if m.banner.visible then m.bannerTimer.control = "start"
+        stopVideo()
     end if
 end sub
 
-function videoKey(key as String) as Boolean
-    item = m.video.content
-    live = item <> invalid and item.live
-    if key = "back"
-        stopPlayback()
-    else if live and (key = "up" or key = "down")
-        count = m.playList.GetChildCount()
-        if count > 0
-            delta = 1
-            if key = "down" then delta = -1
-            m.playIndex = (m.playIndex + delta + count) mod count
-            startPlayback()
-        end if
-    else if key = "options" or (live and key = "OK")
-        if m.banner.visible
-            hideBanner()
-        else
-            showBanner("")
-        end if
-    else
-        return false
-    end if
-    return true
+' ------------------------------------------------------------------ settings
+
+function settingsLabels() as object
+    lineup = "Channels: All"
+    if m.settings.usOnly then lineup = "Channels: USA only"
+    order = "Category order: Featured"
+    if m.settings.order = "provider" then order = "Category order: Customer hub"
+    if m.settings.order = "az" then order = "Category order: A to Z"
+    return [lineup, order, "Refresh library", "Pair again"]
 end function
 
-sub showBanner(note as String)
-    item = m.video.content
-    if item = invalid then return
-    m.bannerNumber.text = item.ShortDescriptionLine1
-    m.bannerTitle.text = item.title
-    if note <> ""
-        m.bannerDetail.text = note
-    else if item.live
-        m.bannerDetail.text = m.playCategory + "      ▲▼ Change channel    OK Info    Back Channel list"
-    else
-        m.bannerDetail.text = m.playCategory + "      Back Movie list"
+sub onCategorySelected()
+    if sectionKey() <> "settings" then
+        m.items.setFocus(true)
+        return
     end if
-    m.banner.visible = true
-    m.bannerTimer.control = "stop"
-    if note = "" then m.bannerTimer.control = "start"
+    choice = m.cats.itemSelected
+    if choice = 0
+        m.settings.usOnly = not m.settings.usOnly
+        if m.settings.usOnly then m.reg.Write("usOnly", "1") else m.reg.Write("usOnly", "0")
+        m.reg.Flush()
+        if m.settings.usOnly then showToast("Showing USA channels only.") else showToast("Showing all channels on your line.")
+    else if choice = 1
+        if m.settings.order = "featured"
+            m.settings.order = "provider"
+        else if m.settings.order = "provider"
+            m.settings.order = "az"
+        else
+            m.settings.order = "featured"
+        end if
+        m.reg.Write("order", m.settings.order)
+        m.reg.Flush()
+    else if choice = 2
+        loadCatalog()
+        showToast("Refreshing your library.")
+    else if choice = 3
+        m.reg.Delete("account")
+        m.reg.Flush()
+        m.account = invalid
+        m.catalog = invalid
+        showPair()
+        return
+    end if
+    setList(m.cats, settingsLabels())
+    m.cats.jumpToItem = choice
 end sub
 
-sub hideBanner()
-    m.bannerTimer.control = "stop"
-    m.banner.visible = false
-end sub
+' ------------------------------------------------------------------ remote
+
+function onKeyEvent(key as string, press as boolean) as boolean
+    if not press then return false
+    if m.video.visible
+        if key = "back"
+            stopVideo()
+            return true
+        end if
+        return false
+    end if
+    if m.pairView.visible then return false
+    if key = "right"
+        if m.nav.hasFocus()
+            m.cats.setFocus(true)
+            return true
+        else if m.cats.hasFocus() and m.currentItems.Count() > 0 and sectionKey() <> "settings"
+            m.items.setFocus(true)
+            return true
+        end if
+    else if key = "left"
+        if m.items.hasFocus()
+            m.cats.setFocus(true)
+            return true
+        else if m.cats.hasFocus()
+            m.nav.setFocus(true)
+            return true
+        end if
+    else if key = "back"
+        if m.items.hasFocus() and m.seriesItems <> invalid
+            ' Back from an episode list returns to the series in that category.
+            m.currentItems = m.seriesItems
+            m.seriesItems = invalid
+            labels = []
+            for each item in m.currentItems
+                labels.Push(item.name)
+            end for
+            setList(m.items, labels)
+            m.items.jumpToItem = m.seriesIndex
+            return true
+        else if m.items.hasFocus()
+            m.cats.setFocus(true)
+            return true
+        else if m.cats.hasFocus()
+            m.nav.setFocus(true)
+            return true
+        end if
+    end if
+    return false
+end function

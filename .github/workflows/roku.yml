@@ -30,18 +30,16 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
-      - name: Install the pinned validation dependencies
+      - name: Install the pinned BrighterScript compiler
         run: npm install --ignore-scripts --no-package-lock --no-audit --no-fund
-      - name: Check Roku channel source
+      - name: Compile every BrightScript and SceneGraph file
         run: npm run check
-      - name: Test
-        run: npm test
-      - name: Package the channel ZIP without a Roku connection
+      - name: Build the sideload package
         run: npm run build
-      - name: Save channel package
+      - name: Save staged package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: roku-channel-package
+          name: roku-sideload-package
           path: output/roku/
           if-no-files-found: error
           retention-days: 7
