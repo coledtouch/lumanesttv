@@ -1,6 +1,6 @@
 # Tuner by LumaNest TV
 
-IPTV player for Android TV and Google TV. Cable-style Live TV guide, live preview, movies, series, search, and themes. Version 1.5.3 expands two-channel Multi View to the full screen, with controls that hide while you watch. Fast saved-library startup, a True Black theme, personal Most Watched, labelled navigation, Favorites, unrestricted movie and series audio, and native Android Picture-in-Picture remain available.
+IPTV player for Android TV and Google TV. Cable-style Live TV guide, live preview, movies, series, search, and themes. Version 1.6.0 adds LumaNest branding and pairing with your phone (scan a QR code on lumanest.tv/pair), and removes Torrentio. Version 1.5.3 expanded two-channel Multi View to the full screen, with controls that hide while you watch. Fast saved-library startup, a True Black theme, personal Most Watched, labelled navigation, Favorites, unrestricted movie and series audio, and native Android Picture-in-Picture remain available.
 
 The [Samsung Tizen TV app](../tizen/README.md) provides Live TV, Movies, Series, Search, a black theme, and two-channel side-by-side or in-app Picture in Picture. It is built and signed separately from the Android APK using a Samsung TV certificate.
 
@@ -13,7 +13,7 @@ The [Samsung Tizen TV app](../tizen/README.md) provides Live TV, Movies, Series,
 
 ```powershell
 adb connect <TV-IP>:<DEBUG-PORT>
-adb install -r .\Tuner-1.5.3.apk
+adb install -r .\Tuner-1.6.0.apk
 ```
 
 Accept the debugging prompt on the TV the first time. Tuner shows up in your Apps row.
