@@ -28,7 +28,6 @@ const worksOn: [string, string, keyof typeof icon, string][] = [
   ['samsung', 'Samsung TV', 'tv', 'App temporarily unavailable'],
 ];
 const included = ['Live channels, with your channel choices', 'Movies and series to browse', 'The web player in your browser', 'TV app setup for Android TV, Google TV, Fire TV and LG webOS', 'Online renewals and subscription management'];
-const guide = [['101', 'Evening news', 62], ['102', 'Nature hour', 35], ['103', 'Movie night', 48]] as const;
 
 const questions = [
   ['What are simultaneous screens?', 'A screen is any device watching at the same time. For example, a TV, a phone and a laptop watching at once count as three screens. ' + plans.map(item => item.name + ' allows ' + ['one', 'two', 'three', 'four'][item.devices - 1]).join(', ').replace(/, ([^,]*)$/, ' and $1') + '.'],
@@ -144,11 +143,11 @@ export default function Storefront({portal, ready, support}: {portal: string; re
           <div className="actions"><a className="button primary" href="#plans">Find your plan <span aria-hidden="true">↗</span></a><a href="/watch" className="text-link">Already a customer? Watch now <span aria-hidden="true">↗</span></a></div>
           <div className="hero-note"><span>1–4 simultaneous screens</span><span>About {monthly(starter.prices[0], periods[0])}/mo on {starter.name}</span></div>
         </div>
-        <div className="hero-art" role="img" aria-label="A cozy room with a sofa, a moonlit window and a television showing a channel guide">
-          <div className="art-label" aria-hidden="true">THE NIGHT IS YOURS <span>● LIVE / ON DEMAND</span></div><div className="moon"/><div className="window-frame"><i/><i/></div><div className="landscape"><div className="ridge back"/><div className="ridge front"/></div>
-          <div className="tv-frame" aria-hidden="true"><div className="tv-screen tv-guide"><div className="guide-bar"><span><i/>LIVE</span><span>TONIGHT</span></div>{guide.map(([number, title, progress], index) => <div key={number} className={'guide-row' + (index === 2 ? ' is-now' : '')}><b>{number}</b><span>{title}{index === 2 && <small>▶ Now playing</small>}</span><em><i style={{width: progress + '%'}}/></em></div>)}</div></div>
-          <div className="lamp"><i/></div><div className="sofa"/><div className="art-caption"><span>PRESS PAUSE ON THE DAY.</span><span>LumaNest / 01</span></div>
-        </div>
+        <picture>
+          <source srcSet="/hero-art.webp" type="image/webp"/>
+          {/* eslint-disable-next-line @next/next/no-img-element -- static hero art with explicit size, loaded eagerly as the LCP image */}
+          <img className="hero-art" src="/hero-art.png" width={600} height={480} fetchPriority="high" alt="A cozy room at night: a moonlit arched window, a television ready to play, a sofa and a reading lamp."/>
+        </picture>
       </section>
 
       <section className="quick-access" aria-label="Get started">
