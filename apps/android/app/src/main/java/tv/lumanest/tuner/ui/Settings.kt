@@ -241,7 +241,7 @@ fun SettingsScreen(state: AppState) {
             }
             item {
                 Text(
-                    "Tuner ${tv.lumanest.tuner.BuildConfig.VERSION_NAME}  ·  Hold OK on a guide channel to favorite it  ·  Number keys tune directly",
+                    "Tuner by LumaNest TV ${tv.lumanest.tuner.BuildConfig.VERSION_NAME}  ·  Hold OK on a guide channel to favorite it  ·  Number keys tune directly",
                     color = Palette.faint, fontSize = 12.sp, modifier = Modifier.padding(top = 18.dp),
                 )
             }

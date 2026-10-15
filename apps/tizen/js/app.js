@@ -1462,11 +1462,11 @@
     side.appendChild(
       button(
         "Theme: " +
-          (store.settings.theme === "midnight" ? "Midnight" : "Black"),
+          (store.settings.theme === "black" ? "Black" : "LumaNest"),
         "theme-setting",
         function () {
           store.saveSettings({
-            theme: store.settings.theme === "midnight" ? "black" : "midnight",
+            theme: store.settings.theme === "black" ? "midnight" : "black",
           });
           render();
         },
@@ -1492,7 +1492,7 @@
       button("About Tuner", "about-tuner", function () {
         showDialog(
           "Tuner for Samsung TV",
-          "Version 1.4.8 · Samsung TV\nLive TV, guide, movies, series and Favorites. Two-channel PiP works on supported TVs and playlists. Embedded torrent playback is not available on Samsung.",
+          "Version 1.4.9 · Samsung TV\nLive TV, guide, movies, series and Favorites. Two-channel PiP works on supported TVs and playlists. Embedded torrent playback is not available on Samsung.",
           []
         );
       })
@@ -2139,7 +2139,7 @@
           player.state &&
           /loading|playing|paused/.test(player.state.status)));
     document.body.className =
-      (store.settings.theme === "midnight" ? "" : "black") +
+      (store.settings.theme === "black" ? "black" : "") +
       (S.fullscreen ? " fullscreen" : "") +
       (dualActive && S.tab === 5 ? " multiview-fullscreen" : "") +
       (nativeVisible ? " native-video" : "");

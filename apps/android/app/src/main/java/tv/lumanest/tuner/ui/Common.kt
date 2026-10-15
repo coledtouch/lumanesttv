@@ -65,11 +65,13 @@ data class AppTheme(
 )
 
 object Themes {
+    // LumaNest TV house palette (ink #141224, violet #7C3AED, lavender #C4B5FD). Keeps the "midnight"
+    // id so saved settings from earlier versions land on it.
     val Midnight = AppTheme(
-        "midnight", "Midnight", bg = Color(0xFF080E1A), surface = Color(0xFF111C2E), surface2 = Color(0xFF1C2B42),
-        cell = Color(0xFF142137), cellNow = Color(0xFF20344F), line = Color(0xFF2C3D57),
-        text = Color(0xFFF1F5FC), dim = Color(0xFFAAB8CE), faint = Color(0xFF7D8EA8),
-        accent = Color(0xFF70B4FF), focus = Color.White, onFocus = Color(0xFF080E1A),
+        "midnight", "LumaNest", bg = Color(0xFF0E0C1A), surface = Color(0xFF171428), surface2 = Color(0xFF221D3A),
+        cell = Color(0xFF1A1630), cellNow = Color(0xFF2B2349), line = Color(0xFF342C54),
+        text = Color(0xFFF6F3FB), dim = Color(0xFFBBB2CF), faint = Color(0xFF857D9E),
+        accent = Color(0xFFB79CFB), focus = Color.White, onFocus = Color(0xFF141224),
     )
     val Black = AppTheme(
         "black", "True Black", bg = Color.Black, surface = Color(0xFF090909), surface2 = Color(0xFF17191D),
@@ -124,7 +126,7 @@ object Palette {
     val dim get() = theme.dim
     val faint get() = theme.faint
     val accent get() = theme.accent
-    val onAccent get() = if (theme.dark) Color(0xFF08111E) else Color.White
+    val onAccent get() = if (theme.dark) Color(0xFF141224) else Color.White
     val focus get() = theme.focus
     val onFocus get() = theme.onFocus
     val live = Color(0xFFFF4D5E)

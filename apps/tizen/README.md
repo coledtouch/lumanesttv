@@ -1,6 +1,6 @@
 # Tuner for Samsung Tizen TV
 
-This is the Samsung TV web application in the LumaNest TV monorepo, separate from `../android` and `../webos`. It provides Live TV with a guide and preview, Movies, Series, Search, Favorites and Settings, using a directional pad, OK and Back. The application/package IDs are `TunerTv001.Tuner` / `TunerTv001`; version is 1.4.8.
+This is the Samsung TV web application in the LumaNest TV monorepo, separate from `../android` and `../webos`. It provides Live TV with a guide and preview, Movies, Series, Search, Favorites and Settings, using a directional pad, OK and Back. The application/package IDs are `TunerTv001.Tuner` / `TunerTv001`; version is 1.4.9.
 
 The runtime uses ES5 JavaScript, local HTML/CSS and Samsung's built-in AVPlay. HTTP(S) provider requests and artwork are allowed; scripts are restricted to the packaged application and the TV's local WebAPI library. No remote scripts, inline script handlers or eval are permitted. Provider accounts are entered on the device and must never be embedded in a widget or committed to source.
 
@@ -19,7 +19,7 @@ npm test
 npm run build
 ```
 
-The build copies only `config.xml`, `index.html`, `css/app.css`, the three runtime JavaScript files, and `assets/icon.png`. Tools, tests, node_modules, provider exports, preferences and certificates are excluded. Outputs go to the repository's ignored `output/tizen` directory (`../../output/tizen` from here). Every build creates clean staging, validates ES5 syntax, application identifiers, privileges, CSP and ZIP checksums, and produces `Tuner-1.4.8-tizen-UNSIGNED.wgt`. Pass an output folder to `node tools/build.js <output-folder>` or use the PowerShell packager's `-OutputDirectory` option to choose another location.
+The build copies only `config.xml`, `index.html`, `css/app.css`, the three runtime JavaScript files, and `assets/icon.png`. Tools, tests, node_modules, provider exports, preferences and certificates are excluded. Outputs go to the repository's ignored `output/tizen` directory (`../../output/tizen` from here). Every build creates clean staging, validates ES5 syntax, application identifiers, privileges, CSP and ZIP checksums, and produces `Tuner-1.4.9-tizen-UNSIGNED.wgt`. Pass an output folder to `node tools/build.js <output-folder>` or use the PowerShell packager's `-OutputDirectory` option to choose another location.
 
 **The unsigned widget is a staging artifact. It cannot be installed on a physical Samsung TV.** It needs a Samsung author/distributor certificate profile containing the target TV's DUID.
 
@@ -71,7 +71,7 @@ After that one-time profile setup:
 
 ```powershell
 .\tools\Package-Tizen.ps1 -CertificateProfile TunerTV
-.\tools\Install-Tizen.ps1 -TvAddress <TV-IP> -Widget ..\..\output\tizen\Tuner-1.4.8-tizen.wgt -Launch
+.\tools\Install-Tizen.ps1 -TvAddress <TV-IP> -Widget ..\..\output\tizen\Tuner-1.4.9-tizen.wgt -Launch
 ```
 
 The package script builds fresh staging, invokes the official signer and checks that both widget signature files exist. Their presence does not prove validity: the Samsung CLI and the target TV perform certificate validation. The installer rejects unsigned widgets, checks the developer port, uses an explicit device serial, and only launches Tuner when `-Launch` is supplied. It does not uninstall other applications or reset TV settings.
