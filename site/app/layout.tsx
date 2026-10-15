@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import "./storefront.css";
+import "./site-chrome.css";
 import PwaSupport from './pwa-support';
 import {SITE_URL, openGraph, siteDescription, siteTitle} from './site';
 

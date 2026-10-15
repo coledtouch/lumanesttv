@@ -1,6 +1,7 @@
 'use client';
 
 import {useCallback, useEffect, useRef, useState} from 'react';
+import {SiteFooter, SiteHeader} from '../../site-chrome';
 
 type OrderState = 'checking' | 'fulfilled' | 'sandbox_paid' | 'needs_review' | 'processing' | 'error' | 'invalid';
 
@@ -62,11 +63,12 @@ export default function Confirmation({portal, support}: {portal: string; support
   const supportLink = 'mailto:' + support + '?subject=' + encodeURIComponent('LumaNest checkout help' + (orderReference ? ' · ' + orderReference : ''));
 
   return <div className="checkout-result">
-    <header className="checkout-result-header"><a href="/" aria-label="LumaNest TV home"><img className="logo" src="/logo.png" alt="LumaNest TV" width="204" height="64"/></a><a href={supportLink}>Contact support <span aria-hidden="true">↗</span></a></header>
-    <main className="checkout-result-main"><section className="checkout-result-card" aria-labelledby="checkout-result-title"><p className="eyebrow">{confirmed ? 'WELCOME TO YOUR NEXT EVENING' : 'YOUR ORDER STATUS'}</p><h1 id="checkout-result-title">{heading}</h1><div className="checkout-result-status" data-state={state} role="status" aria-live="polite" aria-busy={busy}><p>{busy ? 'Confirming your payment and subscription…' : message}</p></div>
+    <SiteHeader portal={portal} install={false}/>
+    <main id="main-content" className="checkout-result-main"><section className="checkout-result-card" aria-labelledby="checkout-result-title"><p className="eyebrow">{confirmed ? 'WELCOME TO YOUR NEXT EVENING' : 'YOUR ORDER STATUS'}</p><h1 id="checkout-result-title">{heading}</h1><div className="checkout-result-status" data-state={state} role="status" aria-live="polite" aria-busy={busy}><p>{busy ? 'Confirming your payment and subscription…' : message}</p></div>
       <p>{confirmed ? 'Open your customer hub to see your subscription, line login and TV setup details. If you renewed, continue using your existing line login. Keep your PayPal receipt for your records.' : state === 'sandbox_paid' ? 'This was a test payment. No live subscription was activated or renewed.' : 'Keep your PayPal receipt. If your payment is confirmed but your subscription update is still processing, contact support before placing another order.'}</p>
       <div className="actions">{confirmed ? <><a className="button primary" href={portal}>Open customer hub <span aria-hidden="true">↗</span></a><a className="button secondary" href="/apps">Set up my TV <span aria-hidden="true">↗</span></a><a className="button secondary" href="/watch">Watch now <span aria-hidden="true">↗</span></a></> : <>{state !== 'invalid' && state !== 'sandbox_paid' && <button type="button" className="button primary" disabled={busy} onClick={() => void check()}>{busy ? 'Checking order…' : 'Check order status'}<span aria-hidden="true">↻</span></button>}<a className="button secondary" href={supportLink}>Contact support <span aria-hidden="true">↗</span></a><a className="button secondary" href="/">Back to LumaNest <span aria-hidden="true">↗</span></a></>}</div>
       {orderReference && <p className="checkout-order-reference">Order reference: {orderReference}</p>}
-    </section></main><footer className="checkout-result-footer">LumaNest TV · Settle in. Stay curious.</footer>
+    </section></main>
+    <SiteFooter portal={portal} support={support}/>
   </div>;
 }

@@ -3,6 +3,7 @@
 import {useEffect, useRef, useState, type FormEvent, type KeyboardEvent} from 'react';
 import {plans, periods} from '../lib/plans';
 import LoginExplainer from './login-explainer';
+import {SiteFooter, SiteHeader} from './site-chrome';
 
 type Availability = 'checking' | 'available' | 'unavailable' | 'error';
 
@@ -44,10 +45,8 @@ export default function Storefront({portal, ready, support}: {portal: string; re
   const [error, setError] = useState('');
   const [availability, setAvailability] = useState<Availability>('checking');
   const [availabilityAttempt, setAvailabilityAttempt] = useState(0);
-  const [menuOpen, setMenuOpen] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const submittingRef = useRef(false);
-  const menuToggleRef = useRef<HTMLButtonElement>(null);
   const supportEmail = support || 'support@lumanest.tv';
   const plan = selected === null ? null : plans[selected];
 
@@ -87,13 +86,6 @@ export default function Storefront({portal, ready, support}: {portal: string; re
     window.addEventListener('pageshow', restore);
     return () => window.removeEventListener('pageshow', restore);
   }, []);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const close = (event: globalThis.KeyboardEvent) => {if (event.key === 'Escape') {setMenuOpen(false); menuToggleRef.current?.focus();}};
-    document.addEventListener('keydown', close);
-    return () => document.removeEventListener('keydown', close);
-  }, [menuOpen]);
 
   function closeCheckout() {
     if (!submittingRef.current) setSelected(null);
@@ -138,15 +130,7 @@ export default function Storefront({portal, ready, support}: {portal: string; re
   }
 
   return <div className="storefront">
-    <a className="skip-link" href="#main-content">Skip to content</a>
-    <header className="site-header">
-      <a href="/" aria-label="LumaNest TV home"><img className="logo" src="/logo.png" alt="LumaNest TV" width="204" height="64"/></a>
-      <button ref={menuToggleRef} className="mobile-menu-toggle" aria-expanded={menuOpen} aria-controls="primary-navigation" onClick={() => setMenuOpen(!menuOpen)}>{menuOpen ? 'Close' : 'Menu'}<span aria-hidden="true">{menuOpen ? '×' : '☰'}</span></button>
-      <nav id="primary-navigation" className={menuOpen ? 'is-open' : ''} aria-label="Main navigation" onClick={() => setMenuOpen(false)}>
-        <a href="#plans">Plans</a><a href="/watch">Watch now</a><a href="/renew">Renew</a><a href="/apps">Set up my TV</a><a href={'mailto:' + supportEmail}>Help</a>
-        <a className="nav-cta" href={portal || '#customer-access'}>Customer sign in <span aria-hidden="true">↗</span></a>
-      </nav>
-    </header>
+    <SiteHeader portal={portal}/>
     <main id="main-content">
       <section className="hero" aria-labelledby="hero-title">
         <div className="hero-copy">
@@ -199,7 +183,7 @@ export default function Storefront({portal, ready, support}: {portal: string; re
       <section className="access section" id="customer-access" aria-labelledby="access-title">
         <p className="eyebrow">ALREADY PART OF THE NEST?</p><h2 id="access-title">Your subscription.<br/>One familiar place.</h2><p>Find your line login, manage your subscription, and make yourself at home.</p>
         {portal && <div className="actions access-actions"><a className="button primary" href={portal}>Open customer hub <span aria-hidden="true">↗</span></a></div>}
-        {!portal && <p className="notice">Customer sign-in is being connected. <a href={'mailto:' + supportEmail}>Contact support for help with your subscription.</a></p>}
+        {!portal && <p className="notice">The customer hub is being connected. <a href={'mailto:' + supportEmail}>Contact support for help with your subscription.</a></p>}
         <nav className="access-links" aria-label="More for customers"><a href="/renew">Renew subscription <span aria-hidden="true">↗</span></a><a href="/watch">Watch now <span aria-hidden="true">↗</span></a><a href="/apps">Set up my TV <span aria-hidden="true">↗</span></a></nav>
         <p className="access-help">Your customer account and your line login may use different passwords. <a href="#logins">Which login goes where?</a></p>
       </section>
@@ -208,7 +192,7 @@ export default function Storefront({portal, ready, support}: {portal: string; re
 
       <section className="faq section" id="faq" aria-labelledby="faq-title"><div><p className="eyebrow">GOOD TO KNOW</p><h2 id="faq-title">A few things<br/>before you settle in.</h2><a className="text-link faq-support" href={'mailto:' + supportEmail}>Need a hand? Contact support <span aria-hidden="true">↗</span></a></div><div>{questions.map(([question, answer]) => <details key={question}><summary>{question}<span aria-hidden="true">+</span></summary><p>{answer}</p></details>)}</div></section>
     </main>
-    <footer className="site-footer"><div className="footer-brand"><a href="/" aria-label="LumaNest TV home"><img className="logo" src="/logo.png" alt="LumaNest TV" width="204" height="64"/></a><p>Settle in. Stay curious.</p></div><nav aria-label="Footer navigation"><a href={'mailto:' + supportEmail}>Contact support</a><a href="/renew">Renew subscription</a><a href="/watch">Web player</a><a href="/apps">TV setup</a>{portal && <a href={portal}>Customer hub</a>}<a href="/#logins">Which login?</a></nav><div className="copyright"><span>© {new Date().getFullYear()} LumaNest TV</span><nav className="footer-legal" aria-label="Legal"><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/refunds">Refunds</a></nav></div></footer>
+    <SiteFooter portal={portal} support={supportEmail}/>
 
     {plan && <dialog className="checkout-dialog modal" ref={dialogRef} aria-labelledby="plan-title" aria-describedby="checkout-summary" onKeyDown={trapCheckoutFocus} onCancel={event => {event.preventDefault(); closeCheckout();}} onClick={event => {if (event.target === event.currentTarget) {const bounds = event.currentTarget.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) closeCheckout();}}}>
       <button className="close" type="button" aria-label="Close checkout" disabled={busy} onClick={closeCheckout}>×</button><p className="eyebrow">YOUR NEXT EVENING STARTS HERE</p><h2 id="plan-title">Make room for {plan.name}.</h2>

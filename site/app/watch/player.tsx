@@ -6,6 +6,7 @@ import type mpegts from 'mpegts.js';
 import {createPlayerStreamLoader} from '../../lib/player-stream-loader';
 import {createPlaybackSession} from '../../lib/player-playback-session';
 import {playerStreamError} from '../../lib/player-error';
+import {SiteFooter, SiteHeader} from '../site-chrome';
 
 type Channel = {id: string; name: string; group: string; format: 'hls' | 'mpegts' | 'file'; token: string | null; reason: string};
 type ChannelResponse = {channels?: Channel[]; username?: string; expiresAt?: number; error?: {code?: string; message: string}};
@@ -235,13 +236,9 @@ export default function Player({portal, support}: {portal: string; support: stri
   const connecting = selected && !playError && ['Connecting…', 'Reconnecting…', 'Buffering…'].includes(status);
 
   return <div className="watch-shell">
-    <a className="watch-skip" href="#watch-content">Skip to player</a>
-    <header className="watch-header">
-      <a href="/" aria-label="LumaNest TV home"><img src="/logo.png" alt="LumaNest TV" className="logo" width="204" height="52"/></a>
-      <div><nav className="watch-nav" aria-label="Main navigation"><a href="/#plans">Plans</a><a href="/apps">Help</a><a href="/renew">Renew subscription ↗</a></nav><span data-pwa-install-slot=""/>{username && <button onClick={logout} disabled={signingOut}>{signingOut ? 'Signing out…' : 'Sign out'}</button>}</div>
-    </header>
-    {checking && !username ? <main id="watch-content" className="watch-login watch-opening"><span className="watch-spinner" aria-hidden="true"/><p role="status">Opening your nest…</p></main> : !username ?
-      <main id="watch-content" className="watch-login">
+    <SiteHeader portal={portal} current="/watch" actions={username ? <button type="button" onClick={logout} disabled={signingOut}>{signingOut ? 'Signing out…' : 'Sign out'}</button> : undefined}/>
+    {checking && !username ? <main id="main-content" className="watch-login watch-opening"><span className="watch-spinner" aria-hidden="true"/><p role="status">Opening your nest…</p></main> : !username ?
+      <main id="main-content" className="watch-login">
         <section className="watch-intro"><p className="eyebrow"><i className="status-dot"/> LUMANEST WEB PLAYER</p><h1><span className="watch-headline">Your front row.</span><br/><em>Anywhere.</em></h1><p>Pick a channel. Settle in. Watch in your browser.</p><div className="watch-orbit" aria-hidden="true"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><path d="M15.5 4.5a8 8 0 1 0 4 12.2 6.5 6.5 0 0 1-4-12.2Z"/><path d="M19 3v3M17.5 4.5h3"/></svg></div><div className="watch-format"><span>Live channels</span><span>Search & favorites</span><span>Fullscreen playback</span></div></section>
         <section className="watch-login-card"><p className="eyebrow">WELCOME TO YOUR NEST</p><h2>Let’s get you<br/>watching.</h2><p>Use the line username and password shown in your customer hub’s app setup details. <a className="watch-which-login" href="/#logins">Which login is this?</a></p>
           <form onSubmit={signIn} aria-busy={busy}>
@@ -253,7 +250,7 @@ export default function Player({portal, support}: {portal: string; support: stri
           <a href={portal} className="watch-help">Find your line login in the customer hub ↗</a><p className="watch-privacy">An active subscription is required. <a href="/renew">Renew an expired line online ↗</a> Keep your line login private.</p>
         </section>
       </main> :
-      <main id="watch-content" className="watch-dashboard">
+      <main id="main-content" className="watch-dashboard">
         <section className="watch-main">
           <div className="watch-title"><div><p className="eyebrow">YOUR CHANNEL. YOUR EVENING.</p><h1>Welcome home.</h1></div><span className="watch-user" title={username}>{username}</span></div>
           <div className="video-wrap" ref={viewingArea}>
@@ -284,6 +281,6 @@ export default function Player({portal, support}: {portal: string; support: stri
           </div>
         </aside>
       </main>}
-    <footer className="watch-footer"><span>© {new Date().getFullYear()} LumaNest TV</span><a href="/renew">Renew subscription ↗</a><a href={portal}>Customer hub ↗</a><a href="/">Plans & pricing</a><a href="/apps">Get the TV apps ↗</a></footer>
+    <SiteFooter portal={portal} support={support}/>
   </div>;
 }

@@ -7,6 +7,7 @@ import {canStartAutoRenew, isBillingOptions, isEnrollmentStatus, recurringTerms,
 import BillingAgreement from './billing-agreement';
 import AutoRenewManagement from './management';
 import styles from './renewal.module.css';
+import {SiteFooter, SiteHeader} from '../site-chrome';
 
 type Offer = {months: 3 | 6 | 12; amount: number; currency: 'USD'; available: boolean};
 type Quote = {
@@ -286,12 +287,8 @@ export default function Renewal({portal, support}: {portal: string; support: str
   const supportLink = 'mailto:' + support + '?subject=LumaNest%20renewal%20help';
 
   return <div className={styles.shell}>
-    <a className={styles.skip} href="#renew-content">Skip to renewal</a>
-    <header className={styles.header}>
-      <a href="/" aria-label="LumaNest TV home"><img className={styles.logo} src="/logo.png" alt="LumaNest TV" width="204" height="64"/></a>
-      <nav aria-label="Main navigation"><a href="/watch">Watch now</a><span data-pwa-install-slot=""/><a className={styles.hubLink} href={portal}>Customer hub <ArrowRight size={15} aria-hidden="true"/></a></nav>
-    </header>
-    <main id="renew-content" className={styles.main}>
+    <SiteHeader portal={portal} current="/renew"/>
+    <main id="main-content" className={styles.main}>
       <div className={styles.title}><p className={styles.eyebrow}><RefreshCw size={15} aria-hidden="true"/> YOUR NEXT CHAPTER</p><h1>Keep your<br/><em>evenings going.</em></h1><p>Renew your existing subscription in a few simple steps. Your line login and screen allowance stay the same.</p></div>
       <div className={styles.layout}>
         <aside className={styles.guide} aria-label="How renewal works"><details className={styles.guideDetails} open={guideOpen} onToggle={event => setGuideOpen(event.currentTarget.open)}>
@@ -344,6 +341,6 @@ export default function Renewal({portal, support}: {portal: string; support: str
         </section>
       </div>
     </main>
-    <footer className={styles.footer}><span>© {new Date().getFullYear()} LumaNest TV</span><a href="/">Plans & pricing</a><a href="/apps">TV setup</a><a href={supportLink}>Contact support</a></footer>
+    <SiteFooter portal={portal} support={support}/>
   </div>;
 }
