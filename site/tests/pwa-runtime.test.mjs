@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFile} from 'node:fs/promises';
 import {Miniflare} from 'miniflare';
-import {portalManifest} from '../cloudflare/lumanest-pwa-worker.mjs';
+import {cspBlocker, portalManifest} from '../cloudflare/lumanest-pwa-worker.mjs';
 
 const publicOrigin = 'https://lumanest.tv';
 const customerOrigin = 'https://portal.lumanest.tv';
@@ -23,7 +23,7 @@ test.before(async () => {
           if(url.hostname === 'mock.test' && url.pathname === '/control') {response = {...response,...await request.json()}; calls = []; return Response.json({ok:true});}
           if(url.hostname === 'mock.test' && url.pathname === '/stats') return Response.json({calls});
           calls.push({url: request.url, method: request.method, headers: Object.fromEntries(request.headers), body: ['GET','HEAD'].includes(request.method) ? '' : await request.text()});
-          if(url.hostname === 'lumanest.tv') return new Response(request.method === 'HEAD' ? null : 'public-asset-fixture', {headers: {'Content-Type': url.pathname === '/sw.js' ? 'application/javascript' : 'image/png', 'Cache-Control': 'public, max-age=600', 'Set-Cookie': 'asset-cookie=fixture', 'ETag': 'asset-etag'}});
+          if(url.hostname === 'lumanest.tv') return new Response(request.method === 'HEAD' ? null : 'public-asset-fixture', {headers: {'Content-Type': url.pathname === '/sw.js' ? 'application/javascript' : 'image/png', 'Cache-Control': 'public, max-age=600', 'Set-Cookie': 'asset-cookie=fixture', 'ETag': 'asset-etag', 'Service-Worker-Allowed': '/'}});
           return new Response(request.method === 'HEAD' ? null : response.body, {status: response.status, headers: {'Content-Type': response.type, ...response.headers}});
         }};
       `
@@ -104,7 +104,8 @@ test('public asset fetches cannot leak a customer cookie, authorization, referer
     assert.equal(requests[0].url, publicOrigin + pathname);
     for (const name of ['cookie', 'authorization', 'referer']) assert.equal(requests[0].headers[name], undefined, name);
     if (pathname === '/sw.js') {
-      assert.equal(response.headers.get('Service-Worker-Allowed'), '/');
+      // The root is already /sw.js's default maximum scope; nothing may widen or restate it.
+      assert.equal(response.headers.get('Service-Worker-Allowed'), null);
       assert.equal(response.headers.get('Cache-Control'), 'no-cache');
     }
   }
@@ -124,6 +125,57 @@ test('customer HTML gains app metadata while retaining private response and logi
   const requests = await calls();
   assert.equal(requests[0].url, customerOrigin + '/channels?region=fixture');
   assert.equal(requests[0].headers.cookie, 'customer-session=fixture');
+});
+
+test('CSP evaluation allows injection only where every injected same-origin resource is permitted', () => {
+  const host = 'portal.lumanest.tv';
+  for (const policy of [undefined, '', "default-src 'self'", "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; manifest-src 'self'; img-src data:",
+    "default-src https:", "default-src *", "default-src https://portal.lumanest.tv:443", "default-src *.lumanest.tv", "default-src 'self'; frame-ancestors 'none'; object-src 'none'",
+    "script-src 'self' 'unsafe-inline'; style-src 'self'", "default-src portal.lumanest.tv/pwa-install.js portal.lumanest.tv/sw.js portal.lumanest.tv/pwa-install.css portal.lumanest.tv/manifest.webmanifest",
+    "img-src 'none'", "DEFAULT-SRC 'SELF'", "default-src 'self', script-src 'self'"]) assert.equal(cspBlocker(policy, host), null, String(policy));
+  for (const [policy, directive] of [
+    ["default-src 'none'", 'default-src'],
+    ["script-src 'nonce-abc' 'strict-dynamic' 'self'", 'script-src'],
+    ["script-src 'unsafe-inline'", 'script-src'],
+    ["script-src https://cdn.example", 'script-src'],
+    ["script-src-elem 'none'; script-src 'self'", 'script-src-elem'],
+    ["script-src 'self'; worker-src 'none'", 'worker-src'],
+    ["default-src 'self'; style-src 'nonce-abc'", 'style-src'],
+    ["default-src 'self'; manifest-src 'none'", 'manifest-src'],
+    ["default-src 'self'; script-src tv.lumanest.tv", 'script-src'],
+    ["default-src 'self'; script-src portal.lumanest.tv:8443", 'script-src'],
+    ["default-src 'self'; script-src portal.lumanest.tv/other/", 'script-src'],
+    ["default-src 'self'; script-src", 'script-src'],
+    ["default-src 'self', script-src 'none'", 'script-src'],
+    ["default-src 'self'; sandbox allow-scripts", 'sandbox'],
+    ["default-src " + "'self' ".repeat(3000), 'oversized-policy'],
+  ]) assert.equal(cspBlocker(policy, host), directive, policy.slice(0, 80));
+  assert.equal(cspBlocker("default-src 'self'; sandbox", host, true), null);
+});
+
+test('customer HTML keeps a blocking provider CSP intact and skips injection with a bounded diagnostic', async () => {
+  const page = '<!doctype html><html><head><title>Channels</title></head><body><main>Private channel selection</main></body></html>';
+  for (const policy of ["default-src 'self'; script-src 'nonce-provider' 'strict-dynamic'", "script-src https://cdn.provider.example", "default-src 'self'; manifest-src 'none'"]) {
+    await control({status: 200, type: 'text/html; charset=utf-8', body: page, headers: {'Cache-Control': 'private, no-store', ETag: 'fixture-etag', 'Content-Security-Policy': policy}});
+    const response = await runtime.dispatchFetch(customerOrigin + '/channels');
+    assert.equal(await response.text(), page, policy);
+    assert.equal(response.headers.get('Content-Security-Policy'), policy);
+    assert.equal(response.headers.get('ETag'), 'fixture-etag');
+  }
+  // A report-only policy blocks nothing, so injection proceeds.
+  await control({status: 200, type: 'text/html; charset=utf-8', body: page, headers: {'Content-Security-Policy-Report-Only': "default-src 'none'"}});
+  assert.ok((await (await runtime.dispatchFetch(customerOrigin + '/channels')).text()).includes('src="/pwa-install.js" defer'));
+});
+
+test('a blocking meta CSP in the page suppresses both injected head metadata and the install script', async () => {
+  const blocking = '<!doctype html><html><head><meta http-equiv="content-security-policy" content="script-src \'nonce-x\'"><title>Channels</title></head><body><main>Private</main></body></html>';
+  await control({status: 200, type: 'text/html; charset=utf-8', body: blocking, headers: {}});
+  assert.equal(await (await runtime.dispatchFetch(customerOrigin + '/channels')).text(), blocking);
+  const allowing = blocking.replace("'nonce-x'", "'self'");
+  await control({status: 200, type: 'text/html; charset=utf-8', body: allowing, headers: {}});
+  const body = await (await runtime.dispatchFetch(customerOrigin + '/channels')).text();
+  assert.ok(body.includes('<link rel="manifest" href="/manifest.webmanifest">'));
+  assert.ok(body.includes('src="/pwa-install.js" defer'));
 });
 
 test('API, streams, redirects, errors, and form submissions pass through without rewriting', async () => {
