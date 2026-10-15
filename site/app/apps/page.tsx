@@ -1,3 +1,4 @@
+import './apps.css';
 import Setup from './setup';
 import {settings} from '../../lib/mybunny';
 import {DEFAULT_PORTAL} from '../site';

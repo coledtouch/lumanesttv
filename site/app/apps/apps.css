@@ -1,0 +1,42 @@
+/* TV setup page styles, loaded only by /apps. */
+.setup-page{max-width:1200px;margin:auto;padding:70px 48px 90px}.setup-page h1{font-size:clamp(44px,5vw,70px);margin:18px 0}.device-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:42px 0 28px}.device-card{background:#fff;border:2px solid #e5dfea;border-radius:18px;text-align:left;padding:24px;cursor:pointer;color:#141224;display:flex;flex-direction:column;gap:12px}.device-card>span{display:grid;place-items:center;width:42px;height:42px;border-radius:12px;background:#f0e8ff;color:#7c3aed;font-weight:700}.device-card strong{font-size:19px}.device-card small{font-size:13px;color:#685f73;line-height:1.5}.device-card.active{border-color:#7c3aed;background:#f7f2ff}.device-card:focus-visible{outline:3px solid #7c3aed;outline-offset:4px}.setup-prompt{color:#685f73;text-align:center;padding:24px}.setup-panel{border:1px solid #ded6e8;border-radius:22px;padding:36px;background:white}.setup-panel h2{font-size:36px;margin:15px 0 22px}.setup-panel p{line-height:1.7;max-width:760px}.setup-steps{list-style:none;counter-reset:setup;padding:0}.setup-steps>li{display:flex;gap:24px;padding:26px 0;border-bottom:1px solid #ede7f3;counter-increment:setup}.setup-steps>li:before{content:counter(setup);flex:0 0 38px;height:38px;background:#eee4ff;border-radius:50%;display:grid;place-items:center;color:#7c3aed;font-weight:700}.setup-steps h3{font-size:24px;margin:0 0 12px}.setup-steps small{display:block;margin:16px 0;color:#685f73}.setup-panel details{margin-top:28px;background:#f8f5fb;border-radius:12px;padding:20px}.setup-panel summary{cursor:pointer;font-weight:700}.setup-panel pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}.setup-help{padding-top:25px}.setup-help a{color:#7c3aed;font-weight:700}.setup-panel .button{margin-top:10px} @media(max-width:800px){.device-grid{grid-template-columns:repeat(2,1fr)}.setup-page{padding:40px 24px}.setup-panel{padding:24px}} @media(max-width:440px){.device-grid{grid-template-columns:1fr}.setup-steps>li{gap:14px}.device-card{padding:18px}}
+.setup-page .device-card>span svg{display:block}.setup-page .device-card.soon{background:#fbf9f6;border-style:dashed}.setup-page .device-card.soon>span{background:#efebf3;color:#7a6f88}.setup-page .device-card.soon.active{border-style:solid;background:#f2ebfc}.setup-page .device-soon{display:inline-block;vertical-align:2px;margin-left:8px;padding:2px 8px;border-radius:20px;background:#efe7d9;color:#7a5a2c;font:600 10px/1.6 'DM Sans',sans-serif;letter-spacing:.3px;font-style:normal}.setup-page .setup-suggested{margin:-12px 0 22px;font-size:13px;color:#625b70}.setup-page .setup-suggested strong{color:#41324f;font-weight:600}
+.setup-page a,.setup-page button{touch-action:manipulation}
+.setup-page a:focus-visible,.setup-page button:focus-visible,.setup-page summary:focus-visible{outline:3px solid #a78bfa;outline-offset:4px}
+.setup-page{padding:62px 5vw 88px;max-width:1320px}
+.setup-page .setup-intro{max-width:680px;color:#625b70;font-size:17px;line-height:1.8;margin:22px 0 0}
+.setup-page h1{font-size:clamp(44px,5.5vw,70px);letter-spacing:-3px;line-height:1.13;margin:19px 0}
+.setup-page .device-grid{gap:15px;margin-top:36px}
+.setup-page .device-card{border-width:1px;border-radius:14px;padding:23px;gap:13px;transition:border-color .18s,background .18s,box-shadow .18s}
+.setup-page .device-card:hover{border-color:#ae90d1;background:#faf7fd;box-shadow:0 8px 20px #32224208}
+.setup-page .device-card.active{border-color:#7c3aed;box-shadow:0 0 0 1px #7c3aed;background:#f2ebfc}
+.setup-page .device-card>span{border-radius:10px;background:#eee4fc;position:relative}
+.setup-page .device-card.active>span:after{content:'✓';position:absolute;top:-7px;right:-7px;width:20px;height:20px;display:grid;place-items:center;font-size:11px;color:white;background:#7c3aed;border-radius:50%;border:2px solid #f2ebfc}
+.setup-page .device-card strong{font-size:17px;letter-spacing:-.3px;line-height:1.4}
+.setup-page .device-card small{font-size:13px;line-height:1.7;color:#625b70}
+.setup-page .setup-prompt{border:1px dashed #d5c8e4;border-radius:14px;line-height:1.8;padding:27px 20px;font-size:14px}
+.setup-page .setup-panel{border-radius:18px;background:#fffdf9;padding:34px;scroll-margin-top:25px}
+.setup-page .setup-panel .eyebrow{font-size:10px;letter-spacing:1.5px;line-height:1.7;margin-bottom:15px}
+.setup-page .setup-panel-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:20px}
+.setup-page .setup-change-device{background:none;border:0;color:#6b2dd6;font-size:12px;line-height:1.7;padding:0;white-space:nowrap}
+.setup-page .setup-inline-link{color:#6b2dd6;font-size:13px;line-height:1.8;font-weight:600;text-decoration:underline;text-underline-offset:3px}
+.setup-page .setup-panel h2{font-size:34px;letter-spacing:-1.2px;margin:0 0 18px}
+.setup-page .setup-panel p{font-size:14px;line-height:1.9;color:#625b70}
+.setup-page .setup-steps{margin:8px 0 0}
+.setup-page .setup-steps>li{padding:24px 0;gap:21px}
+.setup-page .setup-steps h3{font-size:22px;letter-spacing:-.6px}
+.setup-page .setup-steps small{font-size:12px;line-height:1.8;color:#796b86}
+.setup-page .setup-panel .button{border-radius:9px;min-height:48px;font-size:13px;gap:20px}
+.setup-page .setup-panel details{padding:20px 23px;border:1px solid #e2d9ea;background:#f6f1fb}
+.setup-page .setup-panel summary{font-size:14px;line-height:1.7;gap:20px}
+.setup-page .setup-panel code{font-size:12px;color:#52356b;overflow-wrap:anywhere}
+.setup-page .setup-panel pre{font-size:12px;line-height:1.8;padding:16px;border-radius:8px;background:#eee6f6;max-width:100%;overflow:auto}
+.setup-page .setup-help{margin-top:28px;border-top:1px solid #e2d9ea;padding-top:25px}
+.setup-page .setup-help h3{font-size:22px}
+.setup-page .setup-help a{font-size:13px;line-height:1.8;font-weight:600}
+.setup-page .setup-account-note{font-size:13px;line-height:1.85;color:#625b70;background:#ece6f2;border-radius:10px;padding:17px 20px;margin-top:28px}
+.setup-page .setup-account-note a{color:#6b2dd6;text-decoration:underline;text-underline-offset:3px}
+@media(max-width:1150px){.setup-page .device-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:800px){.setup-page{padding:43px 6vw 65px}.setup-page h1{font-size:53px;letter-spacing:-2.5px}.setup-page .setup-intro{font-size:16px}.setup-page .setup-panel{padding:28px}}
+@media(max-width:540px){.setup-page h1{font-size:45px;letter-spacing:-2px}.setup-page .device-grid{grid-template-columns:1fr;gap:12px;margin-top:29px}.setup-page .device-card{padding:20px;display:grid;grid-template-columns:43px 1fr;gap:4px 15px}.setup-page .device-card>span{grid-row:1/3;align-self:center}.setup-page .device-card strong{font-size:17px}.setup-page .device-card small{font-size:12px}.setup-page .setup-panel{padding:24px 20px}.setup-page .setup-panel h2{font-size:28px}.setup-page .setup-steps>li{gap:14px}.setup-page .setup-steps>li:before{flex-basis:30px;height:30px;font-size:13px}.setup-page .setup-steps h3{font-size:20px}.setup-page .setup-panel details{padding:16px}.setup-page .setup-panel .button{width:100%;font-size:12px;padding:14px;gap:10px}.setup-page .setup-account-note{padding:16px;font-size:12px}}
+@media(prefers-reduced-motion:reduce){.setup-page *{transition:none!important}}
