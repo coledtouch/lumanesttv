@@ -15,7 +15,6 @@ const hooks = registerHooks({resolve(specifier, context, next) {
   if (specifier.startsWith('.') && !/\.[a-z]+$/.test(specifier)) return next(specifier + '.ts', context);
   return next(specifier, context);
 }});
-const {GET: quote} = await import('../app/api/player/renew/route.ts');
 const {POST: login} = await import('../app/api/player/renew/login/route.ts');
 const {POST: checkout} = await import('../app/api/player/renew/checkout/route.ts');
 const {POST: capture} = await import('../app/api/checkout/capture/route.ts');

@@ -48,6 +48,7 @@ export default function Confirmation({portal, support}: {portal: string; support
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- checks the order with the server on mount; the URL query it reads only exists after hydration
     void check();
     return () => {requestRef.current?.abort(); requestRef.current = null;};
   }, [check]);

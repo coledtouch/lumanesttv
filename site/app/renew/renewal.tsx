@@ -55,6 +55,7 @@ export default function Renewal({portal, support}: {portal: string; support: str
   const [months, setMonths] = useState<number>(3);
   const [billingMode, setBillingMode] = useState<'once' | 'auto'>('once');
   const [billing, setBilling] = useState<BillingOptions | null>(null);
+  const [billingCheckedAt, setBillingCheckedAt] = useState(0);
   const [billingLoading, setBillingLoading] = useState(false);
   const [billingError, setBillingError] = useState('');
   const [cancelConfirm, setCancelConfirm] = useState(false);
@@ -110,6 +111,7 @@ export default function Renewal({portal, support}: {portal: string; support: str
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reads the URL query after hydration, otherwise loads the quote from the server
     if (new URLSearchParams(window.location.search).get('manage_auto') === '1') {setManagementView(true); setChecking(false);}
     else void loadQuote();
     return () => {activeRequest.current?.abort(); activeRequest.current = null;};
@@ -125,7 +127,7 @@ export default function Renewal({portal, support}: {portal: string; support: str
       const data = await request('/subscription', controller);
       if (billingRequest.current !== controller) return;
       if (!isBillingOptions(data)) throw new Error('Your billing options could not be checked. Please try again.');
-      setBilling(data);
+      setBilling(data); setBillingCheckedAt(Date.now());
       if (!data.available || !data.pay_once_available) setBillingMode('once');
     } catch (cause) {
       if (billingRequest.current !== controller) return;
@@ -139,6 +141,7 @@ export default function Renewal({portal, support}: {portal: string; support: str
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- loads billing options from the server whenever a new quote arrives
     if (quote) void loadBilling();
     else {setBilling(null); setBillingMode('once'); setBillingError(''); setBillingLoading(false);}
     return () => {billingRequest.current?.abort(); billingRequest.current = null;};
@@ -223,7 +226,7 @@ export default function Renewal({portal, support}: {portal: string; support: str
       const data = await request('/subscription/cancel', controller, {});
       if (activeRequest.current !== controller) return;
       if (!isBillingOptions(data)) throw new Error('The cancellation result could not be checked. Check your auto-renew status before paying.');
-      setBilling(data); setBillingMode('once'); setCancelConfirm(false);
+      setBilling(data); setBillingCheckedAt(Date.now()); setBillingMode('once'); setCancelConfirm(false);
       setReviewMessage(!data.subscription || ['cancelled', 'expired'].includes(data.subscription.status) ? 'Future automatic payments are stopped. Your already-paid viewing time stays available.' : data.subscription.message || 'Your stop request is saved. PayPal approval is still pending; check the agreement status before starting another renewal.');
     } catch (cause) {
       if (activeRequest.current !== controller) return;
@@ -316,7 +319,7 @@ export default function Renewal({portal, support}: {portal: string; support: str
             <p className={styles.expiry}>{quote.line.expires_at ? <>{quote.line.status === 'expired' ? 'Expired on ' : 'Current expiry: '}<time dateTime={quote.line.expires_at}>{date(quote.line.expires_at)}</time>{quote.line.status === 'active' && quote.line.days_left !== null && quote.line.days_left >= 0 ? ' · ' + Math.floor(quote.line.days_left) + (Math.floor(quote.line.days_left) === 1 ? ' day left' : ' days left') : ''}.</> : 'Your current expiry will be updated after confirmed payment.'}</p>
             {billingLoading && <p className={styles.billingLoading} role="status"><span className={styles.spinner} aria-hidden="true"/>Checking your payment options…</p>}
             {billingError && <div className={styles.unavailable} role="alert"><p>{billingError}</p><button className={styles.textButton} type="button" disabled={disabled} onClick={() => void loadBilling()}>Check payment options again</button></div>}
-            {billing?.subscription && <BillingAgreement billing={billing} disabled={disabled} cancelling={busy === 'cancel'} activating={busy === 'activate'} confirming={cancelConfirm} onConfirm={setCancelConfirm} onCancel={() => void cancelAutoRenew()} onActivate={() => void activateAutoRenew()} onRefresh={() => void loadBilling()}/>}
+            {billing?.subscription && <BillingAgreement billing={billing} checkedAt={billingCheckedAt} disabled={disabled} cancelling={busy === 'cancel'} activating={busy === 'activate'} confirming={cancelConfirm} onConfirm={setCancelConfirm} onCancel={() => void cancelAutoRenew()} onActivate={() => void activateAutoRenew()} onRefresh={() => void loadBilling()}/>}
             <form onSubmit={event => void submit(event, 'checkout')}>
               <fieldset className={styles.periods} disabled={disabled || !quote.checkout_available || !billing?.pay_once_available}><legend>Choose your renewal length</legend><div>{quote.offers.map(offer => <label key={offer.months} className={months === offer.months ? styles.selected : ''}><input type="radio" name="period" value={offer.months} checked={months === offer.months} onChange={() => {setMonths(offer.months); setBillingMode('once'); setError('');}} disabled={disabled || !quote.checkout_available || !billing?.pay_once_available || !offer.available}/><span>{offer.months} months</span><strong>{money(offer.amount)}</strong><small>{offer.available ? 'USD total' : 'Unavailable'}</small></label>)}</div></fieldset>
               {billing?.available && billing.pay_once_available && <fieldset className={styles.billingModes} disabled={disabled}><legend>How would you like to renew?</legend><label className={billingMode === 'once' ? styles.chosenMode : ''}><input type="radio" name="billingMode" checked={billingMode === 'once'} onChange={() => {setBillingMode('once'); setError('');}}/><span><strong>Pay once</strong><small>{selected ? money(selected.amount) : ''} for {months} months. Approve each renewal yourself.</small></span></label><label className={billingMode === 'auto' ? styles.chosenMode : ''}><input type="radio" name="billingMode" checked={billingMode === 'auto'} disabled={disabled || !canStartAutoRenew(billing, months)} onChange={() => {setBillingMode('auto'); setError('');}}/><span><strong>Auto-renew <em>Optional</em></strong><small>{autoSelected ? recurringTerms(autoSelected.amount, months) : 'Unavailable for this period'}. Separate PayPal approval required.</small></span></label></fieldset>}

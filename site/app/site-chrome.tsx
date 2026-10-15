@@ -6,6 +6,7 @@ import {DEFAULT_PORTAL} from './site';
 
 const links = [['/#plans', 'Plans'], ['/watch', 'Watch now'], ['/renew', 'Renew'], ['/apps', 'Set up my TV'], ['/#faq', 'Help']] as const;
 const legal = [['/terms', 'Terms'], ['/privacy', 'Privacy'], ['/refunds', 'Refunds']] as const;
+// eslint-disable-next-line @next/next/no-img-element -- static logo PNG with explicit width/height; vinext's next/image would route it through /_next/image and lazy-load the above-the-fold logo
 const logo = (width: number) => <a className="chrome-home" href="/" aria-label="LumaNest TV home"><img className="logo" src="/logo.png" alt="LumaNest TV" width={width} height="64"/></a>;
 
 /** Renders the skip link and header; every page using it must give its main element id="main-content". */

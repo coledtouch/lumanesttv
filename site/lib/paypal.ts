@@ -2,9 +2,15 @@ import {env} from 'cloudflare:workers';
 import {portalReady, renewalOffer, walletCanActivate, newLineQuote, activatedLineId} from './provider-readiness.ts';
 import {settings, ServiceError, bunny} from './mybunny.ts';
 import {retailPrice} from './plans.ts';
-import {verifiedOrder, verifiedCapture, liveFulfillment} from './payment-validation.ts';
+import {verifiedOrder, verifiedCapture, liveFulfillment, type PayPalOrder} from './payment-validation.ts';
+import type {ProviderAccount} from './provider-readiness.ts';
+import type {RenewalLine} from './renewal.ts';
 
 export type Order = {id: string; paypal_id: string; email: string; name: string; kind: string; line_id: number | null; devices: number; months: number; amount: string; state: string; created: number; attempted: number | null; capture_id?: string | null; error?: string | null};
+// Untrusted PayPal webhook payloads: only the fields read here, each validated before use.
+export type PayPalEvent = {id?: string; event_type?: string; resource?: {id?: string; sale_id?: string; billing_agreement_id?: string; create_time?: string; supplementary_data?: {related_ids?: {order_id?: string}}}};
+export type VerifiedPayPalEvent = PayPalEvent & {id: string; event_type: string};
+export type PayPalWebhook = {id?: string; url?: string; event_types?: ({name?: unknown} | null)[]};
 export const PAYPAL_REQUIRED_EVENTS = ['CHECKOUT.ORDER.APPROVED', 'PAYMENT.CAPTURE.COMPLETED', 'BILLING.SUBSCRIPTION.CREATED', 'BILLING.SUBSCRIPTION.ACTIVATED', 'BILLING.SUBSCRIPTION.UPDATED', 'BILLING.SUBSCRIPTION.CANCELLED', 'BILLING.SUBSCRIPTION.SUSPENDED', 'BILLING.SUBSCRIPTION.EXPIRED', 'BILLING.SUBSCRIPTION.PAYMENT.FAILED', 'PAYMENT.SALE.COMPLETED', 'PAYMENT.SALE.REFUNDED', 'PAYMENT.SALE.REVERSED'];
 
 export function db() {
@@ -58,18 +64,19 @@ function paypalOperation(path: string) {
   return 'paypal_request';
 }
 async function logPayPalFailure(response: Response, path: string, method: string) {
-  let result: any = null;
+  let result: {name?: unknown; debug_id?: unknown; details?: unknown} | null = null;
   try {result = await response.json();} catch {}
   const code = (value: unknown) => typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,99}$/.test(value) ? value : null;
   const rawDebug = result?.debug_id || response.headers.get('paypal-debug-id');
   const debugID = typeof rawDebug === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(rawDebug) ? rawDebug : null;
-  const issues = Array.isArray(result?.details) ? [...new Set(result.details.slice(0, 10).map((detail: any) => code(detail?.issue)).filter(Boolean))] : [];
+  const issues = Array.isArray(result?.details) ? [...new Set(result.details.slice(0, 10).map((detail: {issue?: unknown} | null) => code(detail?.issue)).filter(Boolean))] : [];
   // Operator diagnostics contain only bounded PayPal machine codes. Never log the
   // response body, descriptions, field values, payer data, IDs in the path, or query.
   console.error('lumanest_paypal_request_failed', JSON.stringify({operation: paypalOperation(path), method: ['GET', 'POST', 'PATCH'].includes(method) ? method : 'OTHER', http_status: response.status, name: code(result?.name), issues, debug_id: debugID}));
 }
 
-export async function paypal(path: string, method = 'GET', body?: unknown, key?: string) {
+// T names the response fields a caller reads; the JSON is unverified and callers validate every value they rely on.
+export async function paypal<T = unknown>(path: string, method = 'GET', body?: unknown, key?: string): Promise<T | null> {
   let response: Response;
   for (let attempt = 0; ; attempt++) {
     const token = await paypalToken();
@@ -89,7 +96,7 @@ export async function paypal(path: string, method = 'GET', body?: unknown, key?:
     throw new ServiceError(502, 'paypal_error', 'PayPal could not complete this request. No activation has been confirmed.');
   }
   if (response.status === 204) return null;
-  try { return await response.json() as any; } catch {
+  try { return await response.json() as T; } catch {
     throw new ServiceError(502, 'paypal_outcome_unknown', 'The payment status could not be confirmed. Check your order before paying again.');
   }
 }
@@ -102,28 +109,28 @@ export async function createCheckout(input: {devices: number; months: number; em
   if (liveFulfillment(settings().PAYPAL_MODE)) {
     if (!providerSnapshot || providerSnapshot.until < Date.now()) providerSnapshot = {until: Date.now() + 5000, value: Promise.all([bunny('/account'), bunny('/prices')])};
     const snapshot = providerSnapshot;
-    const [account, prices] = await snapshot.value.catch(error => {if (providerSnapshot === snapshot) providerSnapshot = undefined; throw error;}) as any[];
+    const [account, prices] = await snapshot.value.catch(error => {if (providerSnapshot === snapshot) providerSnapshot = undefined; throw error;}) as [ProviderAccount, Parameters<typeof newLineQuote>[0]];
     if (!portalReady(account?.site, settings().CUSTOMER_PORTAL_URL, settings().CUSTOMER_PORTAL_PRIMARY_URL)) throw new ServiceError(503, 'portal_not_ready', 'The customer hub is being connected. Please contact support before paying.');
-    if (!input.lineId && account.site.email_ready !== true) throw new ServiceError(503, 'invitations_not_ready', 'Customer invitations are being connected. Please contact support before paying.');
+    if (!input.lineId && account?.site?.email_ready !== true) throw new ServiceError(503, 'invitations_not_ready', 'Customer invitations are being connected. Please contact support before paying.');
     let cost: unknown;
     if (input.lineId) {
-      const line = await bunny('/lines/' + input.lineId) as any;
+      const line = await bunny('/lines/' + input.lineId) as RenewalLine;
       const offer = renewalOffer(line, input.months);
       if (input.devices !== offer.devices) throw new ServiceError(409, 'renewal_plan_changed', 'Your plan changed. Refresh your renewal options before continuing. No payment has been taken.');
       input.devices = offer.devices;
       cost = offer.cost;
     } else cost = newLineQuote(prices, input.devices, input.months);
-    if (!walletCanActivate(account.balance, cost)) throw new ServiceError(503, 'activation_unavailable', 'Activations are temporarily unavailable. Please contact support before paying.');
+    if (!walletCanActivate(account?.balance, cost)) throw new ServiceError(503, 'activation_unavailable', 'Activations are temporarily unavailable. Please contact support before paying.');
   }
   const amount = retailPrice(input.devices, input.months).toFixed(2), id = crypto.randomUUID();
   await db().prepare('INSERT INTO orders (id,email,name,kind,line_id,devices,months,amount,state,created) VALUES (?,?,?,?,?,?,?,?,?,?)')
     .bind(id, input.email, input.name, input.lineId ? 'renew' : 'new', input.lineId || null, input.devices, input.months, amount, 'creating', Date.now()).run();
   try {
-    const result = await paypal('/v2/checkout/orders', 'POST', {
+    const result = await paypal<PayPalOrder>('/v2/checkout/orders', 'POST', {
       intent: 'CAPTURE', purchase_units: [{reference_id: id, custom_id: id, description: 'LumaNest TV · ' + input.devices + ' screens · ' + input.months + ' months', amount: {currency_code: 'USD', value: amount}}],
       payment_source: {paypal: {experience_context: {brand_name: 'LumaNest TV', shipping_preference: 'NO_SHIPPING', user_action: 'PAY_NOW', return_url: origin + '/checkout/return?order=' + id, cancel_url: origin + '/checkout/cancel'}}}
     }, id);
-    const approve = result?.links?.find((link: any) => link.rel === 'payer-action' || link.rel === 'approve')?.href;
+    const approve = result?.links?.find(link => link.rel === 'payer-action' || link.rel === 'approve')?.href;
     const approvedUrl = typeof approve === 'string' ? new URL(approve) : undefined;
     const approvalHost = liveFulfillment(settings().PAYPAL_MODE) ? 'www.paypal.com' : 'www.sandbox.paypal.com';
     if (typeof result?.id !== 'string' || !/^[A-Z0-9]{1,36}$/.test(result.id) || !approvedUrl || approvedUrl.protocol !== 'https:' || approvedUrl.hostname !== approvalHost || approvedUrl.username || approvedUrl.password) {
@@ -137,7 +144,7 @@ export async function createCheckout(input: {devices: number; months: number; em
   }
 }
 
-export async function fulfill(row: Order, paypalOrder: any) {
+export async function fulfill(row: Order, paypalOrder: PayPalOrder | null) {
   const captureId = verifiedCapture(row, paypalOrder);
   if (!liveFulfillment(settings().PAYPAL_MODE)) {
     await db().prepare("UPDATE orders SET state='sandbox_paid',capture_id=?,error=NULL WHERE id=? AND attempted IS NULL AND state IN ('capturing','created','pending','needs_review')").bind(captureId, row.id).run();
@@ -150,7 +157,7 @@ export async function fulfill(row: Order, paypalOrder: any) {
   if (lock.meta.changes !== 1) return status(row.id);
   try {
     if (row.kind === 'renew') {
-      const line = await bunny('/lines/' + row.line_id) as any;
+      const line = await bunny('/lines/' + row.line_id) as RenewalLine;
       const offer = renewalOffer(line, row.months);
       if (activatedLineId(line, row.line_id) !== row.line_id || line.devices !== row.devices || line.on_site !== true ||
         !['active', 'expired'].includes(line.status) || offer.amount.toFixed(2) !== row.amount) {
@@ -181,17 +188,17 @@ export async function captureCheckout(id: string, token: string) {
   if (lock.meta.changes !== 1) return status(id);
   let captureSent = false;
   try {
-    let result = await paypal('/v2/checkout/orders/' + token);
+    let result = await paypal<PayPalOrder>('/v2/checkout/orders/' + token);
     verifiedOrder(row, result);
-    if (result.status === 'APPROVED') {
+    if (result?.status === 'APPROVED') {
       captureSent = true;
-      result = await paypal('/v2/checkout/orders/' + token + '/capture', 'POST', {}, 'capture-' + row.id);
+      result = await paypal<PayPalOrder>('/v2/checkout/orders/' + token + '/capture', 'POST', {}, 'capture-' + row.id);
       // Capture responses can omit purchase-unit metadata. Read the canonical
       // order before validating the stored reference and charging the wallet.
-      if (!result?.purchase_units?.[0]?.custom_id || !result.purchase_units[0].amount) result = await paypal('/v2/checkout/orders/' + token);
+      if (!result?.purchase_units?.[0]?.custom_id || !result.purchase_units[0].amount) result = await paypal<PayPalOrder>('/v2/checkout/orders/' + token);
       verifiedOrder(row, result);
     }
-    if (result.status !== 'COMPLETED' || result.purchase_units[0].payments?.captures?.some((capture: any) => capture?.status === 'PENDING')) {
+    if (result?.status !== 'COMPLETED' || result.purchase_units?.[0]?.payments?.captures?.some(capture => capture?.status === 'PENDING')) {
       await db().prepare("UPDATE orders SET state='pending' WHERE id=? AND state='capturing'").bind(id).run();
       return status(id);
     }
@@ -210,13 +217,15 @@ export async function captureCheckout(id: string, token: string) {
   }
 }
 
-export async function webhook(event: any, headers: Headers) {
+const validEvent = (event: PayPalEvent | null): event is VerifiedPayPalEvent => typeof event?.id === 'string' && /^[A-Za-z0-9_.-]{1,128}$/.test(event.id) && typeof event?.event_type === 'string' && /^[A-Z0-9_.]{1,100}$/.test(event.event_type);
+export async function webhook(input: unknown, headers: Headers) {
+  const event = input as PayPalEvent | null;
   const webhookId = settings().PAYPAL_WEBHOOK_ID;
   if (!webhookId) throw new ServiceError(503, 'webhook_not_configured', 'Webhook is not configured.');
-  if (typeof event?.id !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/.test(event.id) || typeof event?.event_type !== 'string' || !/^[A-Z0-9_.]{1,100}$/.test(event.event_type) || ['paypal-auth-algo', 'paypal-cert-url', 'paypal-transmission-id', 'paypal-transmission-sig', 'paypal-transmission-time'].some(header => !headers.get(header))) {
+  if (!validEvent(event) || ['paypal-auth-algo', 'paypal-cert-url', 'paypal-transmission-id', 'paypal-transmission-sig', 'paypal-transmission-time'].some(header => !headers.get(header))) {
     throw new ServiceError(403, 'invalid_webhook', 'Webhook verification failed.');
   }
-  const verified = await paypal('/v1/notifications/verify-webhook-signature', 'POST', {
+  const verified = await paypal<{verification_status?: string}>('/v1/notifications/verify-webhook-signature', 'POST', {
     auth_algo: headers.get('paypal-auth-algo'), cert_url: headers.get('paypal-cert-url'), transmission_id: headers.get('paypal-transmission-id'),
     transmission_sig: headers.get('paypal-transmission-sig'), transmission_time: headers.get('paypal-transmission-time'), webhook_id: webhookId, webhook_event: event
   });
@@ -243,11 +252,11 @@ function businessConflict(error: unknown) {
   if (error instanceof ServiceError) return error.status >= 400 && error.status < 500 && ![401, 403, 408, 429].includes(error.status);
   return error instanceof Error && error.constructor === Error && !/D1_|SQLITE/i.test(error.message);
 }
-function webhookOrderId(event: any) {
+function webhookOrderId(event: PayPalEvent) {
   const id = event.event_type === 'CHECKOUT.ORDER.APPROVED' ? event.resource?.id : event.resource?.supplementary_data?.related_ids?.order_id;
   return typeof id === 'string' && /^[A-Z0-9]{1,36}$/.test(id) ? id : null;
 }
-async function reviewWebhookConflict(event: any, code: string) {
+async function reviewWebhookConflict(event: VerifiedPayPalEvent, code: string) {
   if (event.event_type.startsWith('BILLING.SUBSCRIPTION.') || event.event_type.startsWith('PAYMENT.SALE.')) return (await import('./subscriptions.ts')).reviewSubscriptionEvent(event, code);
   const id = webhookOrderId(event);
   if (!id) return;
@@ -255,7 +264,7 @@ async function reviewWebhookConflict(event: any, code: string) {
   // A replaced checkout that reports a capture must never be fulfilled automatically.
   if (event.event_type === 'PAYMENT.CAPTURE.COMPLETED') await db().prepare("UPDATE orders SET state='needs_review',attempted=?,error=? WHERE paypal_id=? AND state='abandoned'").bind(Date.now(), code, id).run();
 }
-async function processWebhook(event: any) {
+async function processWebhook(event: VerifiedPayPalEvent) {
   if (event.event_type.startsWith('BILLING.SUBSCRIPTION.') || event.event_type.startsWith('PAYMENT.SALE.')) {
     await (await import('./subscriptions.ts')).subscriptionWebhook(event);
     return {received: true};
@@ -265,12 +274,12 @@ async function processWebhook(event: any) {
     const row = await db().prepare('SELECT * FROM orders WHERE paypal_id=?').bind(id).first<Order>();
     if (row && event.event_type === 'CHECKOUT.ORDER.APPROVED') await captureCheckout(row.id, id);
     if (row && event.event_type === 'PAYMENT.CAPTURE.COMPLETED' && row.state === 'abandoned') {
-      const captureId = verifiedCapture(row, await paypal('/v2/checkout/orders/' + id));
+      const captureId = verifiedCapture(row, await paypal<PayPalOrder>('/v2/checkout/orders/' + id));
       await db().prepare("UPDATE orders SET state='needs_review',capture_id=?,attempted=?,error='A replaced checkout received payment; review before renewal' WHERE id=? AND state='abandoned'").bind(captureId, Date.now(), row.id).run();
       if (row.line_id) await (await import('./subscriptions.ts')).reviewConflictingManualPayment(row.line_id);
     }
     if (row && event.event_type === 'PAYMENT.CAPTURE.COMPLETED' && row.attempted === null && ['created', 'pending', 'capturing', 'needs_review'].includes(row.state)) {
-      await fulfill(row, await paypal('/v2/checkout/orders/' + id));
+      await fulfill(row, await paypal<PayPalOrder>('/v2/checkout/orders/' + id));
     }
   }
   return {received: true};
@@ -285,25 +294,25 @@ export async function setupPayPalWebhook(origin: string) {
   const address = new URL('/api/paypal/webhook', origin);
   if (address.protocol !== 'https:') throw new ServiceError(400, 'webhook_url_invalid', 'PayPal webhooks require an HTTPS website.');
   const required = PAYPAL_REQUIRED_EVENTS;
-  const listing = await paypal('/v1/notifications/webhooks');
+  const listing = await paypal<{webhooks?: unknown}>('/v1/notifications/webhooks');
   if (!Array.isArray(listing?.webhooks)) throw new ServiceError(502, 'paypal_response_invalid', 'PayPal did not return the webhook list.');
-  const matches = listing.webhooks.filter((entry: any) => entry?.url === address.href);
-  let result = matches.find((entry: any) => entry.id === settings().PAYPAL_WEBHOOK_ID) ?? matches[0];
+  const matches = (listing.webhooks as (PayPalWebhook | null)[]).filter((entry): entry is PayPalWebhook => entry?.url === address.href);
+  let result: PayPalWebhook | null | undefined = matches.find(entry => entry.id === settings().PAYPAL_WEBHOOK_ID) ?? matches[0];
   let action = 'reused';
   if (!result) {
-    result = await paypal('/v1/notifications/webhooks', 'POST', {url: address.href, event_types: required.map(name => ({name}))});
+    result = await paypal<PayPalWebhook>('/v1/notifications/webhooks', 'POST', {url: address.href, event_types: required.map(name => ({name}))});
     action = 'created';
   } else {
     if (typeof result.id !== 'string' || !result.id || !Array.isArray(result.event_types)) throw new ServiceError(502, 'paypal_response_invalid', 'PayPal did not return complete webhook details.');
-    const subscribed = result.event_types.map((event: any) => event?.name).filter((name: unknown): name is string => typeof name === 'string');
+    const subscribed = result.event_types.map(event => event?.name).filter((name: unknown): name is string => typeof name === 'string');
     if (!subscribed.includes('*') && required.some(name => !subscribed.includes(name))) {
       const names = [...new Set([...subscribed, ...required])];
-      result = await paypal('/v1/notifications/webhooks/' + encodeURIComponent(result.id), 'PATCH', [{op: 'replace', path: '/event_types', value: names.map(name => ({name}))}]);
-      if (!result) result = await paypal('/v1/notifications/webhooks/' + encodeURIComponent(matches.find((entry: any) => entry.id === settings().PAYPAL_WEBHOOK_ID)?.id ?? matches[0].id));
+      result = await paypal<PayPalWebhook>('/v1/notifications/webhooks/' + encodeURIComponent(result.id), 'PATCH', [{op: 'replace', path: '/event_types', value: names.map(name => ({name}))}]);
+      if (!result) result = await paypal<PayPalWebhook>('/v1/notifications/webhooks/' + encodeURIComponent(String(matches.find(entry => entry.id === settings().PAYPAL_WEBHOOK_ID)?.id ?? matches[0].id)));
       action = 'updated';
     }
   }
-  const events = Array.isArray(result?.event_types) ? result.event_types.map((event: any) => event?.name) : [];
+  const events = Array.isArray(result?.event_types) ? result.event_types.map(event => event?.name) : [];
   if (typeof result?.id !== 'string' || !result.id || result.url !== address.href || (!events.includes('*') && required.some(name => !events.includes(name)))) {
     throw new ServiceError(502, 'paypal_response_invalid', 'PayPal did not confirm the webhook subscription.');
   }

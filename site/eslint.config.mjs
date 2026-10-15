@@ -14,13 +14,23 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
   ]),
   {
-    files: ["components/ui/**/*.{ts,tsx}", "hooks/use-mobile.ts"],
     rules: {
-      // These files are vendored verbatim from shadcn@4.17.0. Keep the
-      // registry source intact while applying the stricter rules to Site code.
-      "@typescript-eslint/no-unused-vars": "off",
-      "react-hooks/purity": "off",
-      "react-hooks/set-state-in-effect": "off",
+      // Internal links and post-auth redirects are deliberately full-document
+      // navigations. vinext ships a working next/link, but client-side routing
+      // would skip what runs once per document load: public/pwa-install.js is
+      // path-scoped (never on /manage or /checkout), counts page views for the
+      // mobile banner and fills the header's install slot, and sign-in/out
+      // must reload with the new session cookie.
+      "@next/next/no-html-link-for-pages": "off",
+      "@next/next/no-location-assign-relative-destination": "off",
+    },
+  },
+  {
+    files: ["tests/**/*.{ts,mts,mjs}"],
+    rules: {
+      // Test fixtures deliberately feed malformed PayPal/provider JSON through
+      // loosely typed doubles; application code stays fully typed.
+      "@typescript-eslint/no-explicit-any": "off",
     },
   },
 ]);

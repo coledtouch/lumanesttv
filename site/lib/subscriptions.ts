@@ -1,13 +1,20 @@
 import {z} from 'zod';
 import {bunny, settings, ServiceError} from './mybunny.ts';
-import {db, paypal, paypalReady, setupPayPalWebhook, PAYPAL_REQUIRED_EVENTS} from './paypal.ts';
+import {db, paypal, paypalReady, setupPayPalWebhook, PAYPAL_REQUIRED_EVENTS, type PayPalEvent, type PayPalWebhook, type VerifiedPayPalEvent} from './paypal.ts';
 import {plans, periods, retailPrice} from './plans.ts';
-import {liveFulfillment, verifiedOrder} from './payment-validation.ts';
-import {activatedLineId, renewalOffer, walletCanActivate, portalReady} from './provider-readiness.ts';
+import {liveFulfillment, verifiedOrder, type PayPalLink, type PayPalOrder} from './payment-validation.ts';
+import {activatedLineId, renewalOffer, walletCanActivate, portalReady, type ProviderAccount} from './provider-readiness.ts';
 import {ownLine, verifiedRenewalQuote, credentialDigest, lineExpiry, renewalWriteLimit, type RenewalLine} from './renewal.ts';
 
 type CatalogPlan = {sku: string; paypal_plan_id: string | null; product_id: string; devices: number; months: number; amount: string; currency: string; mode: string; state: string; created: number};
 export type Agreement = {id: string; paypal_id: string | null; plan_id: string; line_id: number; line_slot: number | null; credential: string; devices: number; months: number; amount: string; currency: string; email: string; name: string; state: string; mode: string; starts_at: string; next_billing_at: string | null; approval_url: string | null; cancel_requested: number; pause_requested: number; pause_confirmed: number; merchant_activation: number; activation_attempted: number | null; created: number; updated: number; error: string | null};
+// Untrusted PayPal JSON: only the fields read here, and every value is validated before use.
+type PayPalSubscription = {id?: string; plan_id?: string; custom_id?: string; status?: string; start_time?: string; plan_overridden?: unknown;
+  billing_info?: {next_billing_time?: unknown; last_payment?: unknown; last_failed_payment?: unknown; final_payment_time?: unknown; failed_payments_count?: unknown; outstanding_balance?: {currency_code?: unknown; value?: unknown} | null; cycle_executions?: unknown} | null};
+type PayPalPlan = {id?: string; product_id?: string; status?: string; quantity_supported?: unknown; taxes?: {percentage?: unknown} | null;
+  payment_preferences?: {auto_bill_outstanding?: unknown; payment_failure_threshold?: unknown; setup_fee?: {value?: unknown} | null};
+  billing_cycles?: ({tenure_type?: unknown; sequence?: unknown; total_cycles?: unknown; frequency?: {interval_unit?: unknown; interval_count?: unknown}; pricing_scheme?: {fixed_price?: {currency_code?: unknown; value?: unknown}; pricing_model?: unknown; tiers?: unknown}} | null)[]};
+type PayPalTransaction = {id?: string; status?: string; time?: string; amount_with_breakdown?: {gross_amount?: {currency_code?: unknown; value?: unknown}}};
 const subscriptionID = /^I-[A-Z0-9]{1,40}$/;
 const planID = /^P-[A-Z0-9]{1,50}$/;
 const paymentID = /^[A-Z0-9]{1,40}$/;
@@ -20,16 +27,17 @@ function invalidPayment() {return new ServiceError(409, 'recurring_payment_unver
 function iso(value: unknown) {return typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;}
 function sku(devices: number, months: number) {return `lumanest-${mode()}-${devices}-${months}-${retailPrice(devices, months)}-v1`;}
 function money(value: unknown, expected: string) {return typeof value === 'string' && /^\d+(?:\.\d{1,2})?$/.test(value) && Number(value).toFixed(2) === expected;}
-function noBillingActivity(remote: any) {
+function noBillingActivity(remote: PayPalSubscription) {
   const billing = remote?.billing_info;
   if (billing === undefined || billing === null) return true;
   if (typeof billing !== 'object' || Array.isArray(billing) || billing.last_payment || billing.last_failed_payment || billing.final_payment_time) return false;
   if (billing.failed_payments_count !== undefined && billing.failed_payments_count !== 0) return false;
   if (billing.outstanding_balance !== undefined && (!billing.outstanding_balance || billing.outstanding_balance.currency_code !== 'USD' || !money(billing.outstanding_balance.value, '0.00'))) return false;
-  if (billing.cycle_executions !== undefined && (!Array.isArray(billing.cycle_executions) || billing.cycle_executions.some((cycle: any) => !cycle || cycle.cycles_completed !== 0))) return false;
+  if (billing.cycle_executions !== undefined && (!Array.isArray(billing.cycle_executions) || billing.cycle_executions.some((cycle: {cycles_completed?: unknown} | null) => !cycle || cycle.cycles_completed !== 0))) return false;
   return true;
 }
-function planValid(value: any, row: CatalogPlan) {
+function planValid(input: unknown, row: CatalogPlan) {
+  const value = input as PayPalPlan | null;
   const cycle = value?.billing_cycles;
   return value?.id === row.paypal_plan_id && value.product_id === row.product_id && value.status === 'ACTIVE' &&
     Array.isArray(cycle) && cycle.length === 1 && cycle[0]?.tenure_type === 'REGULAR' && cycle[0].sequence === 1 && cycle[0].total_cycles === 0 &&
@@ -52,9 +60,9 @@ async function abandonUnpaidManualOrders(lineId: number) {
   const result = await db().prepare("SELECT id,paypal_id,amount,state,attempted,capture_id FROM orders WHERE kind='renew' AND line_id=? AND state IN ('creating','created','capturing','pending','fulfilling','needs_review') LIMIT 10").bind(lineId).all<{id: string; paypal_id: string | null; amount: string; state: string; attempted: number | null; capture_id: string | null}>();
   for (const row of result.results || []) {
     if (row.state !== 'created' || row.attempted !== null || row.capture_id !== null || !paymentID.test(row.paypal_id || '')) throw new ServiceError(409, 'recurring_manual_order_open', 'An earlier one-time renewal is still processing or needs review. Contact support before enabling auto-renew.');
-    const remote = await paypal('/v2/checkout/orders/' + row.paypal_id);
+    const remote = await paypal<PayPalOrder>('/v2/checkout/orders/' + row.paypal_id);
     const unit = verifiedOrder({...row, paypal_id: row.paypal_id!}, remote);
-    if (!['CREATED', 'PAYER_ACTION_REQUIRED'].includes(remote.status) || unit.payments?.captures?.length || unit.payments?.authorizations?.length) throw new ServiceError(409, 'recurring_manual_order_open', 'An earlier approved or paid one-time renewal must be completed before enabling auto-renew.');
+    if (!['CREATED', 'PAYER_ACTION_REQUIRED'].includes(remote?.status ?? '') || unit.payments?.captures?.length || unit.payments?.authorizations?.length) throw new ServiceError(409, 'recurring_manual_order_open', 'An earlier approved or paid one-time renewal must be completed before enabling auto-renew.');
     // The capture path must claim 'created' first. This atomic state change wins or fails that race.
     const changed = await db().prepare("UPDATE orders SET state='abandoned',error='Replaced by customer-approved auto-renew enrollment' WHERE id=? AND state='created' AND attempted IS NULL AND capture_id IS NULL").bind(row.id).run();
     if (changed.meta.changes !== 1) throw new ServiceError(409, 'recurring_manual_order_open', 'Your earlier checkout changed while enrolling. Refresh and check its status.');
@@ -79,9 +87,9 @@ function publicState(row: Agreement) {
 async function statusForLine(line: RenewalLine) {
   const [catalog, row] = await Promise.all([availablePlans(), lineAgreement(line.id)]);
   const eligible = line.on_site === true && ['active', 'expired'].includes(line.status);
-  let account: any = null;
+  let account: ProviderAccount = null;
   if (eligible && paypalReady() && catalog.some(plan => plan.devices === line.devices)) {
-    try {account = await bunny('/account');} catch {account = null;}
+    try {account = await bunny('/account') as ProviderAccount;} catch {account = null;}
   }
   const ready = eligible && paypalReady() && catalog.length === 12 && portalReady(account?.site, settings().CUSTOMER_PORTAL_URL, settings().CUSTOMER_PORTAL_PRIMARY_URL);
   const locked = Boolean(row?.line_slot);
@@ -115,10 +123,11 @@ export async function subscriptionLogin(req: Request, body: Record<string, unkno
 function approvedURL(value: unknown) {
   try {const url = new URL(String(value)); return url.protocol === 'https:' && url.hostname === (mode() === 'live' ? 'www.paypal.com' : 'www.sandbox.paypal.com') && !url.username && !url.password ? url.href : null;} catch {return null;}
 }
-function canonical(value: any, row: Agreement) {
-  if (value?.id !== row.paypal_id || value.plan_id !== row.plan_id || value.custom_id !== row.id || !['APPROVAL_PENDING', 'APPROVED', 'ACTIVE', 'SUSPENDED', 'CANCELLED', 'EXPIRED'].includes(value.status) ||
-    !iso(value.start_time) || Math.abs(Date.parse(value.start_time) - Date.parse(row.starts_at)) > 1000 || value.plan_overridden === true) throw invalidPayment();
-  return value;
+function canonical(input: unknown, row: Agreement) {
+  const value = input as PayPalSubscription | null;
+  if (!value || value.id !== row.paypal_id || value.plan_id !== row.plan_id || value.custom_id !== row.id || typeof value.status !== 'string' || !['APPROVAL_PENDING', 'APPROVED', 'ACTIVE', 'SUSPENDED', 'CANCELLED', 'EXPIRED'].includes(value.status) ||
+    typeof value.start_time !== 'string' || !iso(value.start_time) || Math.abs(Date.parse(value.start_time) - Date.parse(row.starts_at)) > 1000 || value.plan_overridden === true) throw invalidPayment();
+  return value as PayPalSubscription & {status: string};
 }
 export async function refreshAgreement(row: Agreement) {
   if (!subscriptionID.test(row.paypal_id || '')) throw unavailable();
@@ -156,8 +165,8 @@ export async function enrollSubscription(req: Request, body: Record<string, unkn
   const catalog = (await availablePlans()).find(plan => plan.devices === line.devices && plan.months === input.months);
   if (!catalog?.paypal_plan_id) throw unavailable();
   if (!planValid(await paypal('/v1/billing/plans/' + catalog.paypal_plan_id), catalog)) throw unavailable();
-  const connection = await paypal('/v1/notifications/webhooks/' + encodeURIComponent(settings().PAYPAL_WEBHOOK_ID));
-  const events = connection?.event_types?.map((event: any) => event?.name);
+  const connection = await paypal<PayPalWebhook>('/v1/notifications/webhooks/' + encodeURIComponent(settings().PAYPAL_WEBHOOK_ID));
+  const events = connection?.event_types?.map(event => event?.name);
   if (connection?.id !== settings().PAYPAL_WEBHOOK_ID || connection.url !== new URL('/api/paypal/webhook', req.url).href || !Array.isArray(events) || (!events.includes('*') && PAYPAL_REQUIRED_EVENTS.some(event => !events.includes(event)))) throw unavailable();
   const id = crypto.randomUUID(), amount = retailPrice(line.devices, input.months).toFixed(2), expiry = lineExpiry(line);
   if (line.status === 'active' && (!expiry || Date.parse(expiry) <= Date.now() + 30000)) throw new ServiceError(409, 'renewal_quote_changed', 'Your paid-through date changed or is too close. Refresh your renewal options.');
@@ -173,10 +182,10 @@ export async function enrollSubscription(req: Request, body: Record<string, unkn
   let created = false;
   try {
     const origin = new URL(req.url).origin;
-    const result = await paypal('/v1/billing/subscriptions', 'POST', {plan_id: catalog.paypal_plan_id, custom_id: id, start_time: startsAt,
+    const result = await paypal<{id?: unknown; links?: PayPalLink[]}>('/v1/billing/subscriptions', 'POST', {plan_id: catalog.paypal_plan_id, custom_id: id, start_time: startsAt,
       subscriber: {email_address: input.email}, application_context: {brand_name: 'LumaNest TV', shipping_preference: 'NO_SHIPPING', user_action: 'CONTINUE', return_url: origin + '/renew/return?subscription=' + id, cancel_url: origin + '/renew/cancel'}}, 'ln-sub-' + id);
-    const approval = approvedURL(result?.links?.find((link: any) => link?.rel === 'approve')?.href);
-    if (!subscriptionID.test(result?.id || '') || !approval) throw new ServiceError(502, 'recurring_response_invalid', 'PayPal did not confirm an enrollment link. Contact support before trying again.');
+    const approval = approvedURL(result?.links?.find(link => link?.rel === 'approve')?.href);
+    if (typeof result?.id !== 'string' || !subscriptionID.test(result.id) || !approval) throw new ServiceError(502, 'recurring_response_invalid', 'PayPal did not confirm an enrollment link. Contact support before trying again.');
     await db().prepare("UPDATE subscriptions SET paypal_id=?,approval_url=?,state='APPROVAL_PENDING',updated=? WHERE id=? AND state='creating'").bind(result.id, approval, Date.now(), id).run();
     created = true;
     const row = await db().prepare('SELECT * FROM subscriptions WHERE id=?').bind(id).first<Agreement>();
@@ -264,18 +273,18 @@ export async function reviewConflictingManualPayment(lineId: number) {
   const row = await db().prepare('SELECT * FROM subscriptions WHERE line_slot=?').bind(lineId).first<Agreement>();
   if (row) await pause(row, 'separate_payment_requires_review');
 }
-async function completedSale(row: Agreement, sale: any) {
-  if (!paymentID.test(sale?.id || '') || !iso(sale.create_time) || Date.parse(sale.create_time) > Date.now()) throw invalidPayment();
-  const remote = canonical(await paypal('/v1/billing/subscriptions/' + row.paypal_id), row);
+async function completedSale(row: Agreement, sale: PayPalEvent['resource']) {
+  if (!sale || !paymentID.test(sale.id || '') || typeof sale.create_time !== 'string' || !iso(sale.create_time) || Date.parse(sale.create_time) > Date.now()) throw invalidPayment();
+  canonical(await paypal('/v1/billing/subscriptions/' + row.paypal_id), row);
   const plan = await db().prepare('SELECT * FROM subscription_plans WHERE paypal_plan_id=? AND mode=?').bind(row.plan_id, row.mode).first<CatalogPlan>();
   if (!plan || !planValid(await paypal('/v1/billing/plans/' + row.plan_id), plan)) throw invalidPayment();
   const windowStart = new Date(Date.parse(sale.create_time) - 24 * 60 * 60 * 1000).toISOString();
   const windowEnd = new Date(Math.min(Date.parse(sale.create_time) + 24 * 60 * 60 * 1000, Date.now())).toISOString();
-  const result = await paypal('/v1/billing/subscriptions/' + row.paypal_id + '/transactions?' + new URLSearchParams({start_time: windowStart, end_time: windowEnd}));
+  const result = await paypal<{transactions?: (PayPalTransaction | null)[]; total_pages?: unknown; links?: (PayPalLink | null)[]}>('/v1/billing/subscriptions/' + row.paypal_id + '/transactions?' + new URLSearchParams({start_time: windowStart, end_time: windowEnd}));
   // Do not accept an incomplete transaction page or a webhook's amount as a payment receipt.
-  if (!Array.isArray(result?.transactions) || Number(result.total_pages || 1) > 1 || result.links?.some((link: any) => link?.rel === 'next')) throw invalidPayment();
-  const matches = result.transactions.filter((transaction: any) => transaction?.id === sale.id);
-  if (matches.length !== 1 || matches[0].status !== 'COMPLETED' || !iso(matches[0].time) ||
+  if (!Array.isArray(result?.transactions) || Number(result.total_pages || 1) > 1 || result.links?.some(link => link?.rel === 'next')) throw invalidPayment();
+  const matches = result.transactions.filter((transaction): transaction is PayPalTransaction => transaction?.id === sale.id);
+  if (matches.length !== 1 || matches[0].status !== 'COMPLETED' || typeof matches[0].time !== 'string' || !iso(matches[0].time) ||
     matches[0].amount_with_breakdown?.gross_amount?.currency_code !== 'USD' || !money(matches[0].amount_with_breakdown.gross_amount.value, row.amount) ||
     Date.parse(matches[0].time) < Date.parse(row.starts_at) - 60000 || Date.parse(matches[0].time) > Date.now()) throw invalidPayment();
   const paidAt = new Date(matches[0].time).toISOString();
@@ -297,11 +306,11 @@ async function completedSale(row: Agreement, sale: any) {
       await db().prepare("UPDATE subscription_payments SET state='sandbox_paid' WHERE sale_id=?").bind(sale.id).run();
       return;
     }
-    const [line, account] = await Promise.all([bunny('/lines/' + row.line_id), bunny('/account')]) as any[];
+    const [line, account] = await Promise.all([bunny('/lines/' + row.line_id), bunny('/account')]) as [RenewalLine, ProviderAccount];
     const offer = renewalOffer(line, row.months);
     if (line?.id !== row.line_id || line.devices !== row.devices || line.on_site !== true || !['active', 'expired'].includes(line.status) ||
       offer.amount.toFixed(2) !== row.amount || await credentialDigest(line.username, line.password) !== row.credential ||
-      !portalReady(account?.site, settings().CUSTOMER_PORTAL_URL, settings().CUSTOMER_PORTAL_PRIMARY_URL) || !walletCanActivate(account.balance, offer.cost)) throw new ServiceError(409, 'recurring_line_changed', 'This payment needs support review before renewal.');
+      !portalReady(account?.site, settings().CUSTOMER_PORTAL_URL, settings().CUSTOMER_PORTAL_PRIMARY_URL) || !walletCanActivate(account?.balance, offer.cost)) throw new ServiceError(409, 'recurring_line_changed', 'This payment needs support review before renewal.');
     // A separate owner/manual extension changes the paid-through schedule. Pause instead of creating overlapping charges.
     const expiry = lineExpiry(line);
     if (expiry && Date.parse(expiry) > Date.parse(paidAt) + 24 * 60 * 60 * 1000) throw new ServiceError(409, 'recurring_schedule_changed', 'The viewing paid-through date changed and billing needs review.');
@@ -327,7 +336,7 @@ async function completedSale(row: Agreement, sale: any) {
     throw error;
   }
 }
-async function webhookAgreement(event: any) {
+async function webhookAgreement(event: VerifiedPayPalEvent) {
   const paypalID = event.event_type?.startsWith('PAYMENT.SALE.') ? event.resource?.billing_agreement_id : event.resource?.id;
   let row = subscriptionID.test(paypalID || '') ? await db().prepare('SELECT * FROM subscriptions WHERE paypal_id=? AND mode=?').bind(paypalID, mode()).first<Agreement>() : null;
   if (!row && ['PAYMENT.SALE.REFUNDED', 'PAYMENT.SALE.REVERSED'].includes(event.event_type)) {
@@ -336,11 +345,11 @@ async function webhookAgreement(event: any) {
   }
   return row;
 }
-export async function reviewSubscriptionEvent(event: any, reason: string) {
+export async function reviewSubscriptionEvent(event: VerifiedPayPalEvent, reason: string) {
   const row = await webhookAgreement(event);
   if (row && row.state !== 'needs_review') await pause(row, reason);
 }
-export async function subscriptionWebhook(event: any) {
+export async function subscriptionWebhook(event: VerifiedPayPalEvent) {
   const row = await webhookAgreement(event);
   if (!row) return;
   if (event.event_type === 'PAYMENT.SALE.COMPLETED') {
@@ -365,8 +374,8 @@ export async function subscriptionCatalogStatus() {
     message: catalog.length === 12 ? null : 'Set up the fixed-price PayPal billing plans to offer customer-approved auto-renew.'};
 }
 export async function subscriptionQueue() {
-  const agreements = await db().prepare('SELECT id,state,devices,months,amount,starts_at,next_billing_at,error FROM subscriptions WHERE mode=? ORDER BY created DESC LIMIT 50').bind(mode()).all<any>();
-  const payments = await db().prepare('SELECT p.sale_id,p.subscription_id,p.state,p.amount,p.created,p.error FROM subscription_payments p JOIN subscriptions s ON s.id=p.subscription_id WHERE s.mode=? ORDER BY p.created DESC LIMIT 50').bind(mode()).all<any>();
+  const agreements = await db().prepare('SELECT id,state,devices,months,amount,starts_at,next_billing_at,error FROM subscriptions WHERE mode=? ORDER BY created DESC LIMIT 50').bind(mode()).all<{id: string; state: string; devices: number; months: number; amount: string; starts_at: string; next_billing_at: string | null; error: string | null}>();
+  const payments = await db().prepare('SELECT p.sale_id,p.subscription_id,p.state,p.amount,p.created,p.error FROM subscription_payments p JOIN subscriptions s ON s.id=p.subscription_id WHERE s.mode=? ORDER BY p.created DESC LIMIT 50').bind(mode()).all<{sale_id: string; subscription_id: string; state: string; amount: string; created: number; error: string | null}>();
   return {subscriptions: (agreements.results || []).map(row => ({id: row.id, status: row.state, devices: row.devices, months: row.months, amount: Number(row.amount), currency: 'USD', starts_at: row.starts_at, next_billing_at: row.next_billing_at, reason: row.error})),
     payments: (payments.results || []).map(row => ({payment_id: row.sale_id, subscription_id: row.subscription_id, state: row.state, amount: Number(row.amount), currency: 'USD', created: row.created, reason: row.error}))};
 }
@@ -385,7 +394,7 @@ export async function setupSubscriptionCatalog(origin: string) {
     if (!catalog.product_id) {
       if (catalog.state !== 'new' && Date.now() - catalog.created > 72 * 60 * 60 * 1000) throw new ServiceError(409, 'recurring_setup_review', 'A previous PayPal setup attempt needs reconciliation before creating another product.');
       await db().prepare("UPDATE subscription_catalog SET state='creating' WHERE mode=?").bind(currentMode).run();
-      const product = await paypal('/v1/catalogs/products', 'POST', {name: 'LumaNest TV subscription', description: 'Customer-approved viewing subscription renewals.', type: 'SERVICE', category: 'SOFTWARE'}, 'ln-product-' + currentMode + '-v1');
+      const product = await paypal<{id?: unknown}>('/v1/catalogs/products', 'POST', {name: 'LumaNest TV subscription', description: 'Customer-approved viewing subscription renewals.', type: 'SERVICE', category: 'SOFTWARE'}, 'ln-product-' + currentMode + '-v1');
       if (typeof product?.id !== 'string' || !/^[A-Z0-9-]{1,80}$/.test(product.id)) throw unavailable();
       await db().prepare("UPDATE subscription_catalog SET product_id=?,state='ready' WHERE mode=?").bind(product.id, currentMode).run();
       catalog = {...catalog, product_id: product.id};
@@ -404,8 +413,8 @@ export async function setupSubscriptionCatalog(origin: string) {
       if (!row.paypal_plan_id) {
         if (row.state !== 'new' && Date.now() - row.created > 72 * 60 * 60 * 1000) throw new ServiceError(409, 'recurring_setup_review', 'An earlier plan creation needs reconciliation before retrying.');
         await db().prepare("UPDATE subscription_plans SET state='creating' WHERE sku=?").bind(id).run();
-        const result = await paypal('/v1/billing/plans', 'POST', {product_id: catalog.product_id, name: `LumaNest TV ${plan.name} every ${months} months`, status: 'ACTIVE', billing_cycles: [{frequency: {interval_unit: 'MONTH', interval_count: months}, tenure_type: 'REGULAR', sequence: 1, total_cycles: 0, pricing_scheme: {fixed_price: {value: row.amount, currency_code: 'USD'}}}], payment_preferences: {auto_bill_outstanding: false, payment_failure_threshold: 1}}, 'ln-plan-' + currentMode + '-' + plan.devices + '-' + months + '-' + row.amount.replace('.', '') + '-v1');
-        if (!planID.test(result?.id || '')) throw unavailable();
+        const result = await paypal<{id?: unknown}>('/v1/billing/plans', 'POST', {product_id: catalog.product_id, name: `LumaNest TV ${plan.name} every ${months} months`, status: 'ACTIVE', billing_cycles: [{frequency: {interval_unit: 'MONTH', interval_count: months}, tenure_type: 'REGULAR', sequence: 1, total_cycles: 0, pricing_scheme: {fixed_price: {value: row.amount, currency_code: 'USD'}}}], payment_preferences: {auto_bill_outstanding: false, payment_failure_threshold: 1}}, 'ln-plan-' + currentMode + '-' + plan.devices + '-' + months + '-' + row.amount.replace('.', '') + '-v1');
+        if (typeof result?.id !== 'string' || !planID.test(result.id)) throw unavailable();
         await db().prepare('UPDATE subscription_plans SET paypal_plan_id=? WHERE sku=?').bind(result.id, id).run();
         row = {...row, paypal_plan_id: result.id};
       }

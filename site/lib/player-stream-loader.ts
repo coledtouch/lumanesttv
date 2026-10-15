@@ -44,7 +44,7 @@ export function createPlayerStreamLoader(origin: string, playbackSignal?: AbortS
     private seekHandler: mpegts.SeekHandler;
     private playbackAbort = () => this.abort();
 
-    constructor(seekHandler: mpegts.SeekHandler, _config: mpegts.Config) {
+    constructor(seekHandler: mpegts.SeekHandler) {
       this.seekHandler = seekHandler;
       playbackSignal?.addEventListener('abort', this.playbackAbort, {once: true});
     }

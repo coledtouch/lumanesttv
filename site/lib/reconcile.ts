@@ -1,6 +1,6 @@
 import {ServiceError} from './mybunny.ts';
 import {db, paypal, status, captureCheckout, fulfill, type Order} from './paypal.ts';
-import {verifiedOrder, verifiedCapture} from './payment-validation.ts';
+import {verifiedOrder, verifiedCapture, type PayPalOrder, type PayPalPurchaseUnit} from './payment-validation.ts';
 import {assertPayOnceAllowed, refreshAgreement, type Agreement} from './subscriptions.ts';
 
 const reference = /^[A-Za-z0-9-]{1,64}$/;
@@ -28,12 +28,12 @@ export async function reconcileOrder(id: string) {
     await db().prepare("UPDATE orders SET state='abandoned',error='checkout_not_created' WHERE id=? AND state='needs_review' AND paypal_id IS NULL AND attempted IS NULL AND capture_id IS NULL").bind(id).run();
     return current(id);
   }
-  const remote = await paypal('/v2/checkout/orders/' + row.paypal_id);
-  let unit: any;
+  const remote = await paypal<PayPalOrder>('/v2/checkout/orders/' + row.paypal_id);
+  let unit: PayPalPurchaseUnit;
   try {unit = verifiedOrder(row, remote);}
   catch {throw new ServiceError(409, 'review_order_mismatch', 'PayPal returned order details that do not match this checkout. Review it in PayPal, then mark it resolved.');}
   const captured = Array.isArray(unit.payments?.captures) && unit.payments.captures.length > 0;
-  if (remote.status === 'APPROVED' && !captured && !row.capture_id) {
+  if (remote?.status === 'APPROVED' && !captured && !row.capture_id) {
     if (row.kind === 'renew' && row.line_id) await assertPayOnceAllowed(row.line_id);
     const reset = await db().prepare("UPDATE orders SET state='created',error=NULL WHERE id=? AND state='needs_review' AND attempted IS NULL AND capture_id IS NULL").bind(id).run();
     if (reset.meta.changes !== 1) return current(id);
@@ -43,22 +43,22 @@ export async function reconcileOrder(id: string) {
       throw error;
     }
   }
-  if (remote.status === 'COMPLETED') {
+  if (remote?.status === 'COMPLETED') {
     try {verifiedCapture(row, remote);}
     catch {return current(id, {message: 'PayPal has not confirmed a completed capture for the full amount yet. Check again later or review it in PayPal.'});}
     if (row.kind === 'renew' && row.line_id) await assertPayOnceAllowed(row.line_id);
     return {id, ...await fulfill(row, remote)};
   }
-  if (['CREATED', 'PAYER_ACTION_REQUIRED'].includes(remote.status) && !captured && !row.capture_id) {
+  if (['CREATED', 'PAYER_ACTION_REQUIRED'].includes(remote?.status ?? '') && !captured && !row.capture_id) {
     // Not yet approved by the customer: return it to the normal checkout flow.
     await db().prepare("UPDATE orders SET state='created',error=NULL WHERE id=? AND state='needs_review' AND attempted IS NULL AND capture_id IS NULL").bind(id).run();
     return current(id);
   }
-  if (remote.status === 'VOIDED' && !captured && !row.capture_id) {
+  if (remote?.status === 'VOIDED' && !captured && !row.capture_id) {
     await db().prepare("UPDATE orders SET state='abandoned',error='paypal_order_voided' WHERE id=? AND state='needs_review' AND attempted IS NULL AND capture_id IS NULL").bind(id).run();
     return current(id);
   }
-  return current(id, {message: 'PayPal reports this order as ' + String(remote.status).slice(0, 40).replace(/[^A-Z_]/g, '') + '. Nothing was changed.'});
+  return current(id, {message: 'PayPal reports this order as ' + String(remote?.status).slice(0, 40).replace(/[^A-Z_]/g, '') + '. Nothing was changed.'});
 }
 
 export async function resolveOrder(id: string, note: unknown) {

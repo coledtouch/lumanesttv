@@ -411,7 +411,7 @@ test('PayPal access tokens are reused until expiry and refreshed after a rejecti
   await paypal('/v2/checkout/orders/PAYPALORDER');
   assert.equal(tokens, 1);
   rejectNext = true;
-  assert.equal((await paypal('/v2/checkout/orders/PAYPALORDER')).id, 'PAYPALORDER');
+  assert.equal((await paypal<{id?: string}>('/v2/checkout/orders/PAYPALORDER'))?.id, 'PAYPALORDER');
   assert.equal(tokens, 2);
   clearPayPalToken();
 });

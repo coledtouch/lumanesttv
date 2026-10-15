@@ -11,9 +11,9 @@ export const PLAYER_EXPIRED_COOKIE = PLAYER_COOKIE + '=; Path=/api/player; HttpO
 const hosts = () => settings().PLAYER_ALLOWED_HOSTS?.split(',').map(h => h.trim().toLowerCase()).filter(Boolean) || ['tv.lumanest.tv', 'connect.turbobunny.net', '*.turbobunny.net'];
 const httpHosts = () => settings().PLAYER_ALLOWED_HTTP_HOSTS?.split(',').map(h => h.trim().toLowerCase()).filter(Boolean) || [];
 const portal = () => settings().CUSTOMER_PORTAL_PRIMARY_URL || settings().CUSTOMER_PORTAL_URL || 'https://tv.lumanest.tv';
-const useRelay = () => relayConfigured(settings().PLAYER_STREAM_RELAY_URL, settings().PLAYER_STREAM_RELAY_KEY);
+const relayEnabled = () => relayConfigured(settings().PLAYER_STREAM_RELAY_URL, settings().PLAYER_STREAM_RELAY_KEY);
 function approvedStreamURL(value: string) {
-  const relay = useRelay() ? providerRelaySource(value, settings().STREAM_RELAY_ALLOWED_HOSTS) : null;
+  const relay = relayEnabled() ? providerRelaySource(value, settings().STREAM_RELAY_ALLOWED_HOSTS) : null;
   return trustedStreamURL(value, hosts(), relay ? [...httpHosts(), relay.hostname] : httpHosts());
 }
 const streamURL = (value: string) => approvedStreamURL(normalizeProviderURL(value, portal()).href);
@@ -87,7 +87,7 @@ export async function safeFetch(url: string, options: RequestInit = {}, hops = 0
     } catch {}
     throw error;
   }
-  if (useRelay() && providerRelaySource(source.href, settings().STREAM_RELAY_ALLOWED_HOSTS)) {
+  if (relayEnabled() && providerRelaySource(source.href, settings().STREAM_RELAY_ALLOWED_HOSTS)) {
     const response = await fetchPlayerRelay(source, settings().PLAYER_STREAM_RELAY_URL, settings().PLAYER_STREAM_RELAY_KEY, options, fetch, settings().STREAM_RELAY_ALLOWED_HOSTS);
     relaySources.set(response, source.href);
     const type = (response.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();

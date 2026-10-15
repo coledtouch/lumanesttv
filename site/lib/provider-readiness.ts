@@ -1,6 +1,8 @@
 import {retailPrice} from './plans.ts';
 
 type Site = {status?: string; address?: string; email_ready?: boolean};
+// Provider /account data as returned; the wallet values are validated by walletCanActivate.
+export type ProviderAccount = {balance?: unknown; currency?: unknown; site?: Site} | null | undefined;
 
 function httpsPortalOrigin(value: string) {
   const address = new URL(value);
@@ -42,9 +44,10 @@ export function renewalOffer(line: {devices: unknown; prices?: {renew?: {months:
   return {devices, amount, cost};
 }
 
-export function activatedLineId(data: any, renewalLineId?: number | null) {
-  const id = data?.line?.id ?? data?.id;
-  if (!Number.isSafeInteger(id) || id <= 0 || (renewalLineId && id !== renewalLineId)) {
+export function activatedLineId(data: unknown, renewalLineId?: number | null) {
+  const result = data as {id?: unknown; line?: {id?: unknown} | null} | null | undefined;
+  const id = result?.line?.id ?? result?.id;
+  if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0 || (renewalLineId && id !== renewalLineId)) {
     throw new Error('The provider has not confirmed the activated line.');
   }
   return id as number;

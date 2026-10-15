@@ -64,7 +64,7 @@ export function portalManifest() {
   };
 }
 
-export default {
+const pwaWorker = {
   async fetch(request) {
     const url = new URL(request.url);
     if (!HOSTS.has(url.hostname)) return new Response('Not found', {status: 404});
@@ -102,3 +102,4 @@ export default {
       .transform(response);
   }
 };
+export default pwaWorker;

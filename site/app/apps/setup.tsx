@@ -38,6 +38,7 @@ export default function Setup({portal, support}: {portal: string; support: strin
       const id = window.location.hash.slice(1);
       if (devices.some(item => item[0] === id)) {setDevice(id); setSuggested(false);}
     }
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the device comes from location.hash or the user agent, which only exist after hydration
     if (!devices.some(item => item[0] === window.location.hash.slice(1))) {setDevice(detectDevice()); setSuggested(true);}
     readHash();
     window.addEventListener('hashchange', readHash);
