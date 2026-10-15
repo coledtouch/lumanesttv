@@ -126,3 +126,13 @@
 @media(max-width:640px){.header{min-height:79px;padding:16px 6vw;gap:14px}.logo{width:146px}.header nav{font-size:11px;gap:13px}.hubLink{padding:10px 11px;gap:5px}.header nav>a:first-child{display:none}.main{padding:36px 6vw 46px}.title{margin-bottom:28px}.title h1{font-size:47px;letter-spacing:-2px}.title>p:last-child{font-size:13px;margin-top:18px}.layout{display:flex;flex-direction:column;gap:22px}.card{order:0;width:100%;padding:27px 23px}.guide{order:1;width:100%;padding:27px}.guideIcon{width:45px;height:45px;border-radius:13px;margin-bottom:19px}.guide h2{font-size:25px}.guide h2 br{display:none}.guide ol{margin:25px 0}.guide li{padding-bottom:21px}.card h2{font-size:27px}.cardIntro{font-size:12px}.cardHeading{gap:12px}.cardHeading .textButton{font-size:10px}.periods>div{gap:7px}.periods label{padding:13px 10px;font-size:11px}.periods strong{font-size:23px}.subscription{padding:15px 14px}.expiry{margin-bottom:22px}.footer{padding:24px 6vw;gap:16px;font-size:10px;justify-content:flex-start}.footer span{width:100%;margin:0}.loading{min-height:260px}}
 @media(max-width:360px){.card{padding:25px 18px}.periods label{padding:13px 8px}.periods strong{font-size:21px}.title h1{font-size:42px}.logo{width:130px}.hubLink{font-size:10px}.hubLink svg{display:none}}
 @media(prefers-reduced-motion:reduce){.spinner{animation:none;border-color:#7c3aed}}
+.whichLogin{color:#6b379e;text-decoration:underline;text-underline-offset:3px;white-space:nowrap}
+.helpRow{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:6px 10px;margin:14px 0 0;font-size:11px;line-height:1.7;color:#a99bb3}
+.helpRow a{color:#713ba8;text-decoration:underline;text-underline-offset:4px}
+.helpRow .textButton{margin:0}
+.guideDetails{border:0;padding:0}
+.guideSummary{display:none}
+.guideNote p{color:#d3bee8;max-width:none}
+.guide li p{max-width:none}
+@media(max-width:700px){.layout{display:flex;flex-direction:column;gap:16px}.card{order:1;width:100%}.guide{order:0;width:100%;padding:0;border-radius:14px}.guideSummary{display:flex;align-items:center;gap:10px;padding:14px 18px;font-size:14px;font-weight:600;color:#ece2fb;list-style:none;cursor:pointer;border-radius:14px}.guideSummary::-webkit-details-marker{display:none}.guideSummary:focus-visible{outline:3px solid #c4b5fd;outline-offset:2px}.guideChevron{margin-left:auto;color:#c4b5fd;transition:transform .2s}.guideDetails[open] .guideChevron{transform:rotate(180deg)}.guideBody{padding:4px 22px 24px}.guideBody>.guideIcon,.guideBody>h2{display:none}.guide ol{margin:12px 0 22px}}
+@media(prefers-reduced-motion:reduce){.guideChevron{transition:none}}
