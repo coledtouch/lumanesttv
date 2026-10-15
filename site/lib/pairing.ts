@@ -16,8 +16,8 @@ export const PAIRING_INTERVAL_S = 5;
 const MAX_ACTIVE_PER_CLIENT = 10;
 // No vowels (so codes never spell words) and no 0/O/1/I lookalikes.
 const ALPHABET = 'BCDFGHJKLMNPQRSTVWXZ23456789';
-export const DEVICES = ['android', 'samsung', 'lg'] as const;
-export const DEVICE_NAMES: Record<(typeof DEVICES)[number], string> = {android: 'Android TV / Google TV / Fire TV', samsung: 'Samsung TV', lg: 'LG TV'};
+export const DEVICES = ['android', 'samsung', 'lg', 'roku'] as const;
+export const DEVICE_NAMES: Record<(typeof DEVICES)[number], string> = {android: 'Android TV / Google TV / Fire TV', samsung: 'Samsung TV', lg: 'LG TV', roku: 'Roku'};
 export type TvAccount = ReturnType<typeof tvAccount>;
 
 export const corsHeaders = {'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Max-Age': '86400'};

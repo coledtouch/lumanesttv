@@ -1,0 +1,8 @@
+{
+  "rootDir": ".",
+  "files": ["manifest", "source/**/*.brs", "components/**/*", "images/**/*"],
+  "stagingDir": "../../output/roku/staging",
+  "outFile": "../../output/roku/tuner-roku.zip",
+  "retainStagingDir": false,
+  "diagnosticFilters": []
+}
