@@ -145,7 +145,6 @@ export default function Storefront({portal, ready, support}: {portal: string; re
         </div>
         <picture>
           <source srcSet="/hero-art.webp" type="image/webp"/>
-          {/* eslint-disable-next-line @next/next/no-img-element -- static hero art with explicit size, loaded eagerly as the LCP image */}
           <img className="hero-art" src="/hero-art.png" width={600} height={480} fetchPriority="high" alt="A cozy room at night: a moonlit arched window, a television ready to play, a sofa and a reading lamp."/>
         </picture>
       </section>

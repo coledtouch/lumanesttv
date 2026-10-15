@@ -4,15 +4,42 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
   - package-ecosystem: gradle
     directory: /apps/android
     schedule:
       interval: weekly
+    groups:
+      # The Kotlin Gradle plugin and the Compose compiler plugin must share one version.
+      kotlin:
+        patterns: ["org.jetbrains.kotlin*"]
+      android-minor-and-patch:
+        update-types: [minor, patch]
     ignore:
-      # AGP 9 needs Gradle 9.6+ and a build-script migration; upgrade it deliberately.
+      # Major Android Gradle plugin releases need a build-script migration; upgrade them deliberately.
       - dependency-name: com.android.application
         update-types: [version-update:semver-major]
   - package-ecosystem: npm
     directories: [/site, /apps/tizen, /apps/webos]
     schedule:
       interval: weekly
+    groups:
+      # react-server-dom-webpack must match the exact react/react-dom version.
+      react:
+        patterns: [react, react-dom, react-server-dom-webpack, "@types/react", "@types/react-dom"]
+      cloudflare:
+        patterns: [wrangler, "@cloudflare/*"]
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # Type definitions must not run ahead of the Node.js 24 runtime used in CI.
+      - dependency-name: "@types/node"
+        versions: [">=25"]
+      # eslint-config-next supports ESLint 9; move to 10 when it does.
+      - dependency-name: eslint
+        update-types: [version-update:semver-major]
+      # The runtime tests use the miniflare 4 options format.
+      - dependency-name: miniflare
+        update-types: [version-update:semver-major]
