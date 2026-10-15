@@ -142,6 +142,12 @@ export default function Renewal({portal, support}: {portal: string; support: str
     return () => {billingRequest.current?.abort(); billingRequest.current = null;};
   }, [quote, loadBilling]);
 
+  useEffect(() => {
+    const restore = (event: PageTransitionEvent) => {if (event.persisted && submitting.current) {activeRequest.current = null; submitting.current = false; setBusy(null);}};
+    window.addEventListener('pageshow', restore);
+    return () => window.removeEventListener('pageshow', restore);
+  }, []);
+
   async function submit(event: FormEvent<HTMLFormElement>, action: 'login' | 'checkout') {
     event.preventDefault();
     if (submitting.current || checking || (action === 'checkout' && billingLoading)) return;

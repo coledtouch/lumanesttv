@@ -1,6 +1,6 @@
 # Tuner by LumaNest TV
 
-IPTV player for Android TV and Google TV. Cable-style Live TV guide, live preview, movies, series, search, and themes. Version 1.5.3 expands two-channel Multi View to the full screen, with controls that hide while you watch. Fast saved-library startup, a True Black theme, personal Most Watched, labelled navigation, Favorites, unrestricted movie and series audio, native Android Picture-in-Picture, and the integrated Streaming tab remain available.
+IPTV player for Android TV and Google TV. Cable-style Live TV guide, live preview, movies, series, search, and themes. Version 1.5.3 expands two-channel Multi View to the full screen, with controls that hide while you watch. Fast saved-library startup, a True Black theme, personal Most Watched, labelled navigation, Favorites, unrestricted movie and series audio, and native Android Picture-in-Picture remain available.
 
 The [Samsung Tizen TV app](../tizen/README.md) provides Live TV, Movies, Series, Search, a black theme, and two-channel side-by-side or in-app Picture in Picture. It is built and signed separately from the Android APK using a Samsung TV certificate.
 
@@ -28,7 +28,7 @@ If you only have a link like `http://host:port/get.php?username=...&password=...
 
 ## Remote controls
 
-The main controls match the onn 4K remote: the directional pad, center OK, Back, and Channel +/−. Use Left / Right in the top navigation, then OK to open Live TV, Movies, Series, Multi View, Streaming, Search, or Settings. Moving across the navigation keeps the current page open until you select a destination. Back from Movies or Series focuses its tab while keeping your place; a second Back returns to Live TV. Select a category shortcut to jump straight to its titles; returning from details restores your place. Settings includes **onn 4K remote**. Other remotes can also use Menu to focus navigation.
+The main controls match the onn 4K remote: the directional pad, center OK, Back, and Channel +/−. Use Left / Right in the top navigation, then OK to open Live TV, Movies, Series, Multi View, Search, or Settings. Moving across the navigation keeps the current page open until you select a destination. Back from Movies or Series focuses its tab while keeping your place; a second Back returns to Live TV. Select a category shortcut to jump straight to its titles; returning from details restores your place. Settings includes **onn 4K remote**. Other remotes can also use Menu to focus navigation.
 
 Browsing the guide never changes the channel playing in the preview. The selected row updates the program description while the preview identifies the channel you are watching. Choose Watch or press OK on a current program to change channels. Select the preview to return to the channel already playing, even when browsing a different category or Favorites.
 
@@ -69,7 +69,7 @@ Multi View uses at most two concurrent live streams. It stops the ordinary guide
 
 ## Picture-in-Picture
 
-Select **Picture-in-Picture** in the full-screen player's actions to keep the video playing in Android's native floating window. Supported devices also enter PiP when you press Home during full-screen playback. The guide preview does not enter PiP. The native window provides play/pause and Android's expand/close controls; reopening Tuner restores the full-screen player and its controls. PiP requires device support and Android's per-app permission. Video keeps playing in PiP, including the embedded torrent player; closing the window stops or pauses playback according to the normal live/VOD background behavior.
+Select **Picture-in-Picture** in the full-screen player's actions to keep the video playing in Android's native floating window. Supported devices also enter PiP when you press Home during full-screen playback. The guide preview does not enter PiP. The native window provides play/pause and Android's expand/close controls; reopening Tuner restores the full-screen player and its controls. PiP requires device support and Android's per-app permission. Video keeps playing in PiP; closing the window stops or pauses playback according to the normal live/VOD background behavior.
 
 ## Guide data
 
@@ -101,13 +101,7 @@ Themes (True Black, Midnight, Carbon, Ocean, Ember, Cable Blue, Daylight), multi
 
 ## Build
 
-The **Streaming** tab, Settings > Torrentio, and the add-playlist screen all open the same integrated player. Paste the configured manifest link copied from Torrentio once. It is encrypted with an Android Keystore key and persists across app restarts. Movies and series discovery rows load automatically through JustWatch, with Cinemeta providing search, title details and episode metadata. Browse poster cards or search by title. Select a card to see its description, year, rating, runtime, genres and cast when available, then choose Play movie or an episode; IMDb IDs and manual stream choice are available under Advanced options but are not required.
-
-Tuner tries the addon's streams in configured order and automatically moves to the next candidate on playback failure, preserving the playback position. The configured sort, quality exclusions and size limits apply. Stream lookups are cached in memory for five minutes, and signed stream URLs are not written to Continue Watching. Returning from playback restores the selected title, episode, search and scroll position.
-
-HTTP(S) streams use your optional debrid account. With Debrid Provider set to None, the embedded jlibtorrent engine downloads the requested torrent file progressively into private temporary storage. Only verified pieces are passed to Media3; seek positions get priority over intervening pieces. Free playback depends on available peers and requires enough storage for the selected file plus a 512MB reserve. The torrent pauses in the background, and exiting playback stops it and removes temporary files. External links and streams requiring custom headers are excluded. Untagged and foreign audio are allowed without a verification step. Provider outages, absent peers, unsupported device codecs and unavailable streams can still prevent playback; Retry and available backups provide recovery.
-
-Both build types use the LumaNest application ID `tv.lumanest.tuner`. Debug builds use the shared release key when available so device tests can update the same installation without clearing its data. Install the signed release APK for normal use. jlibtorrent JNI libraries for ARM, ARM64, x86 and x86_64 are obtained from FrostWire's official Maven repository and unpacked automatically during the build.
+Both build types use the LumaNest application ID `tv.lumanest.tuner`. Debug builds are always signed with the standard Android debug key, so a debug build cannot replace an installed release; uninstall the release first when testing a debug build on the same device. Install the signed release APK for normal use.
 
 Build from `apps/android` with JDK 17, the Android SDK (platform 35), and the checked-in Gradle 8.11.1 wrapper. Set `JAVA_HOME` to your JDK and `ANDROID_HOME` to your SDK. Alternatively, create an ignored `local.properties` in this folder containing `sdk.dir` for your SDK location. Do not commit local SDK paths.
 
@@ -134,12 +128,6 @@ Screenshot coverage includes Live TV, Movies, Series, playback controls, themes,
 
 ## Notes
 
-- Playlist logins are stored in the app's private storage on the TV.
-- Most IPTV servers use plain http, so cleartext traffic is allowed.
+- Playlist logins are stored in the app's private storage on the TV. Passwords are encrypted with an Android Keystore key, and app preferences are excluded from cloud backup and device transfer.
+- Most IPTV servers use plain http, so cleartext traffic is allowed. User-installed CA certificates are not trusted.
 - Built with Kotlin, Jetpack Compose, Media3 ExoPlayer, OkHttp and Coil.
-
-Torrentio debrid status videos are detected before playback. A blocked AllDebrid connection shows account/email approval instructions instead of looping through audio checks; downloading and expired-account notices are also explained.
-
-The Streaming page has separate Movies and Series views with automatic US discovery rows: New Releases (recent films newly added to subscription streaming in the past seven days), New Series, New Episodes, Popular Now, and Top Netflix, Paramount+, AMC+, Prime Video, Disney+, HBO Max, Hulu, Apple TV+ and Peacock. Provider names are resolved from JustWatch's current US provider list, and Top means JustWatch popularity within the provider catalog, not the provider's official viewing chart. New Episodes uses Cinemeta air dates for recently added and popular US series, excludes future/undated episodes, and links directly to the correct episode. Discovery listings do not guarantee a working Torrentio stream.
-
-Rows refresh every six hours while browsing, and expired rows refresh when the page opens. Public catalog metadata is cached in private cache storage so returning to the page is fast. Each row shows its update time, stale data is marked Cached, failed updates show a retry message, and Refresh requests fresh data. Discovery calls never include the Torrentio manifest or debrid key. The public JustWatch GraphQL service is undocumented and may change; errors are surfaced rather than replaced with fabricated lists.

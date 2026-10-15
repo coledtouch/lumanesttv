@@ -196,7 +196,9 @@ export async function media(req: Request) {
     });
     return new Response(output, {headers: {'Content-Type': 'application/vnd.apple.mpegurl', 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff'}});
   }
-  const responseHeaders: Record<string, string> = {'Content-Type': type || 'video/mp2t', 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff'};
+  // Only media types are served from this origin; anything else (for example upstream HTML) becomes inert bytes.
+  const mediaType = /^(?:video|audio)\/[a-z0-9.+-]+$|^application\/(?:vnd\.apple\.mpegurl|x-mpegurl|mp4|octet-stream)$/i.test(type.split(';')[0].trim()) ? type : type ? 'application/octet-stream' : 'video/mp2t';
+  const responseHeaders: Record<string, string> = {'Content-Type': mediaType, 'Content-Security-Policy': "sandbox; default-src 'none'", 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff'};
   for (const name of ['Content-Range', 'Accept-Ranges']) {const value = upstream.headers.get(name); if (value) responseHeaders[name] = value;}
   return new Response(relayPlayerStream(upstream.body, controller), {status: upstream.status, headers: responseHeaders});
 }

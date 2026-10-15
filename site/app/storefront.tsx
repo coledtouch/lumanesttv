@@ -23,6 +23,7 @@ export default function Storefront({portal, ready, support}: {portal: string; re
   const [menuOpen, setMenuOpen] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const submittingRef = useRef(false);
+  const menuToggleRef = useRef<HTMLButtonElement>(null);
   const supportEmail = support || 'support@lumanest.tv';
   const plan = selected === null ? null : plans[selected];
 
@@ -57,6 +58,19 @@ export default function Storefront({portal, ready, support}: {portal: string; re
     };
   }, [selected]);
 
+  useEffect(() => {
+    const restore = (event: PageTransitionEvent) => {if (event.persisted) {submittingRef.current = false; setBusy(false);}};
+    window.addEventListener('pageshow', restore);
+    return () => window.removeEventListener('pageshow', restore);
+  }, []);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (event: globalThis.KeyboardEvent) => {if (event.key === 'Escape') {setMenuOpen(false); menuToggleRef.current?.focus();}};
+    document.addEventListener('keydown', close);
+    return () => document.removeEventListener('keydown', close);
+  }, [menuOpen]);
+
   function closeCheckout() {
     if (!submittingRef.current) setSelected(null);
   }
@@ -84,14 +98,14 @@ export default function Storefront({portal, ready, support}: {portal: string; re
         method: 'POST', headers: {'Content-Type': 'application/json'}, signal: abort.signal,
         body: JSON.stringify({devices: plan.devices, months: periods[period], email: String(fields.get('email') || '').trim(), name: String(fields.get('name') || '').trim()}),
       });
-      const result = await response.json() as {message?: string; error?: {message?: string}; approval_url?: string};
-      if (!response.ok) throw new Error(result.error?.message || result.message || 'We couldn’t open checkout. Please try again or contact support.');
-      if (!result.approval_url) throw new Error('The PayPal checkout link could not be created. Please try again.');
+      const result = await response.json().catch(() => null) as {message?: string; error?: {message?: string}; approval_url?: string} | null;
+      if (!response.ok) throw new Error(result?.error?.message || result?.message || 'We couldn’t open checkout. Please try again or contact support.');
+      if (!result?.approval_url) throw new Error('The PayPal checkout link could not be created. Please try again.');
       const approval = new URL(result.approval_url);
       if (approval.protocol !== 'https:' || !['www.paypal.com', 'www.sandbox.paypal.com'].includes(approval.hostname)) throw new Error('The PayPal checkout link could not be verified. Please contact support.');
       window.location.assign(approval.href);
     } catch (cause) {
-      setError(abort.signal.aborted ? 'Checkout took too long to respond. Please try again or contact support.' : cause instanceof Error ? cause.message : 'Checkout is unavailable. Please try again.');
+      setError(abort.signal.aborted ? 'Checkout took too long to respond. Please try again or contact support.' : cause instanceof Error && !(cause instanceof TypeError) ? cause.message : 'Checkout is unavailable. Please try again or contact support.');
       submittingRef.current = false;
       setBusy(false);
     } finally {
@@ -103,7 +117,7 @@ export default function Storefront({portal, ready, support}: {portal: string; re
     <a className="skip-link" href="#main-content">Skip to content</a>
     <header className="site-header">
       <a href="/" aria-label="LumaNest TV home"><img className="logo" src="/logo.png" alt="LumaNest TV" width="204" height="64"/></a>
-      <button className="mobile-menu-toggle" aria-expanded={menuOpen} aria-controls="primary-navigation" onClick={() => setMenuOpen(!menuOpen)}>{menuOpen ? 'Close' : 'Menu'}<span aria-hidden="true">{menuOpen ? '×' : '☰'}</span></button>
+      <button ref={menuToggleRef} className="mobile-menu-toggle" aria-expanded={menuOpen} aria-controls="primary-navigation" onClick={() => setMenuOpen(!menuOpen)}>{menuOpen ? 'Close' : 'Menu'}<span aria-hidden="true">{menuOpen ? '×' : '☰'}</span></button>
       <nav id="primary-navigation" className={menuOpen ? 'is-open' : ''} aria-label="Main navigation" onClick={() => setMenuOpen(false)}>
         <a href="#plans">Plans</a><a href="/watch">Watch now</a><a href="/renew">Renew</a><a href="/apps">Set up my TV</a><a href={'mailto:' + supportEmail}>Help</a>
         <a className="nav-cta" href={portal || '#customer-access'}>Customer sign in <span aria-hidden="true">↗</span></a>
@@ -126,10 +140,10 @@ export default function Storefront({portal, ready, support}: {portal: string; re
 
       <section className="quick-access" aria-label="Get started">
         <a href="#plans"><small>NEW TO LUMANEST?</small><h2>Choose a plan</h2><p>Find the right number of screens for your home.</p><span>Explore plans <b aria-hidden="true">↗</b></span></a>
-        <a href="/watch"><small>READY TO WATCH?</small><h2>Press play</h2><p>Sign in with your line login and open the webplayer.</p><span>Watch now <b aria-hidden="true">↗</b></span></a>
+        <a href="/watch"><small>READY TO WATCH?</small><h2>Press play</h2><p>Sign in with your line login and open the web player.</p><span>Watch now <b aria-hidden="true">↗</b></span></a>
         <a href="/apps"><small>MADE FOR YOUR SOFA</small><h2>Connect your TV</h2><p>Get installation steps for your device.</p><span>Start setup <b aria-hidden="true">↗</b></span></a>
       </section>
-      <div className="strip" aria-label="Live channels, movies and series, channel choices, and easy renewals"><span>LIVE CHANNELS</span><b aria-hidden="true">✦</b><span>MOVIES & SERIES</span><b aria-hidden="true">✦</b><span>YOUR CHANNEL CHOICES</span><b aria-hidden="true">✦</b><span>EASY RENEWALS</span></div>
+      <div className="strip"><span>LIVE CHANNELS</span><b aria-hidden="true">✦</b><span>MOVIES & SERIES</span><b aria-hidden="true">✦</b><span>YOUR CHANNEL CHOICES</span><b aria-hidden="true">✦</b><span>EASY RENEWALS</span></div>
 
       <section className="section plans-section" id="plans" aria-labelledby="plans-title">
         <div className="section-top">
@@ -149,7 +163,7 @@ export default function Storefront({portal, ready, support}: {portal: string; re
 
       <section className="how section" id="how" aria-labelledby="how-title">
         <div><p className="eyebrow">LESS FUSS. MORE FAVORITES.</p><h2 id="how-title">From your plan<br/>to your sofa.</h2><p className="muted">Your customer hub keeps your subscription, line login, and channel choices together. Renew online whenever you need more time.</p></div>
-        <div className="steps">{[['Find your fit', 'Choose 1–4 simultaneous screens and a 3, 6 or 12 month plan.'], ['Get connected', 'Review your total on PayPal. Once payment is confirmed, your subscription is activated and linked to your customer account.'], ['Settle in', 'Open the webplayer or follow our TV setup guide. When it’s time to renew, choose your next period and pay online.']].map(([heading, copy], index) => <div key={heading}><span aria-hidden="true">0{index + 1}</span><section><h3>{heading}</h3><p>{copy}</p></section></div>)}</div>
+        <div className="steps">{[['Find your fit', 'Choose 1–4 simultaneous screens and a 3, 6 or 12 month plan.'], ['Get connected', 'Review your total on PayPal. Once payment is confirmed, your subscription is activated and linked to your customer account.'], ['Settle in', 'Open the web player or follow our TV setup guide. When it’s time to renew, choose your next period and pay online.']].map(([heading, copy], index) => <div key={heading}><span aria-hidden="true">0{index + 1}</span><section><h3>{heading}</h3><p>{copy}</p></section></div>)}</div>
       </section>
 
       <section className="access section" id="customer-access" aria-labelledby="access-title">
@@ -161,7 +175,7 @@ export default function Storefront({portal, ready, support}: {portal: string; re
 
       <section className="faq section" id="faq" aria-labelledby="faq-title"><div><p className="eyebrow">GOOD TO KNOW</p><h2 id="faq-title">A few things<br/>before you settle in.</h2><a className="text-link faq-support" href={'mailto:' + supportEmail}>Need a hand? Contact support <span aria-hidden="true">↗</span></a></div><div>{questions.map(([question, answer]) => <details key={question}><summary>{question}<span aria-hidden="true">+</span></summary><p>{answer}</p></details>)}</div></section>
     </main>
-    <footer className="site-footer"><div className="footer-brand"><a href="/" aria-label="LumaNest TV home"><img className="logo" src="/logo.png" alt="LumaNest TV" width="204" height="64"/></a><p>Settle in. Stay curious.</p></div><nav aria-label="Footer navigation"><a href={'mailto:' + supportEmail}>Contact support</a><a href="/renew">Renew subscription</a><a href="/watch">Webplayer</a><a href="/apps">TV setup</a>{portal && <a href={portal}>Customer hub</a>}</nav><span className="copyright">© {new Date().getFullYear()} LumaNest TV</span></footer>
+    <footer className="site-footer"><div className="footer-brand"><a href="/" aria-label="LumaNest TV home"><img className="logo" src="/logo.png" alt="LumaNest TV" width="204" height="64"/></a><p>Settle in. Stay curious.</p></div><nav aria-label="Footer navigation"><a href={'mailto:' + supportEmail}>Contact support</a><a href="/renew">Renew subscription</a><a href="/watch">Web player</a><a href="/apps">TV setup</a>{portal && <a href={portal}>Customer hub</a>}</nav><span className="copyright">© {new Date().getFullYear()} LumaNest TV</span></footer>
 
     {plan && <dialog className="checkout-dialog modal" ref={dialogRef} aria-labelledby="plan-title" aria-describedby="checkout-summary" onKeyDown={trapCheckoutFocus} onCancel={event => {event.preventDefault(); closeCheckout();}} onClick={event => {if (event.target === event.currentTarget) {const bounds = event.currentTarget.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) closeCheckout();}}}>
       <button className="close" type="button" aria-label="Close checkout" disabled={busy} onClick={closeCheckout}>×</button><p className="eyebrow">YOUR NEXT EVENING STARTS HERE</p><h2 id="plan-title">Make room for {plan.name}.</h2>

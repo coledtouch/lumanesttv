@@ -54,7 +54,7 @@ import kotlinx.coroutines.launch
 import java.util.UUID
 
 @Composable
-fun EditSourceScreen(sourceId: String?, canCancel: Boolean, onTorrentio: (() -> Unit)? = null, onDone: () -> Unit) {
+fun EditSourceScreen(sourceId: String?, canCancel: Boolean, onDone: () -> Unit) {
     val existing = remember(sourceId) { Repo.prefs.sources.value.firstOrNull { it.id == sourceId } }
     var type by remember { mutableStateOf(existing?.type ?: SourceType.XTREAM) }
     var name by remember { mutableStateOf(existing?.name ?: "") }
@@ -175,9 +175,6 @@ fun EditSourceScreen(sourceId: String?, canCancel: Boolean, onTorrentio: (() -> 
             TvTextField("User agent · optional", userAgent, { userAgent = it }, placeholder = "Default: VLC", keyboardType = KeyboardType.Text)
 
             error?.let { Text(it, color = Palette.live, fontSize = 14.sp) }
-            if (onTorrentio != null) {
-                PillButton("Torrentio", onTorrentio)
-            }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 PillButton(if (busy != null) "Working…" else "Save and connect", { if (busy == null) save() }, primary = true)
                 if (canCancel) PillButton("Cancel", onDone)

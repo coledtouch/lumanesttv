@@ -1,10 +1,11 @@
 import {settings} from '../../../lib/mybunny';
+import {DEFAULT_PORTAL} from '../../site';
 
 export const dynamic = 'force-dynamic';
-export const metadata = {title: 'Checkout cancelled | LumaNest TV'};
+export const metadata = {title: 'Checkout cancelled | LumaNest TV', robots: {index: false, follow: false}, referrer: 'no-referrer'};
 
 export default function CheckoutCancel() {
-  const portal = settings().CUSTOMER_PORTAL_URL || 'https://portal.lumanest.tv';
+  const portal = settings().CUSTOMER_PORTAL_URL || DEFAULT_PORTAL;
   const support = settings().SUPPORT_EMAIL || 'support@lumanest.tv';
   return <div className="checkout-result">
     <header className="checkout-result-header"><a href="/" aria-label="LumaNest TV home"><img className="logo" src="/logo.png" alt="LumaNest TV" width="204" height="64"/></a><a href={'mailto:' + support}>Contact support <span aria-hidden="true">↗</span></a></header>

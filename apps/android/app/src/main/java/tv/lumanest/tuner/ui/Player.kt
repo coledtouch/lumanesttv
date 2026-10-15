@@ -309,7 +309,7 @@ private fun LivePlayer(req: PlayRequest.Live, onExit: (Channel?) -> Unit) {
     BackHandler(enabled = !pipVideoOnly) {
         when {
             panelOpen -> panelOpen = false
-            !videoFocused -> rootFocus.requestFocus()
+            !videoFocused -> runCatching { rootFocus.requestFocus() }
             else -> onExit(channel)
         }
     }
@@ -586,7 +586,6 @@ private fun VodPlayer(req: PlayRequest.Vod, onExit: () -> Unit) {
     val ui = rememberPlaybackUi()
     val error by PlayerHolder.error.collectAsState()
     val player = PlayerHolder.player
-    val torrentStatus by tv.lumanest.tuner.player.TorrentEngine.status.collectAsState()
     val pipVideoOnly by PlayerHolder.pipVideoOnly.collectAsState()
 
     fun showControls() { controlsVisible = true; controlsTick++ }
@@ -684,10 +683,6 @@ private fun VodPlayer(req: PlayRequest.Vod, onExit: () -> Unit) {
         val edge = if (compact) 24.dp else 40.dp
         VideoSurface(Modifier.fillMaxSize(), texture = false)
         if (!pipVideoOnly) {
-        if (current.url.startsWith("torrent:") && error == null && ui.buffering) {
-            Text(torrentStatus ?: "Finding torrent peers...", color = Color.White, fontSize = 15.sp,
-                modifier = Modifier.align(Alignment.Center).padding(top = 100.dp, start = 24.dp, end = 24.dp))
-        }
         if (ui.buffering && error == null) {
             CircularProgressIndicator(color = Color.White, strokeWidth = 3.dp, modifier = Modifier.align(Alignment.Center).size(44.dp))
         }

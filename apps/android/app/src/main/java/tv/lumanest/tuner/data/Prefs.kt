@@ -11,7 +11,6 @@ import org.json.JSONObject
 class Prefs(context: Context) {
     data class ChannelWatch(val count: Long, val updated: Long)
 
-    val addon = AddonSettings(context)
     private val sp: SharedPreferences = context.getSharedPreferences("tuner", Context.MODE_PRIVATE)
 
     private val _sources = MutableStateFlow(readSources())
@@ -94,7 +93,7 @@ class Prefs(context: Context) {
         list.forEach { s ->
             arr.put(JSONObject().apply {
                 put("id", s.id); put("name", s.name); put("type", s.type.name)
-                put("server", s.server); put("username", s.username); put("password", s.password)
+                put("server", s.server); put("username", s.username); put("password", sealPassword(s.password))
                 put("m3uUrl", s.m3uUrl); put("epgUrl", s.epgUrl); put("userAgent", s.userAgent)
                 put("hotUrl", s.hotUrl)
             })
@@ -111,12 +110,20 @@ class Prefs(context: Context) {
                 id = o.getString("id"), name = o.optString("name"),
                 type = SourceType.valueOf(o.optString("type", "XTREAM")),
                 server = o.optString("server"), username = o.optString("username"),
-                password = o.optString("password"), m3uUrl = o.optString("m3uUrl"),
+                password = openPassword(o.optString("password")), m3uUrl = o.optString("m3uUrl"),
                 epgUrl = o.optString("epgUrl"), userAgent = o.optString("userAgent"),
                 hotUrl = o.optString("hotUrl"),
             )
         }
     }.getOrDefault(emptyList())
+
+    // Older versions stored passwords in plain text; those still load and are encrypted on the next save.
+    // A device without a working Keystore keeps the previous plain-text behaviour rather than losing the source.
+    private fun sealPassword(value: String): String = if (value.isEmpty()) value else
+        runCatching { ENCRYPTED + KeystoreCrypto.encrypt(PASSWORD_KEY, value) }.getOrDefault(value)
+
+    private fun openPassword(saved: String): String = if (!saved.startsWith(ENCRYPTED)) saved else
+        runCatching { KeystoreCrypto.decrypt(PASSWORD_KEY, saved.removePrefix(ENCRYPTED)) }.getOrDefault("")
 
     // ---- favorites (per source) ----
     private fun favKey() = "fav_${_activeId.value}"
@@ -301,5 +308,7 @@ class Prefs(context: Context) {
     companion object {
         /** How long a channel that failed on every source stays out of the guide before it gets another chance. */
         const val DEAD_FOR_MS = 3 * 24 * 3600_000L
+        private const val PASSWORD_KEY = "tuner.source.password"
+        private const val ENCRYPTED = "keystore:"
     }
 }

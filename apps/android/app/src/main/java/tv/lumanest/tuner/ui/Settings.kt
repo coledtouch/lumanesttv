@@ -160,9 +160,6 @@ fun SettingsScreen(state: AppState) {
             }
 
             header("Playback")
-            item {
-                SettingRow("Torrentio", "Free torrent playback or your debrid account", onClick = { state.push(Screen.Torrentio) })
-            }
             item(key = "fmt$rev") {
                 val ts = Repo.prefs.liveFormat == "ts"
                 SettingRow(

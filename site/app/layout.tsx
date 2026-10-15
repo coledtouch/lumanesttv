@@ -2,10 +2,14 @@ import type { Metadata } from "next";
 import "./globals.css";
 import "./storefront.css";
 import PwaSupport from './pwa-support';
+import {SITE_URL, openGraph, siteDescription, siteTitle} from './site';
 
 export const metadata: Metadata = {
-  title: "LumaNest TV — Make yourself at home",
-  description: "Choose your screens, find your plan, and settle in with LumaNest TV.",
+  metadataBase: new URL(SITE_URL),
+  title: siteTitle,
+  description: siteDescription,
+  openGraph,
+  twitter: {card: 'summary', title: siteTitle, description: siteDescription, images: ['/logo.png']},
   manifest: '/manifest.webmanifest',
   appleWebApp: {capable: true, statusBarStyle: 'black-translucent', title: 'LumaNest TV'},
   icons: {
@@ -24,6 +28,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com"/>
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous"/>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap"/>
+      </head>
       <body className="antialiased">{children}<PwaSupport/></body>
     </html>
   );

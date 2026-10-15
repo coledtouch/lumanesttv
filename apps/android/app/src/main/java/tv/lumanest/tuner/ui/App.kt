@@ -30,23 +30,16 @@ import tv.lumanest.tuner.player.PlayerHolder
 
 sealed interface Screen {
     data object Home : Screen
-    data object Torrentio : Screen
     data class EditSource(val sourceId: String?) : Screen
     data class MovieDetail(val movie: Movie) : Screen
     data class SeriesDetail(val series: Series) : Screen
     data class Player(val request: PlayRequest) : Screen
 }
 
-enum class Tab(val title: String) { GUIDE("Live TV"), MOVIES("Movies"), SERIES("Series"), MULTIVIEW("Multi View"), STREAMING("Streaming"), SEARCH("Search"), SETTINGS("Settings") }
+enum class Tab(val title: String) { GUIDE("Live TV"), MOVIES("Movies"), SERIES("Series"), MULTIVIEW("Multi View"), SEARCH("Search"), SETTINGS("Settings") }
 
 /** Screen-independent state that has to survive navigating to a detail page or the player and back. */
 class AppState {
-    val torrentioBrowse = TorrentioBrowseState()
-    var torrentioManifest by mutableStateOf(runCatching { Repo.prefs.addon.manifest }.getOrDefault(tv.lumanest.tuner.data.AddonSettings.DEFAULT))
-    var torrentioVideoId by mutableStateOf("")
-    var torrentioSeries by mutableStateOf(false)
-    var torrentioResults by mutableStateOf<tv.lumanest.tuner.data.AddonResults?>(null)
-    var torrentioTitle by mutableStateOf("")
     val stack = mutableStateListOf<Screen>(Screen.Home)
     var tab by mutableStateOf(Tab.GUIDE)
     val guide = GuideState()
@@ -112,14 +105,12 @@ fun App() {
                 EditSourceScreen(
                     sourceId = s.sourceId,
                     canCancel = sources.isNotEmpty(),
-                    onTorrentio = { state.push(Screen.Torrentio) },
                     onDone = {
                         if (state.stack.size > 1) state.pop() else state.replaceAll(Screen.Home)
                     },
                 )
             }
             is Screen.MovieDetail -> key(s) { MovieDetailScreen(s.movie, state) }
-            Screen.Torrentio -> TorrentioScreen(state)
             is Screen.SeriesDetail -> key(s) { SeriesDetailScreen(s.series, state) }
             is Screen.Player -> key(s) {
                 PlayerScreen(s.request, onExit = { lastChannel ->

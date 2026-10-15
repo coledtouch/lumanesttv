@@ -1,5 +1,6 @@
 import Renewal from './renewal';
 import {settings} from '../../lib/mybunny';
+import {DEFAULT_PORTAL} from '../site';
 
 export const dynamic = 'force-dynamic';
 export const metadata = {
@@ -10,5 +11,5 @@ export const metadata = {
 
 export default function Renew() {
   const config = settings();
-  return <Renewal portal={config.CUSTOMER_PORTAL_URL || 'https://portal.lumanest.tv'} support={config.SUPPORT_EMAIL || 'support@lumanest.tv'}/>;
+  return <Renewal portal={config.CUSTOMER_PORTAL_URL || DEFAULT_PORTAL} support={config.SUPPORT_EMAIL || 'support@lumanest.tv'}/>;
 }

@@ -4,7 +4,7 @@ import styles from './owner-auth.module.css';
 export default function OwnerAuthFrame({children}:{children:ReactNode}) {
   return <div className={styles.shell}>
     <header className={styles.header}>
-      <a className={styles.brand} href="/" aria-label="LumaNest TV home"><img src="/logo.png" alt="LumaNest TV"/></a>
+      <a className={styles.brand} href="/" aria-label="LumaNest TV home"><img src="/logo.png" alt="LumaNest TV" width="195" height="50"/></a>
       <a href="/">Return to website ↗</a>
     </header>
     <main className={styles.main}>

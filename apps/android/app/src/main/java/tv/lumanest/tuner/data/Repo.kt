@@ -81,10 +81,13 @@ object Repo {
     fun init(context: Context) {
         if (::prefs.isInitialized) return
         prefs = Prefs(context)
-        StreamingCatalog.init(context)
         cacheRoot = File(context.cacheDir, "sources")
         snapshotRoot = File(context.filesDir, "catalogues")
         snapshots = CatalogSnapshots(snapshotRoot)
+        // Older versions had a torrent player: drop its saved addon link (it may hold a debrid key) and caches.
+        context.getSharedPreferences("torrentio", Context.MODE_PRIVATE).takeIf { it.all.isNotEmpty() }?.edit()?.clear()?.apply()
+        val stale = listOf("torrent-playback", "streaming-catalogs").map { File(context.cacheDir, it) }.filter { it.exists() }
+        if (stale.isNotEmpty()) scope.launch(Dispatchers.IO) { stale.forEach { it.deleteRecursively() } }
         if (prefs.activeId.value == null) prefs.sources.value.firstOrNull()?.let { prefs.setActive(it.id) }
     }
 

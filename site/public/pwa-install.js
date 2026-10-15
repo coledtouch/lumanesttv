@@ -5,7 +5,11 @@
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js', {scope: '/'}).catch(() => {});
   const standalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
   let installed = standalone();
-  if (standalone()) return;
+  if (standalone() || location.pathname.startsWith('/checkout') || location.pathname.startsWith('/renew/return')) return;
+  const DISMISSED = 'lumanest-install-dismissed';
+  let dismissed = false;
+  try {dismissed = localStorage.getItem(DISMISSED) === '1';} catch {}
+  if (dismissed) return;
   const style = document.createElement('link'); style.rel = 'stylesheet'; style.href = '/pwa-install.css';
   document.head.appendChild(style);
   const wrapper = document.createElement('div'); wrapper.id = 'lumanest-install';
@@ -16,17 +20,20 @@
   const close = document.createElement('button'); close.type = 'button'; close.textContent = 'Got it';
   panel.append(heading, instructions, close);
   const button = document.createElement('button'); button.type = 'button'; button.setAttribute('aria-expanded', 'false'); button.setAttribute('aria-controls', panel.id);
-  button.textContent = '↓ Install app'; wrapper.append(panel, button);
+  button.textContent = '↓ Install app';
+  const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.className = 'lumanest-install-dismiss'; dismiss.setAttribute('aria-label', 'Hide install button'); dismiss.textContent = '×';
+  wrapper.append(panel, button, dismiss);
   const header = document.querySelector('header');
   if (header) header.insertAdjacentElement('afterend', wrapper);
   else document.body.prepend(wrapper);
   let prompt = null;
   const hideHelp = () => {panel.hidden = true; button.setAttribute('aria-expanded', 'false'); button.focus();};
   close.addEventListener('click', hideHelp);
+  dismiss.addEventListener('click', () => {dismissed = true; wrapper.hidden = true; try {localStorage.setItem(DISMISSED, '1');} catch {}});
   wrapper.addEventListener('keydown', event => {if (event.key === 'Escape') hideHelp();});
   window.addEventListener('beforeinstallprompt', event => {event.preventDefault(); prompt = event;});
   window.addEventListener('appinstalled', () => {installed = true; prompt = null; wrapper.hidden = true;});
-  document.addEventListener('fullscreenchange', () => {wrapper.hidden = Boolean(document.fullscreenElement) || standalone() || installed;});
+  document.addEventListener('fullscreenchange', () => {wrapper.hidden = Boolean(document.fullscreenElement) || standalone() || installed || dismissed;});
   button.addEventListener('click', async () => {
     if (prompt) {
       const pending = prompt; prompt = null; button.disabled = true;

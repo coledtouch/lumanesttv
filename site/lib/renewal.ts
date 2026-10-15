@@ -64,18 +64,30 @@ function renewableLine(value: unknown, allowIneligible = false): RenewalLine | n
 }
 
 // The existing anti-abuse table stores only a purpose-specific hash, never an IP or line login.
-async function throttle(purpose: string, subject: string, maximum: number, window = 15 * 60 * 1000) {
+async function throttle(purpose: string, subject: string, maximum: number, window = 15 * 60 * 1000, record = true) {
   const now = Date.now(), bucket = Math.floor(now / window);
   const id = await digest(JSON.stringify(['renewal-v1', purpose, subject, bucket]));
   try {
-    await db().prepare('DELETE FROM player_login_attempts WHERE expires<?').bind(now).run();
-    await db().prepare('INSERT INTO player_login_attempts (id,count,expires) VALUES (?,1,?) ON CONFLICT(id) DO UPDATE SET count=count+1').bind(id, now + 2 * window).run();
+    if (record) {
+      await db().prepare('DELETE FROM player_login_attempts WHERE expires<?').bind(now).run();
+      await db().prepare('INSERT INTO player_login_attempts (id,count,expires) VALUES (?,1,?) ON CONFLICT(id) DO UPDATE SET count=count+1').bind(id, now + 2 * window).run();
+    }
     const attempts = await db().prepare('SELECT count FROM player_login_attempts WHERE id=?').bind(id).first<{count: number}>();
-    if (!attempts || !Number.isSafeInteger(attempts.count)) throw unavailable();
-    if (attempts.count > maximum) throw new ServiceError(429, 'renewal_rate_limit', window === 60 * 1000 ? 'Renewal is busy. Please try again in one minute.' : 'Too many renewal attempts. Please try again in 15 minutes.', String(window / 1000));
+    if (record ? !attempts || !Number.isSafeInteger(attempts.count) : attempts && !Number.isSafeInteger(attempts.count)) throw unavailable();
+    // Recorded attempts include this one; checks without recording allow up to the maximum.
+    if ((attempts?.count || 0) > (record ? maximum : maximum - 1)) throw new ServiceError(429, 'renewal_rate_limit', window === 60 * 1000 ? 'Renewal is busy. Please try again in one minute.' : 'Too many renewal attempts. Please try again in 15 minutes.', String(window / 1000));
   } catch (error) {if (error instanceof ServiceError) throw error; throw unavailable();}
 }
 function client(req: Request) {return req.headers.get('cf-connecting-ip') || 'unknown';}
+export async function limitCheckout(req: Request) {
+  try {
+    await throttle('checkout-ip', client(req), 10);
+    await throttle('checkout', 'shared', 60, 60 * 1000);
+  } catch (error) {
+    if (error instanceof ServiceError && error.status === 429) throw new ServiceError(429, 'checkout_rate_limit', 'Too many checkout attempts. Please wait a few minutes and try again.', error.retryAfter);
+    throw error;
+  }
+}
 
 export async function readRenewalJSON(req: Request): Promise<Record<string, unknown>> {
   if (!/^application\/json(?:\s*;|$)/i.test(req.headers.get('content-type') || '')) throw new ServiceError(415, 'json_required', 'Send this form as JSON.');
@@ -154,7 +166,15 @@ export async function loginRenewal(req: Request, body: Record<string, unknown>, 
   if (!parsed.success) throw new ServiceError(400, 'invalid_request', 'Enter your line username and password.');
   const input = parsed.data;
   await throttle('login-ip', client(req), 8);
-  await throttle('login-user', input.username, 12);
+  // Only failed logins count against a username, so others cannot lock a customer out by guessing.
+  await throttle('login-user', input.username, 12, undefined, false);
+  try {return await verifiedLogin(input, manageSubscription);}
+  catch (error) {
+    if (error instanceof ServiceError && error.code === 'invalid_line_login') await throttle('login-user', input.username, 12).catch(() => {});
+    throw error;
+  }
+}
+async function verifiedLogin(input: {username: string; password: string}, manageSubscription: boolean) {
   const result = await providerRead('/lines?' + new URLSearchParams({username: input.username, ...(manageSubscription ? {} : {on_site: 'true'}), limit: '2', offset: '0'}));
   // bunny() returns the provider envelope's data array. Two matches fail closed.
   if (!Array.isArray(result) || result.length !== 1) throw invalidLogin();

@@ -7,7 +7,7 @@ import {portalManifest} from '../cloudflare/lumanest-pwa-worker.mjs';
 
 const publicOrigin = 'https://lumanest.tv';
 const customerOrigin = 'https://portal.lumanest.tv';
-const staticCache = 'lumanest-pwa-static-v1';
+const staticCache = 'lumanest-pwa-static-v2';
 let runtime, upstream;
 
 test.before(async () => {
@@ -328,4 +328,18 @@ test('manual Safari installation help is accessible and viewing fullscreen hides
   ui.document.fullscreenElement = null;
   await ui.emitDocument('fullscreenchange');
   assert.equal(widget.hidden, false);
+});
+
+test('install button stays off payment return pages and remains hidden once dismissed', async () => {
+  for (const pathname of ['/checkout/return', '/checkout/cancel', '/renew/return']) {
+    const ui = await installUI({pathname});
+    assert.equal(ui.find('lumanest-install'), undefined);
+    assert.deepEqual(ui.registrations, [{url: '/sw.js', scope: '/'}]);
+  }
+  const ui = await installUI();
+  const widget = ui.find('lumanest-install');
+  await widget.children[2].dispatch('click');
+  assert.equal(widget.hidden, true);
+  await ui.emitDocument('fullscreenchange');
+  assert.equal(widget.hidden, true);
 });

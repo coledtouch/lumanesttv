@@ -4,7 +4,10 @@
     <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
             <certificates src="system" />
-            <certificates src="user" />
         </trust-anchors>
     </base-config>
+    <!-- The app's own logo database is HTTPS only. epgshare01 stays out: users may paste its http guide links. -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">iptv-org.github.io</domain>
+    </domain-config>
 </network-security-config>

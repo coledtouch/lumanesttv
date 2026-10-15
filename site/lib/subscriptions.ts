@@ -170,6 +170,7 @@ export async function enrollSubscription(req: Request, body: Record<string, unkn
     await db().prepare("INSERT INTO subscriptions (id,plan_id,line_id,line_slot,credential,devices,months,amount,currency,email,name,state,mode,starts_at,created,updated,merchant_activation) VALUES (?,?,?,?,?,?,?,?,?,?,?,'creating',?,?,?,?,1)")
       .bind(id, catalog.paypal_plan_id, line.id, line.id, await credentialDigest(line.username, line.password), line.devices, input.months, amount, 'USD', input.email, input.name, mode(), startsAt, Date.now(), Date.now()).run();
   });
+  let created = false;
   try {
     const origin = new URL(req.url).origin;
     const result = await paypal('/v1/billing/subscriptions', 'POST', {plan_id: catalog.paypal_plan_id, custom_id: id, start_time: startsAt,
@@ -177,12 +178,17 @@ export async function enrollSubscription(req: Request, body: Record<string, unkn
     const approval = approvedURL(result?.links?.find((link: any) => link?.rel === 'approve')?.href);
     if (!subscriptionID.test(result?.id || '') || !approval) throw new ServiceError(502, 'recurring_response_invalid', 'PayPal did not confirm an enrollment link. Contact support before trying again.');
     await db().prepare("UPDATE subscriptions SET paypal_id=?,approval_url=?,state='APPROVAL_PENDING',updated=? WHERE id=? AND state='creating'").bind(result.id, approval, Date.now(), id).run();
+    created = true;
     const row = await db().prepare('SELECT * FROM subscriptions WHERE id=?').bind(id).first<Agreement>();
     if (!row) throw unavailable();
     await refreshAgreement(row);
     return {approval_url: approval, subscription_id: id, starts_at: startsAt, amount: Number(amount), currency: 'USD', months: input.months};
   } catch (error) {
-    await db().prepare("UPDATE subscriptions SET state='needs_review',error='enrollment_not_confirmed',updated=? WHERE id=? AND line_slot IS NOT NULL").bind(Date.now(), id).run();
+    // A stored agreement stays cancellable. A rejected create request made nothing to approve,
+    // so release the line instead of blocking every later renewal on support review.
+    if (created) {}
+    else if (error instanceof ServiceError && ['paypal_error', 'paypal_auth_failed', 'paypal_not_configured'].includes(error.code)) await db().prepare("UPDATE subscriptions SET state='CANCELLED',line_slot=NULL,error='enrollment_not_created',updated=? WHERE id=? AND state='creating'").bind(Date.now(), id).run();
+    else await db().prepare("UPDATE subscriptions SET state='needs_review',error='enrollment_not_confirmed',updated=? WHERE id=? AND line_slot IS NOT NULL").bind(Date.now(), id).run();
     if (error instanceof ServiceError) throw error;
     throw unavailable();
   }

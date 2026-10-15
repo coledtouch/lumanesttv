@@ -1,4 +1,4 @@
-const CACHE = 'lumanest-pwa-static-v1';
+const CACHE = 'lumanest-pwa-static-v2';
 const STATIC = ['/pwa/offline.html', '/pwa/offline.css', '/pwa/icon-192.png', '/pwa/icon-512.png'];
 
 self.addEventListener('install', event => {

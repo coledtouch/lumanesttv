@@ -38,3 +38,10 @@ jobs:
         run: npm test
       - name: Stage a clean package without a TV connection
         run: npm run build
+      - name: Save staged package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: webos-staged-package
+          path: output/webos/
+          if-no-files-found: error
+          retention-days: 7
