@@ -48,3 +48,4 @@
 .watch-shortcuts p{font-size:12px;color:#ad9cbe;line-height:1.7;margin:16px 0}
 .watch-shortcuts .small-button{background:#2a203a;border:1px solid #534267;color:#e3d4f3;font-size:12px}
 @keyframes watch-spin{to{transform:rotate(360deg)}}
+.watch-shell .watch-cast{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.watch-shell .watch-cast-status{font-size:13px;color:#dfd0f3}.watch-shell .watch-cast-error{font-size:12px;color:#ffb4b4;flex-basis:100%}

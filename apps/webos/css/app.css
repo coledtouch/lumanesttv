@@ -971,15 +971,15 @@ body.multiview-fullscreen .dual-frames.controls-hidden .dual-frame {
 }
 .settings-side p {
   font-size: 24px;
-  margin: 15px 0;
+  margin: 10px 0;
 }
 .settings-side h2 {
   font-size: 30px;
 }
 .settings-side .local-button {
   font-size: 25px;
-  padding: 20px;
-  margin: 14px 0;
+  padding: 15px 20px;
+  margin: 9px 0;
 }
 body.native-video #background {
   display: none;
@@ -995,8 +995,7 @@ body.native-video #main {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  width: 1030px;
-  margin: -6px 0 26px;
+  margin: 0 0 26px;
   padding: 18px 18px 18px 30px;
   border-radius: 22px;
   background: linear-gradient(100deg, #2b2349, #1d1733);

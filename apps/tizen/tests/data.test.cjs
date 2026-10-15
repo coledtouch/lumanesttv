@@ -326,3 +326,18 @@ test('raw gzip guide works only with native decompression and unsupported TVs re
         if (available) assert.equal((await guide)[0].title, 'Compressed'); else await assert.rejects(guide, /cannot unpack the compressed guide/);
     }
 });
+
+test('the full lineup is the default; USA only and category order are opt-in', () => {
+    const { data } = fixture();
+    const cats = [{ id: 'us', name: 'USA | News' }, { id: 'uk', name: 'UK | Entertainment' }];
+    const items = [channel('a', 'CNN', ['us'], { country: 'US' }), channel('b', '[UK] Sky News', ['uk'], { country: 'GB' }), channel('c', 'Loose feed', [])];
+    const all = data.allPolicy(items.map(item => ({ ...item, categoryIds: item.categoryIds.slice() })), cats);
+    assert.deepEqual(plain(all.items.map(item => item.name)), ['CNN', '[UK] Sky News', 'Loose feed']);
+    assert.deepEqual(plain(all.categories.map(cat => cat.id)), ['us', 'uk', '__tuner_live']);
+    assert.deepEqual(plain(data.usPolicy(items, cats).items.map(item => item.name)), ['CNN']);
+    const order = [{ id: 's', name: 'US Sports' }, { id: 'k', name: 'Kids' }, { id: 'n', name: 'US News' }, { id: 'a', name: '| Action |' }];
+    const ids = mode => plain(data.categoryItems(order, false, mode).slice(2).map(cat => cat.id));
+    assert.deepEqual(ids(), ['s', 'n', 'k', 'a']);
+    assert.deepEqual(ids('provider'), ['s', 'k', 'n', 'a']);
+    assert.deepEqual(ids('az'), ['a', 'k', 'n', 's']);
+});

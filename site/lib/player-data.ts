@@ -122,3 +122,12 @@ export async function rewriteHLS(text: string, base: string, replace: (url: stri
   }
   return out.join('\n');
 }
+
+/** Casting receivers play HLS and MP4, not raw MPEG-TS, so a .ts live link asks the provider for its HLS form. */
+export function castSource(value: string) {
+  const url = new URL(value);
+  if (/\.ts$/i.test(url.pathname)) url.pathname = url.pathname.replace(/\.ts$/i, '.m3u8');
+  else if (/^\/live\/[^/]+\/[^/]+\/[^/.]+$/.test(url.pathname)) url.pathname += '.m3u8'; // Xtream live without an extension
+  const kind = /\.m3u8$/i.test(url.pathname) ? 'hls' : /\.(mp4|m4v|mov)$/i.test(url.pathname) ? 'file' : 'hls';
+  return {url: url.href, contentType: kind === 'file' ? 'video/mp4' : 'application/x-mpegURL', live: kind === 'hls'};
+}

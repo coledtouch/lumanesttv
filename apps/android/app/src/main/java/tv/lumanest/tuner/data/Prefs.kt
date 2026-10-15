@@ -44,6 +44,27 @@ class Prefs(context: Context) {
         return true
     }
 
+    /**
+     * Off by default: the LumaNest customer hub decides which channels a line includes. On hides live channels and
+     * categories that are not U.S. programming (see [ContentPolicy.live]). Movies and series are never filtered.
+     */
+    private val _usOnly = MutableStateFlow(sp.getBoolean("usOnlyLive", false))
+    val usOnly: StateFlow<Boolean> = _usOnly
+
+    fun setUsOnly(on: Boolean) {
+        sp.edit().putBoolean("usOnlyLive", on).apply()
+        _usOnly.value = on
+    }
+
+    /** Guide category chip order: "featured" (main cable groups first), "provider" (as the line delivers them) or "az". */
+    private val _categoryOrder = MutableStateFlow(sp.getString("categoryOrder", "featured").orEmpty().ifBlank { "featured" })
+    val categoryOrder: StateFlow<String> = _categoryOrder
+
+    fun setCategoryOrder(order: String) {
+        sp.edit().putString("categoryOrder", order).apply()
+        _categoryOrder.value = order
+    }
+
     var liveFormat: String
         get() = sp.getString("liveFormat", "ts") ?: "ts"
         set(v) = sp.edit().putString("liveFormat", v).apply()

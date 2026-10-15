@@ -1,5 +1,5 @@
 import {settings, ServiceError} from './mybunny';
-import {parseM3U, trustedStreamURL, normalizeProviderURL, mapProviderOrigin, rewriteHLS, validSession, validMedia, type PlayerSession, type PlayerMedia} from './player-data';
+import {parseM3U, trustedStreamURL, normalizeProviderURL, mapProviderOrigin, rewriteHLS, castSource, validSession, validMedia, type PlayerSession, type PlayerMedia} from './player-data';
 import {seal, open, digest} from './player-crypto';
 import {relayPlayerStream} from './player-stream-relay';
 import {sampleDiagnosticContainer} from './player-diagnostic-container';
@@ -191,7 +191,14 @@ export async function media(req: Request) {
   let item: unknown;
   try {item = await open<unknown>(raw, key, 'player-media');} catch {throw new ServiceError(403, 'stream_forbidden', 'This stream is no longer available. Refresh your channel list.');}
   if (!validMedia(item, binding) || item.exp > credentials.exp) throw new ServiceError(403, 'stream_forbidden', 'This stream belongs to another or expired player session.');
-  if (item.root === 1) await assertNotRevoked(credentials);
+  const expiresAt = item.exp;
+  return serveMedia(req, item, () => assertNotRevoked(credentials), async source =>
+    '/api/player/stream?token=' + encodeURIComponent(await seal({url: source, bind: binding, exp: expiresAt} satisfies PlayerMedia, key, 'player-media')), {});
+}
+
+/** Fetches one approved upstream URL for the web player or a cast device; HLS playlists get re-signed child URLs. */
+async function serveMedia(req: Request, item: {url: string; root?: 1}, checkRevoked: () => Promise<void>, sign: (source: string) => Promise<string>, extraHeaders: Record<string, string>) {
+  if (item.root === 1) await checkRevoked();
   const url = streamURL(item.url);
   const headers: Record<string, string> = {Accept: '*/*'};
   const range = req.headers.get('Range');
@@ -210,23 +217,60 @@ export async function media(req: Request) {
   const type = upstream.headers.get('Content-Type') || '';
   if (/mpegurl/i.test(type) || /\.m3u8$/i.test(finalURL.pathname)) {
     if (item.root !== 1) {
-      try {await assertNotRevoked(credentials);} catch (error) {await upstream.body?.cancel(); throw error;}
+      try {await checkRevoked();} catch (error) {await upstream.body?.cancel(); throw error;}
     }
     const text = await limitedText(upstream, 2 * 1024 * 1024);
     if (!text.trimStart().startsWith('#EXTM3U')) throw new ServiceError(502, 'invalid_media', 'The provider returned an invalid media playlist.');
-    const expiresAt = item.exp;
-    const output = await rewriteHLS(text, finalURL.href, async next => {
-      const source = streamURL(next);
-      const token = await seal({url: source.href, bind: binding, exp: expiresAt} satisfies PlayerMedia, key, 'player-media');
-      return '/api/player/stream?token=' + encodeURIComponent(token);
-    });
-    return new Response(output, {headers: {'Content-Type': 'application/vnd.apple.mpegurl', 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff'}});
+    const output = await rewriteHLS(text, finalURL.href, next => sign(streamURL(next).href));
+    return new Response(output, {headers: {'Content-Type': 'application/vnd.apple.mpegurl', 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff', ...extraHeaders}});
   }
   // Only media types are served from this origin; anything else (for example upstream HTML) becomes inert bytes.
   const mediaType = /^(?:video|audio)\/[a-z0-9.+-]+$|^application\/(?:vnd\.apple\.mpegurl|x-mpegurl|mp4|octet-stream)$/i.test(type.split(';')[0].trim()) ? type : type ? 'application/octet-stream' : 'video/mp2t';
-  const responseHeaders: Record<string, string> = {'Content-Type': mediaType, 'Content-Security-Policy': "sandbox; default-src 'none'", 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff'};
+  const responseHeaders: Record<string, string> = {'Content-Type': mediaType, 'Content-Security-Policy': "sandbox; default-src 'none'", 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff', ...extraHeaders};
   for (const name of ['Content-Range', 'Accept-Ranges']) {const value = upstream.headers.get(name); if (value) responseHeaders[name] = value;}
   return new Response(relayPlayerStream(upstream.body, controller), {status: upstream.status, headers: responseHeaders});
+}
+
+// ---------------------------------------------------------------- casting
+// A Chromecast or AirPlay receiver fetches media itself, without this browser's session cookie. A cast link is a
+// short-lived, cookie-free token for one channel, tied to the player session's id so signing out stops it.
+export const CAST_TTL_MS = 4 * 60 * 60 * 1000;
+export const castHeaders = {'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Range', 'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges'};
+type CastMedia = {url: string; sid: string; exp: number; root?: 1};
+function validCast(value: unknown, now = Date.now()): value is CastMedia {
+  if (!value || typeof value !== 'object') return false;
+  const item = value as Partial<CastMedia>;
+  return typeof item.url === 'string' && item.url.length > 0 && typeof item.sid === 'string' && item.sid.length > 0 &&
+    typeof item.exp === 'number' && Number.isFinite(item.exp) && item.exp > now && (item.root === undefined || item.root === 1);
+}
+export async function createCast(req: Request, body: unknown) {
+  const {binding, credentials} = await session(req);
+  await assertNotRevoked(credentials);
+  const raw = body && typeof body === 'object' && typeof (body as {token?: unknown}).token === 'string' ? (body as {token: string}).token : '';
+  if (!raw || raw.length > 6000) throw new ServiceError(400, 'missing_stream', 'Choose a channel to cast.');
+  const key = secret();
+  let item: unknown;
+  try {item = await open<unknown>(raw, key, 'player-media');} catch {throw new ServiceError(403, 'stream_forbidden', 'This stream is no longer available. Refresh your channel list.');}
+  if (!validMedia(item, binding) || item.root !== 1) throw new ServiceError(403, 'stream_forbidden', 'This stream belongs to another or expired player session.');
+  const source = castSource(streamURL(item.url).href);
+  const exp = Math.min(credentials.exp, Date.now() + CAST_TTL_MS);
+  const token = await seal({url: source.url, sid: credentials.sid, exp, root: 1} satisfies CastMedia, key, 'player-cast');
+  return {url: new URL('/api/cast/stream?t=' + encodeURIComponent(token), req.url).href, contentType: source.contentType, live: source.live, expiresAt: exp};
+}
+export async function castMedia(req: Request) {
+  const raw = new URL(req.url).searchParams.get('t');
+  if (!raw) throw new ServiceError(400, 'missing_stream', 'This cast link is incomplete.');
+  const key = secret();
+  let item: unknown;
+  try {item = await open<unknown>(raw, key, 'player-cast');} catch {throw new ServiceError(403, 'stream_forbidden', 'This cast link is no longer valid. Cast the channel again.');}
+  if (!validCast(item)) throw new ServiceError(403, 'stream_forbidden', 'This cast link expired. Cast the channel again.');
+  const cast = item;
+  const checkRevoked = async () => {
+    const revoked = await db().prepare('SELECT id FROM player_revoked_sessions WHERE id=?').bind(cast.sid).first();
+    if (revoked) throw new ServiceError(401, 'player_session_expired', 'You signed out of the web player, so casting stopped.');
+  };
+  return serveMedia(req, cast, checkRevoked, async source =>
+    '/api/cast/stream?t=' + encodeURIComponent(await seal({url: source, sid: cast.sid, exp: cast.exp} satisfies CastMedia, key, 'player-cast')), castHeaders);
 }
 // Device pairing (lib/pairing.ts) hands a TV app the same line login this web player session proved.
 export const playerSecret = () => secret();

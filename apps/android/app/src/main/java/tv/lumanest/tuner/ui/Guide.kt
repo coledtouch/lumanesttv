@@ -920,7 +920,8 @@ private fun CategoryChips(
     edge: Dp,
     onSelect: (String) -> Unit,
 ) {
-    val items = remember(categories, hasTrending) { guideCategoryItems(categories, hasTrending) }
+    val order by Repo.prefs.categoryOrder.collectAsState()
+    val items = remember(categories, hasTrending, order) { guideCategoryItems(categories, hasTrending, order) }
     LazyRow(
         Modifier.fillMaxWidth().height(44.dp),
         contentPadding = PaddingValues(horizontal = edge),
@@ -946,9 +947,13 @@ private fun CategoryChips(
     }
 }
 
-/** Keep the user's main cable categories together before the remaining provider groups. */
+/**
+ * Guide category chips after All Channels, Favorites and Most Watched. [order] is the customer's choice in Settings:
+ * "featured" keeps the main cable groups first, "provider" keeps the order the line delivers (as set up in the
+ * customer hub) and "az" sorts by name.
+ */
 @Suppress("UNUSED_PARAMETER") // Retains the existing helper API; personal Most Watched is always available.
-internal fun guideCategoryItems(categories: List<Pair<String, String>>, hasTrending: Boolean): List<Pair<String, String>> {
+internal fun guideCategoryItems(categories: List<Pair<String, String>>, hasTrending: Boolean, order: String = "featured"): List<Pair<String, String>> {
     fun rank(name: String): Int {
         val normalized = name.uppercase(java.util.Locale.ROOT).replace(Regex("[^A-Z0-9]+"), " ").trim()
             .removePrefix("USA ").removePrefix("US ")
@@ -967,8 +972,12 @@ internal fun guideCategoryItems(categories: List<Pair<String, String>>, hasTrend
         add(CAT_ALL to "All Channels")
         add(CAT_FAV to "Favorites")
         add(CAT_HOT to "Most Watched")
-        addAll(categories.filter { it.first !in setOf(CAT_ALL, CAT_HOT, CAT_FAV) }
-            .distinctBy { it.first }.sortedBy { rank(it.second) })
+        val provider = categories.filter { it.first !in setOf(CAT_ALL, CAT_HOT, CAT_FAV) }.distinctBy { it.first }
+        addAll(when (order) {
+            "provider" -> provider
+            "az" -> provider.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.second.replace(Regex("^[^\\p{L}\\p{N}]+"), "") })
+            else -> provider.sortedBy { rank(it.second) }
+        })
     }
 }
 

@@ -181,11 +181,13 @@ internal class CatalogSnapshots(private val root: File) {
         private const val MAX_AGE = 7 * 24 * 3600_000L
         private const val GUIDE_HORIZON = 8 * 3600_000L
 
-        fun identity(source: Source, liveFormat: String, localZip: String): Identity {
+        fun identity(source: Source, liveFormat: String, localZip: String, usOnly: Boolean = false): Identity {
             val raw = digest(listOf(source.id, source.type.name, source.server, source.username, source.password,
                 source.m3uUrl, source.epgUrl, source.userAgent, source.hotUrl))
             val catalogue = digest(listOf(raw, "policy:$POLICY_VERSION"))
-            return Identity(raw, catalogue, digest(listOf(catalogue, liveFormat, localZip)))
+            // Full and USA-only lineups are separate live snapshots. Before 1.6.1 every saved lineup was USA-only,
+            // so neither key matches those and the first launch reloads the lineup the customer hub chose.
+            return Identity(raw, catalogue, digest(listOf(catalogue, liveFormat, localZip, if (usOnly) "live:us-only" else "live:all")))
         }
         private fun digest(values: List<String>): String {
             val digest = MessageDigest.getInstance("SHA-256")

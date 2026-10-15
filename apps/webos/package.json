@@ -1,6 +1,6 @@
 {
   "name": "lumanest-webos-tv",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "description": "LumaNest TV webOS app and clean development staging tools",
   "scripts": {

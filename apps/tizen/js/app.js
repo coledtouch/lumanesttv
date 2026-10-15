@@ -178,7 +178,7 @@
   }
   function liveCategories() {
     return D.categoryItems
-      ? D.categoryItems(S.cats.live, true)
+      ? D.categoryItems(S.cats.live, true, store.settings.categoryOrder)
       : [
           { id: "__all", name: "All Channels" },
           { id: "__fav", name: "Favorites" },
@@ -1389,7 +1389,6 @@
         )
       );
       pairRow.appendChild(button("Pair with your phone", "pair-phone", openPairing, "primary-button"));
-      main.appendChild(pairRow);
     }
     var grid = el("div", "settings-grid"),
       form = el("form", "settings-main");
@@ -1475,6 +1474,40 @@
     );
     side.appendChild(
       button(
+        store.settings.usOnly ? "Channels: USA only" : "Channels: All",
+        "lineup-setting",
+        function () {
+          store.saveSettings({ usOnly: !store.settings.usOnly });
+          connect();
+          renderSettings();
+          focus("lineup-setting");
+          toast(store.settings.usOnly ? "Showing USA channels only." : "Showing all channels on your line.");
+        },
+        "local-button"
+      )
+    );
+    side.appendChild(
+      button(
+        "Category order: " +
+          (store.settings.categoryOrder === "provider"
+            ? "Customer hub"
+            : store.settings.categoryOrder === "az"
+            ? "A to Z"
+            : "Featured"),
+        "category-order-setting",
+        function () {
+          var order = store.settings.categoryOrder;
+          store.saveSettings({
+            categoryOrder: order === "provider" ? "az" : order === "az" ? "featured" : "provider",
+          });
+          renderSettings();
+          focus("category-order-setting");
+        },
+        "local-button"
+      )
+    );
+    side.appendChild(
+      button(
         "Theme: " +
           (store.settings.theme === "black" ? "Black" : "LumaNest"),
         "theme-setting",
@@ -1496,13 +1529,6 @@
       )
     );
     side.appendChild(
-      el(
-        "p",
-        "muted",
-        "Movies, Series and audio have no language restriction. Your playlist login stays on this TV."
-      )
-    );
-    side.appendChild(
       button("About Tuner", "about-tuner", function () {
         showDialog(
           "Tuner for Samsung TV",
@@ -1512,6 +1538,8 @@
       })
     );
     grid.appendChild(side);
+    // The pairing row heads the form column, so the side panel lines up with it.
+    if (pairRow) form.insertBefore(pairRow, form.firstChild);
     main.appendChild(grid);
     if (S.zone === "nav") focus("tab-" + S.nav);
     else focus(!store.settings.source && window.TunerPairing ? "pair-phone" : "source-type");
@@ -1561,7 +1589,7 @@
   }
   function connect(force) {
     if (!store.settings.source) return;
-    var sameCatalog = client && client.catalogIdentity === D.catalogIdentity(store.settings.source, { zip: store.settings.zip });
+    var sameCatalog = client && client.catalogIdentity === D.catalogIdentity(store.settings.source, { zip: store.settings.zip, usOnly: !!store.settings.usOnly });
     stopDual();
     player.stop();
     S.watched = null;
@@ -1585,6 +1613,7 @@
     S.offset = 0;
     client = D.createClient(store.settings.source, {
       zip: store.settings.zip,
+      usOnly: !!store.settings.usOnly,
       onCatalog: function (kind, items, categories) {
         S.catalogs[kind] = items;
         S.cats[kind] = categories;
