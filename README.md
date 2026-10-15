@@ -6,7 +6,7 @@ Website, checkout, owner tools, web player, and TV applications for [LumaNest TV
 | --- | --- |
 | [`site/`](site/) | React/Vinext website, server APIs, PayPal checkout and renewals, owner sign-in, web player, PWA assets, D1 schema and tests |
 | [`site/cloudflare/`](site/cloudflare/) | Portal PWA support and authenticated stream relay Workers |
-| [`apps/android/`](apps/android/) | Android TV and Google TV development source, Kotlin/Compose/Media3, including tests; approved download is 1.6.0 |
+| [`apps/android/`](apps/android/) | Android TV and Google TV development source, Kotlin/Compose/Media3, including tests; approved download is 1.6.1 |
 | [`apps/tizen/`](apps/tizen/) | Tuner 1.4.9 for Samsung TVs, source, tests and packaging tools |
 | [`apps/webos/`](apps/webos/) | Tuner 1.0.3 for LG webOS TVs |
 | [`apps/roku/`](apps/roku/) | Tuner 1.0.1 for Roku (sideload for testing; Roku Channel Store submission pending) |

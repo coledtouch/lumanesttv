@@ -13,6 +13,7 @@ Later releases:
 | Installer | Version | Purpose |
 | --- | --- | --- |
 | `Tuner-1.6.0.apk` | 1.6.0, Android version code 15 | Signed Android TV / Google TV / Fire TV app: LumaNest branding, phone pairing, Torrentio removed |
+| `Tuner-1.6.1.apk` | 1.6.1, Android version code 16 | Lineup chosen in the customer hub, USA-only switch, category order, first-load banner |
 
 [`SHA256SUMS`](SHA256SUMS) records the installer checksums. GitHub also generates a source archive for each tagged release; it contains the website and all three app source trees.
 

@@ -32,7 +32,7 @@ Always pass `--production` for a live deploy: without it the generated config en
 
 Existing customer/order records and owner password hashes live in D1. App downloads may live in R2. Neither is included in this repository. Any production data move needs a private backup, restore and verification process. Do not put database exports, payment details or credentials into GitHub.
 
-The approved Android R2 object is `Tuner-1.6.0.apk`, with the size/checksum and custom metadata required by `site/lib/tuner.ts`. Deploy the site change first, then upload the APK from the owner console's Downloads page, which accepts only the file `lib/tuner.ts` names. Android 1.5.3 and 1.5.2 remain archived in R2. LG's IPK ships with the website's public assets. Native applications continue to run on customers' devices; their full first-party sources remain in `apps/` on GitHub.
+The approved Android R2 object is `Tuner-1.6.1.apk`, with the size/checksum and custom metadata required by `site/lib/tuner.ts`. Deploy the site change first, then upload the APK from the owner console's Downloads page, which accepts only the file `lib/tuner.ts` names. Android 1.6.0, 1.5.3 and 1.5.2 remain archived in R2. LG's IPK ships with the website's public assets. Native applications continue to run on customers' devices; their full first-party sources remain in `apps/` on GitHub.
 
 ## Database transfer and migration bookkeeping
 
