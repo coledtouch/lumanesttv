@@ -5,7 +5,7 @@ import {DEFAULT_PORTAL} from '../site';
 import {SiteFooter, SiteHeader} from '../site-chrome';
 
 export const dynamic = 'force-dynamic';
-export const metadata = {title: 'TV setup | LumaNest TV', description: 'Device-specific setup for Android TV, Samsung, LG and your web browser.'};
+export const metadata = {title: 'TV setup | LumaNest TV', description: 'Device-specific setup for Android TV, Samsung, LG, Roku and your web browser.'};
 
 export default function Apps() {
   const portal = settings().CUSTOMER_PORTAL_URL || DEFAULT_PORTAL;
