@@ -93,10 +93,10 @@ export default function Player({portal, support}: {portal: string; support: stri
     const fields = new FormData(form);
     try {
       const response = await fetch('/api/player/login', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({username: fields.get('username'), password: fields.get('password')})});
-      const data = await response.json() as ChannelResponse;
-      if (!response.ok) throw new Error(data.error?.message || 'Your line login could not be verified.');
+      const data = await response.json().catch(() => null) as ChannelResponse | null;
+      if (!response.ok) throw new Error(data?.error?.message || 'Your line login could not be verified.');
       form.reset(); setShowPassword(false); await loadChannels();
-    } catch (cause) {setError(cause instanceof Error ? cause.message : 'Sign-in failed. Please try again.');}
+    } catch (cause) {setError(cause instanceof Error && !(cause instanceof TypeError) ? cause.message : 'Sign-in failed. Please check your connection and try again.');}
     finally {setBusy(false);}
   }
 
@@ -237,7 +237,7 @@ export default function Player({portal, support}: {portal: string; support: stri
   return <div className="watch-shell">
     <a className="watch-skip" href="#watch-content">Skip to player</a>
     <header className="watch-header">
-      <a href="/" aria-label="LumaNest TV home"><img src="/logo.png" alt="LumaNest TV" className="logo"/></a>
+      <a href="/" aria-label="LumaNest TV home"><img src="/logo.png" alt="LumaNest TV" className="logo" width="204" height="52"/></a>
       <div><a href="/renew">Renew subscription ↗</a>{username && <button onClick={logout} disabled={signingOut}>{signingOut ? 'Signing out…' : 'Sign out'}</button>}</div>
     </header>
     {checking && !username ? <main id="watch-content" className="watch-login watch-opening"><span className="watch-spinner" aria-hidden="true"/><p role="status">Opening your nest…</p></main> : !username ?
@@ -284,6 +284,6 @@ export default function Player({portal, support}: {portal: string; support: stri
           </div>
         </aside>
       </main>}
-    <footer className="watch-footer"><span>© {new Date().getFullYear()} LumaNest TV</span><a href="/renew">Renew subscription ↗</a><a href={portal}>Customer hub ↗</a><a href="/">Plans & pricing</a><a href="/apps">Download Tuner ↓</a></footer>
+    <footer className="watch-footer"><span>© {new Date().getFullYear()} LumaNest TV</span><a href="/renew">Renew subscription ↗</a><a href={portal}>Customer hub ↗</a><a href="/">Plans & pricing</a><a href="/apps">Get the TV apps ↗</a></footer>
   </div>;
 }

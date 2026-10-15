@@ -9,6 +9,7 @@ export default function Confirmation({portal, support}: {portal: string; support
   const [state, setState] = useState<OrderState>('checking');
   const [busy, setBusy] = useState(true);
   const [orderReference, setOrderReference] = useState('');
+  const [autoChecks, setAutoChecks] = useState(0);
   const requestRef = useRef<AbortController | null>(null);
 
   const check = useCallback(async () => {
@@ -29,16 +30,16 @@ export default function Confirmation({portal, support}: {portal: string; support
     setBusy(true);
     try {
       const response = await fetch('/api/checkout/capture', {method: 'POST', headers: {'Content-Type': 'application/json'}, signal: controller.signal, body: JSON.stringify({order, token})});
-      const result = await response.json() as {state?: string; message?: string; error?: {message?: string}};
+      const result = await response.json().catch(() => null) as {state?: string; message?: string; error?: {message?: string}} | null;
       if (requestRef.current !== controller) return;
-      if (!response.ok) throw new Error(result.error?.message || 'Your order could not be checked.');
-      const nextState: OrderState = result.state === 'fulfilled' || result.state === 'sandbox_paid' || result.state === 'needs_review' ? result.state : 'processing';
+      if (!response.ok) throw new Error(result?.error?.message || 'Your order could not be checked.');
+      const nextState: OrderState = result?.state === 'fulfilled' || result?.state === 'sandbox_paid' || result?.state === 'needs_review' ? result.state : 'processing';
       setState(nextState);
-      setMessage(result.message || 'Your order is processing. Please check again shortly.');
+      setMessage(result?.message || 'Your order is processing. Please check again shortly.');
     } catch (cause) {
       if (requestRef.current !== controller) return;
       setState('error');
-      setMessage(controller.signal.aborted ? 'The order check took too long. Check the status again or contact support with your receipt. Please do not pay again.' : (cause instanceof Error ? cause.message + ' ' : '') + 'Contact support with your receipt before paying again.');
+      setMessage(controller.signal.aborted ? 'The order check took too long. Check the status again or contact support with your receipt. Please do not pay again.' : (cause instanceof Error && !(cause instanceof TypeError) ? cause.message + ' ' : 'We couldn’t reach checkout to confirm your order. ') + 'Contact support with your receipt before paying again.');
     } finally {
       window.clearTimeout(timeout);
       if (requestRef.current === controller) {requestRef.current = null; setBusy(false);}
@@ -49,6 +50,12 @@ export default function Confirmation({portal, support}: {portal: string; support
     void check();
     return () => {requestRef.current?.abort(); requestRef.current = null;};
   }, [check]);
+
+  useEffect(() => {
+    if (state !== 'processing' || busy || autoChecks >= 6) return;
+    const timer = window.setTimeout(() => {setAutoChecks(count => count + 1); void check();}, 3000 * 2 ** autoChecks);
+    return () => window.clearTimeout(timer);
+  }, [state, busy, autoChecks, check]);
 
   const confirmed = state === 'fulfilled';
   const heading = confirmed ? 'Your subscription is ready.' : state === 'sandbox_paid' ? 'Your test payment is confirmed.' : state === 'invalid' ? 'Let’s find your order.' : state === 'error' ? 'Let’s check your order.' : state === 'needs_review' ? 'We’re updating your subscription.' : 'Your next evening awaits.';
