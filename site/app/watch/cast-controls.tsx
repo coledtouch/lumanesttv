@@ -67,10 +67,19 @@ async function sendToCast(session: CastSession, channelToken: string, title: str
   const link = await castLink(channelToken);
   const info = new media.MediaInfo(link.url, link.contentType);
   info.streamType = link.live ? media.StreamType.LIVE : media.StreamType.BUFFERED;
+  // Live channels are MPEG-TS segments; without this the receiver expects fragmented MP4 and stays blank.
+  if (link.contentType === 'application/x-mpegURL') {info.hlsSegmentFormat = 'ts'; info.hlsVideoSegmentFormat = 'mpeg2_ts';}
   const metadata = new media.GenericMediaMetadata();
   metadata.title = title; metadata.subtitle = 'LumaNest TV';
   info.metadata = metadata;
-  await session.loadMedia(new media.LoadRequest(info));
+  const request = new media.LoadRequest(info);
+  request.autoplay = true;
+  try {await session.loadMedia(request);}
+  catch (error) {
+    // The Cast SDK rejects with a chrome.cast.Error code (for example LOAD_FAILED), not an Error.
+    const code = typeof error === 'string' ? error : (error as {code?: string} | null)?.code;
+    throw new Error(code ? `Your TV couldn't play this channel (${code}). Try another channel, or the Tuner app on your TV.` : 'Your TV couldn\u2019t play this channel.');
+  }
 }
 
 async function castLink(token: string): Promise<CastLink> {

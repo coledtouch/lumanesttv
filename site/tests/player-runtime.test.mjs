@@ -17,7 +17,8 @@ test.before(async () => {
         import {GET as streamGET} from './app/api/player/stream/route.ts';
         import {POST as logoutPOST} from './app/api/player/logout/route.ts';
         import {POST as castPOST} from './app/api/player/cast/route.ts';
-        import {GET as castGET} from './app/api/cast/stream/route.ts';
+        import {GET as castGET, HEAD as castHEAD} from './app/api/cast/stream/route.ts';
+        import {GET as castFileGET} from './app/api/cast/[file]/route.ts';
         import {seal} from './lib/player-crypto.ts';
         import {PLAYER_COOKIE} from './lib/player.ts';
         import {env} from 'cloudflare:workers';
@@ -35,6 +36,7 @@ test.before(async () => {
           const pathname = new URL(request.url).pathname;
           if (pathname === '/api/player/cast') return castPOST(new Request(request, {headers}));
           if (pathname === '/api/cast/stream') return castGET(new Request(request, {headers}));
+          if (pathname.startsWith('/api/cast/')) return request.method === 'HEAD' ? castHEAD(new Request(request, {headers})) : castFileGET(new Request(request, {headers}));
           return (pathname.endsWith('/logout') ? logoutPOST : pathname.endsWith('/channels') ? channelsGET : pathname.endsWith('/stream') ? streamGET : diagnosticsGET)(new Request(request, {headers}));
         }};
       `,
@@ -278,13 +280,17 @@ test('casting hands a TV a cookie-free, CORS-enabled HLS link that stops when th
   assert.equal((await cast({token:'not-a-token'})).status,403);
   const created=await cast({token});assert.equal(created.status,200);
   const link=await created.json();
-  assert.match(link.url,/^https:\/\/lumanest\.tv\/api\/cast\/stream\?t=/);
+  assert.match(link.url,/^https:\/\/lumanest\.tv\/api\/cast\/live\.m3u8\?t=/);
   assert.equal(link.contentType,'application/x-mpegURL');assert.equal(link.live,true);
   for(const secret of ['runtime-private-user','runtime-secret-password','runtime-private-token'])assert.ok(!JSON.stringify(link).includes(secret));
   const played=await worker.fetch(link.url);
   assert.equal(played.status,200);assert.equal(played.headers.get('Access-Control-Allow-Origin'),'*');
   const playlist=await played.text();
-  assert.match(playlist,/^#EXTM3U/);assert.ok(playlist.includes('/api/cast/stream?t='));
+  assert.match(playlist,/^#EXTM3U/);assert.match(playlist,/\/api\/cast\/(media|segment\.ts|live\.m3u8)\?t=/);
+  const head=await worker.fetch(link.url,{method:'HEAD'});
+  assert.equal(head.status,200);assert.equal(head.headers.get('Access-Control-Allow-Origin'),'*');assert.equal(await head.text(),'');
+  // Links handed out before cast links were named like files keep working.
+  assert.equal((await worker.fetch(link.url.replace('/api/cast/live.m3u8','/api/cast/stream'))).status,200);
   for(const secret of ['runtime-private-user','runtime-secret-password','runtime-private-token'])assert.ok(!playlist.includes(secret));
   const forged=await worker.fetch('https://lumanest.tv/api/cast/stream?t=forged');
   assert.equal(forged.status,403);assert.equal(forged.headers.get('Access-Control-Allow-Origin'),'*');
