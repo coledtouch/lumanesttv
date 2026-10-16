@@ -37,10 +37,20 @@
       <LabelList id="items" translation="[920,190]" itemSize="[920,62]" itemSpacing="[0,6]" numRows="12" vertFocusAnimationStyle="floatingFocus"
         color="0xF6F3FBFF" focusedColor="0x141224FF" focusBitmapBlendColor="0xFFFFFFFF" font="font:SmallSystemFont" focusedFont="font:SmallBoldSystemFont" />
       <Label id="hint" translation="[80,1010]" width="1760" color="0x857D9EFF" font="font:SmallestSystemFont"
-        text="Arrows browse · OK opens or plays · Back returns" />
+        text="Arrows browse · OK opens or plays · Back returns · * during playback for subtitles" />
     </Group>
 
     <Video id="video" width="1920" height="1080" visible="false" />
+
+    <!-- Subtitle chooser, opened with the Options (*) key during playback. -->
+    <Group id="subs" visible="false">
+      <Rectangle id="subsPanel" translation="[1240,0]" width="680" height="1080" color="0x0E0C1AE6" />
+      <Label id="subsTitle" translation="[1300,120]" width="560" text="Subtitles" color="0xF6F3FBFF" font="font:LargeBoldSystemFont" />
+      <Label id="subsNote" translation="[1300,190]" width="560" wrap="true" color="0xC4B5FDFF" font="font:SmallSystemFont" />
+      <LabelList id="subsList" translation="[1300,300]" itemSize="[560,62]" itemSpacing="[0,6]" numRows="10" vertFocusAnimationStyle="floatingFocus"
+        color="0xF6F3FBFF" focusedColor="0x141224FF" focusBitmapBlendColor="0xB79CFBFF" font="font:SmallSystemFont" focusedFont="font:SmallBoldSystemFont" />
+      <Label id="subsHint" translation="[1300,1000]" width="560" text="OK chooses · Back closes" color="0x857D9EFF" font="font:SmallestSystemFont" />
+    </Group>
 
     <Rectangle id="toastBg" translation="[460,940]" width="1000" height="80" color="0x2B2349F2" visible="false">
       <Label id="toast" width="1000" height="80" horizAlign="center" vertAlign="center" color="0xF6F3FBFF" font="font:MediumSystemFont" />
