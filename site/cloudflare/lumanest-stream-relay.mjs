@@ -231,10 +231,13 @@ export function createStreamRelay(connect, {idleTimeout = IDLE_TIMEOUT, idleChec
         const response = parseHeaders(header.subarray(0, size));
         clearTimeout(timer);
         if (response.mode === 'eof' || (response.mode === 'length' && typeof globalThis.FixedLengthStream === 'function')) {
-          const output = response.mode === 'length' ? new globalThis.FixedLengthStream(response.length) : new TransformStream();
+          // A plain TransformStream is JavaScript-backed in Workers (compat date 2022-11-30+), so live TV uses the native
+          // IdentityTransformStream; Node (the unit tests) has neither native stream and falls back to TransformStream.
+          const output = response.mode === 'length' ? new globalThis.FixedLengthStream(response.length) :
+            typeof globalThis.IdentityTransformStream === 'function' ? new globalThis.IdentityTransformStream() : new TransformStream();
           const prefix = pending.subarray(offset, response.mode === 'length' ? offset + response.length : undefined);
           reader.releaseLock(); reader = null;
-          // Native stream pumping avoids executing JavaScript for every live-TV packet.
+          // Native stream pumping avoids executing JavaScript (and billing CPU time) for every live-TV packet.
           void (async () => {
             if (prefix.byteLength) {
               const writer = output.writable.getWriter();

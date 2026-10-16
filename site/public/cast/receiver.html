@@ -11,7 +11,10 @@
   Chromecast, Google TV and TVs with Cast built in load this page and play the cast link the web player sends.
   Live channels arrive as raw MPEG-TS, which Google's own players cannot play, so receiver.js hands those links to
   mpegts.js (served next to this page) and leaves HLS and MP4 links to the Cast framework's players.
+  mpegts.js is fetched from the start but run by receiver.js once the Cast framework has started. Its address carries
+  the library version (bump it with the file), so it can be cached for good; see public/_headers.
 -->
+<link rel="preload" id="mpegts-preload" href="/cast/mpegts.js?v=1.8.2" as="script">
 <style>
 @font-face{font-family:'Manrope';font-style:normal;font-weight:400 800;font-display:swap;src:url(/fonts/manrope-latin.woff2) format('woff2')}
 @font-face{font-family:'DM Sans';font-style:normal;font-weight:400 700;font-display:swap;src:url(/fonts/dm-sans-latin.woff2) format('woff2')}
@@ -54,7 +57,6 @@ p{font-size:3vh;line-height:1.55;color:var(--mist);margin:0;max-width:60vw}
 </div>
 <div id="pill" class="pill hidden" role="status"><i></i><span id="pill-text"></span></div>
 <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
-<script src="/cast/mpegts.js"></script>
 <script src="/cast/receiver.js"></script>
 </body>
 </html>
