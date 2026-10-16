@@ -6,6 +6,8 @@ The website includes the original MIT notice in `site/build/sites-vite-plugin.LI
 
 The website self-hosts the DM Sans (Copyright 2014 The DM Sans Project Authors) and Manrope (Copyright 2018 The Manrope Project Authors) typefaces in `site/public/fonts/`. Both are licensed under the SIL Open Font License, Version 1.1; the full license texts are in `site/public/fonts/DM-Sans-OFL.txt` and `site/public/fonts/Manrope-OFL.txt` and must accompany the font files.
 
+The website's Cast receiver self-hosts mpegts.js (Copyright 2016 Bilibili, Copyright 2021 magicxqq), licensed under the Apache License, Version 2.0, in `site/public/cast/mpegts.js`. The bundle includes es6-promise (Copyright 2014 Yehuda Katz, Tom Dale, Stefan Penner and contributors), licensed under the MIT license. Both notices and the full Apache-2.0 text are in `site/public/cast/mpegts.js.LICENSE.txt`, which must accompany the file. The file must stay an unchanged copy of `site/node_modules/mpegts.js/dist/mpegts.js` at the version recorded in `site/package-lock.json` (currently 1.8.2); when that version changes, copy the new build and update the version in the license file. The site tests check both.
+
 The Android build uses Kotlin, AndroidX, Compose, Media3, OkHttp, Coil and jlibtorrent, among other dependencies. Exact versions are declared in the Gradle build. The Gradle wrapper includes its original notices in its JAR. FrostWire jlibtorrent is distributed under the [MIT license](https://github.com/frostwire/frostwire-jlibtorrent/blob/master/LICENSE.md); preserve its license when packaging its native libraries.
 
 The TV web applications use hls.js and platform APIs. Preserve upstream notices and comply with the licenses of the versions bundled or loaded by each build.

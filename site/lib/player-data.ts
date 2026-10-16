@@ -123,13 +123,24 @@ export async function rewriteHLS(text: string, base: string, replace: (url: stri
   return out.join('\n');
 }
 
+// Xtream live links come as /live/user/pass/id(.ts) or, in "output=ts" playlists, the short /user/pass/id(.ts).
+// Both serve raw MPEG-TS; /live/user/pass/id.m3u8 is the same channel as HLS.
+function xtreamLive(url: URL) {
+  const live = /^\/(?:live\/)?([^/]+)\/([^/]+)\/([^/.]+)(?:\.ts)?$/i.exec(url.pathname);
+  return live && !['movie', 'series', 'hls'].includes(live[1].toLowerCase()) ? live : null;
+}
+
+/** True for a live channel served as raw MPEG-TS, which only LumaNest's own Cast receiver (public/cast/) can play. */
+export function transportStreamSource(value: string) {
+  const url = new URL(value);
+  return Boolean(xtreamLive(url)) || /\.ts$/i.test(url.pathname);
+}
+
 /** Casting receivers play HLS and MP4, not raw MPEG-TS, so a .ts live link asks the provider for its HLS form. */
 export function castSource(value: string) {
   const url = new URL(value);
-  // Xtream live links come as /live/user/pass/id(.ts) or, in "output=ts" playlists, the short /user/pass/id(.ts).
-  // Both serve raw MPEG-TS; /live/user/pass/id.m3u8 is the same channel as HLS.
-  const live = /^\/(?:live\/)?([^/]+)\/([^/]+)\/([^/.]+)(?:\.ts)?$/i.exec(url.pathname);
-  if (live && !['movie', 'series', 'hls'].includes(live[1].toLowerCase())) url.pathname = `/live/${live[1]}/${live[2]}/${live[3]}.m3u8`;
+  const live = xtreamLive(url);
+  if (live) url.pathname = `/live/${live[1]}/${live[2]}/${live[3]}.m3u8`;
   else if (/\.ts$/i.test(url.pathname)) url.pathname = url.pathname.replace(/\.ts$/i, '.m3u8');
   const kind = /\.m3u8$/i.test(url.pathname) ? 'hls' : /\.(mp4|m4v|mov)$/i.test(url.pathname) ? 'file' : 'hls';
   return {url: url.href, contentType: kind === 'file' ? 'video/mp4' : 'application/x-mpegURL', live: kind === 'hls'};
