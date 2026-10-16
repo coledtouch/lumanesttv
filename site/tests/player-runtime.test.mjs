@@ -139,11 +139,11 @@ test('explicit channel indices select only the matching authenticated playlist e
 test('the cast profile follows the playlist a TV would fetch and reports only origins and formats',async()=>{
   const {status,data}=await diagnose('cast',ownerHeaders,'&index=1');
   assert.equal(status,200);
-  assert.equal(data.profile,'cast');assert.equal(data.steps[0].container,'hls');
+  assert.equal(data.profile,'cast');assert.equal(data.steps[0].request,'/live/*/*/N.m3u8');assert.equal(data.steps[0].container,'hls');
   assert.deepEqual(data.steps[0].playlist,{master:false,entries:1,childOrigin:'https://tv.lumanest.tv',childExtension:'',childApproved:true});
   assert.equal(data.steps[1].error,'upstream_400');
   const output=JSON.stringify(data);
-  for(const secret of ['runtime-private-user','runtime-secret-password','runtime-private-token','private-second-stream-body','/live/','?token='])assert.ok(!output.includes(secret));
+  for(const secret of ['runtime-private-user','runtime-secret-password','runtime-private-token','private-second-stream-body','?token='])assert.ok(!output.includes(secret));
   assert.equal((await diagnose('cast',{'test-player-session':'valid'},'&index=1')).status,401);
 });
 
