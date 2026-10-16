@@ -255,7 +255,7 @@ export async function createCast(req: Request, body: unknown) {
   const source = castSource(streamURL(item.url).href);
   const exp = Math.min(credentials.exp, Date.now() + CAST_TTL_MS);
   const token = await seal({url: source.url, sid: credentials.sid, exp, root: 1} satisfies CastMedia, key, 'player-cast');
-  return {url: new URL('/api/cast/stream?t=' + encodeURIComponent(token), req.url).href, contentType: source.contentType, live: source.live, expiresAt: exp};
+  return {url: new URL(castPath(source.url, source.live ? 'live.m3u8' : 'video.mp4') + encodeURIComponent(token), req.url).href, contentType: source.contentType, live: source.live, expiresAt: exp};
 }
 export async function castMedia(req: Request) {
   const raw = new URL(req.url).searchParams.get('t');
@@ -270,7 +270,14 @@ export async function castMedia(req: Request) {
     if (revoked) throw new ServiceError(401, 'player_session_expired', 'You signed out of the web player, so casting stopped.');
   };
   return serveMedia(req, cast, checkRevoked, async source =>
-    '/api/cast/stream?t=' + encodeURIComponent(await seal({url: source, sid: cast.sid, exp: cast.exp} satisfies CastMedia, key, 'player-cast')), castHeaders);
+    castPath(source) + encodeURIComponent(await seal({url: source, sid: cast.sid, exp: cast.exp} satisfies CastMedia, key, 'player-cast')), castHeaders);
+}
+// Receivers pick a parser from the file extension in the path (Shaka on Chromecast, Chrome's Remote Playback), and
+// can't see one in a query token, so each cast link ends in a name with the upstream extension: /api/cast/live.m3u8?t=…
+const castNames: Record<string, string> = {m3u8: 'live.m3u8', ts: 'segment.ts', aac: 'audio.aac', m4s: 'segment.m4s', mp4: 'video.mp4', m4v: 'video.m4v', mov: 'video.mov', vtt: 'subtitles.vtt', key: 'media.key'};
+function castPath(source: string, fallback = 'media') {
+  const ext = /\.([a-z0-9]{2,4})$/i.exec(new URL(source).pathname)?.[1].toLowerCase() || '';
+  return '/api/cast/' + (castNames[ext] || fallback) + '?t=';
 }
 // Device pairing (lib/pairing.ts) hands a TV app the same line login this web player session proved.
 export const playerSecret = () => secret();
