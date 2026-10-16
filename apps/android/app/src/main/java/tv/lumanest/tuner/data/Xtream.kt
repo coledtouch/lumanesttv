@@ -25,7 +25,7 @@ class Xtream(private val src: Source) {
         val out = ArrayList<Category>()
         forEachJsonObject(file, CATEGORY_FIELDS) { o ->
             val id = o.str("category_id") ?: return@forEachJsonObject
-            out += Category(id, o.str("category_name") ?: "Other")
+            out += Category(id, o.str("category_name") ?: "Other", AdultFilter.isAdultFlag(o.str("is_adult")))
         }
         return out.distinctBy { it.id }
     }
@@ -38,7 +38,8 @@ class Xtream(private val src: Source) {
             val prev = byId[id]
             if (prev != null) {
                 byId[id] = prev.copy(categoryIds = (prev.categoryIds + cats).distinct(),
-                    country = mergeMetadata(prev.country, countryOf(o)), language = mergeMetadata(prev.language, languageOf(o)))
+                    country = mergeMetadata(prev.country, countryOf(o)), language = mergeMetadata(prev.language, languageOf(o)),
+                    adult = prev.adult || adultOf(o))
                 return@forEachJsonObject
             }
             val direct = o.str("direct_source")?.takeIf { it.startsWith("http") }
@@ -54,6 +55,7 @@ class Xtream(private val src: Source) {
                 categoryIds = cats,
                 country = countryOf(o),
                 language = languageOf(o),
+                adult = adultOf(o),
             )
         }
         return renumber(ArrayList(byId.values))
@@ -86,6 +88,7 @@ class Xtream(private val src: Source) {
         return values?.joinToString(";")
     }
 
+    private fun adultOf(o: JMap) = AdultFilter.isAdultFlag(o.str("is_adult"))
     private fun countryOf(o: JMap) = metadata(o, COUNTRY_FIELDS)
     private fun languageOf(o: JMap) = metadata(o, LANGUAGE_FIELDS)
     private fun mergeMetadata(first: String?, second: String?): String? = when {
@@ -109,7 +112,8 @@ class Xtream(private val src: Source) {
             val prev = byId[id]
             if (prev != null) {
                 byId[id] = prev.copy(categoryIds = (prev.categoryIds + cats).distinct(),
-                    country = mergeMetadata(prev.country, countryOf(o)), language = mergeMetadata(prev.language, languageOf(o)))
+                    country = mergeMetadata(prev.country, countryOf(o)), language = mergeMetadata(prev.language, languageOf(o)),
+                    adult = prev.adult || adultOf(o))
                 return@forEachJsonObject
             }
             byId[id] = Movie(
@@ -123,6 +127,7 @@ class Xtream(private val src: Source) {
                 categoryIds = cats,
                 country = countryOf(o),
                 language = languageOf(o),
+                adult = adultOf(o),
             )
         }
         return ArrayList(byId.values)
@@ -136,7 +141,8 @@ class Xtream(private val src: Source) {
             val prev = byId[id]
             if (prev != null) {
                 byId[id] = prev.copy(categoryIds = (prev.categoryIds + cats).distinct(),
-                    country = mergeMetadata(prev.country, countryOf(o)), language = mergeMetadata(prev.language, languageOf(o)))
+                    country = mergeMetadata(prev.country, countryOf(o)), language = mergeMetadata(prev.language, languageOf(o)),
+                    adult = prev.adult || adultOf(o))
                 return@forEachJsonObject
             }
             byId[id] = Series(
@@ -153,6 +159,7 @@ class Xtream(private val src: Source) {
                 categoryIds = cats,
                 country = countryOf(o),
                 language = languageOf(o),
+                adult = adultOf(o),
             )
         }
         return ArrayList(byId.values)
@@ -172,6 +179,7 @@ class Xtream(private val src: Source) {
             rating = i.str("rating")?.takeIf { it != "0" },
             backdrop = i.str("backdrop_path"),
             poster = i.str("movie_image") ?: i.str("cover_big"),
+            subtitles = (subtitlesOf(i["subtitles"]) + subtitlesOf(root.obj("movie_data")?.get("subtitles"))).distinctBy { it.url },
         )
     }
 
@@ -194,6 +202,7 @@ class Xtream(private val src: Source) {
                 image = ei.str("movie_image"),
                 durationSecs = ei.str("duration_secs")?.toIntOrNull() ?: 0,
                 url = e.str("direct_source")?.takeIf { it.startsWith("http") } ?: episode(id, e.str("container_extension") ?: "mp4"),
+                subtitles = (subtitlesOf(e["subtitles"]) + subtitlesOf(ei["subtitles"])).distinctBy { it.url },
             )
         }
         when (val eps = root["episodes"]) {
@@ -219,6 +228,26 @@ class Xtream(private val src: Source) {
         )
     }
 
+    /**
+     * Some panels list sidecar subtitles in get_vod_info / get_series_info as plain URLs or as objects with a
+     * url (or file/path/src) and an optional language and label. Anything else is ignored.
+     */
+    private fun subtitlesOf(value: Any?): List<ExternalSubtitle> {
+        val list = value as? List<*> ?: return emptyList()
+        return list.mapNotNull { entry ->
+            when (entry) {
+                is String -> entry.trim().takeIf { it.startsWith("http", ignoreCase = true) }?.let { ExternalSubtitle(it) }
+                is Map<*, *> -> {
+                    @Suppress("UNCHECKED_CAST")
+                    val m = entry as JMap
+                    val url = SUBTITLE_URL_FIELDS.firstNotNullOfOrNull { m.str(it) }?.takeIf { it.startsWith("http", ignoreCase = true) }
+                    url?.let { ExternalSubtitle(it, m.str("language") ?: m.str("lang") ?: m.str("srclang"), m.str("label") ?: m.str("name") ?: m.str("title")) }
+                }
+                else -> null
+            }
+        }
+    }
+
     /** get_short_epg: titles and descriptions come back base64 encoded. */
     fun parseShortEpg(text: String): List<Program> {
         @Suppress("UNCHECKED_CAST")
@@ -238,10 +267,11 @@ class Xtream(private val src: Source) {
     }?.trim()?.ifBlank { null }
 
     companion object {
+        private val SUBTITLE_URL_FIELDS = listOf("url", "file", "path", "src", "link")
         private val COUNTRY_FIELDS = listOf("country", "country_code", "country_name", "stream_country", "tvg-country")
         private val LANGUAGE_FIELDS = listOf("language", "lang", "original_language", "audio_language", "stream_language", "tvg-language")
-        private val COMMON_FIELDS = (COUNTRY_FIELDS + LANGUAGE_FIELDS + listOf("name", "category_id", "category_ids")).toSet()
-        private val CATEGORY_FIELDS = setOf("category_id", "category_name")
+        private val COMMON_FIELDS = (COUNTRY_FIELDS + LANGUAGE_FIELDS + listOf("name", "category_id", "category_ids", "is_adult")).toSet()
+        private val CATEGORY_FIELDS = setOf("category_id", "category_name", "is_adult")
         private val LIVE_FIELDS = COMMON_FIELDS + setOf("stream_id", "num", "stream_icon", "epg_channel_id", "direct_source")
         private val MOVIE_FIELDS = COMMON_FIELDS + setOf("stream_id", "stream_icon", "rating", "direct_source", "container_extension", "added")
         private val SERIES_FIELDS = COMMON_FIELDS + setOf("series_id", "cover", "plot", "rating", "genre", "releaseDate", "release_date", "backdrop_path", "last_modified")

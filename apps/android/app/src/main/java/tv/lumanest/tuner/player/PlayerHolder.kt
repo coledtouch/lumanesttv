@@ -7,10 +7,14 @@ import android.os.SystemClock
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.TrackSelectionParameters
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.datasource.HttpDataSource
@@ -23,6 +27,7 @@ import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
+import tv.lumanest.tuner.data.ExternalSubtitle
 import tv.lumanest.tuner.data.Net
 import tv.lumanest.tuner.data.Repo
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -99,8 +104,15 @@ object PlayerHolder {
             // on live channels). Deliberately NOT FLAG_DETECT_ACCESS_UNITS: these streams carry access unit
             // delimiters, and splitting on slice headers as well cut every frame into fragments, which made the
             // decoder drop hundreds of frames a second.
+            //
+            // Closed captions: MPEG-TS live channels carry CEA-608 inside the H.264/H.265 SEI messages. Declaring a
+            // CEA-608 track makes the extractor expose it even when the PMT has no caption_service_descriptor; a
+            // descriptor (CEA-708 services included) still replaces this default. HLS streams use Media3's default
+            // HLS extractor factory, which already exposes CEA-608 when the playlist declares no CLOSED-CAPTIONS.
+            // MKV and MP4 files expose their own text tracks (SRT, SSA, WebVTT, tx3g), parsed during extraction.
             val extractors = DefaultExtractorsFactory()
                 .setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES)
+                .setTsSubtitleFormats(listOf(Format.Builder().setSampleMimeType(MimeTypes.APPLICATION_CEA608).build()))
                 .setConstantBitrateSeekingEnabled(true)
             val mediaSources = DefaultMediaSourceFactory(LiveSlotDataSource.Factory(http, deadlines, guard = { progressive }, live = { isLive }), extractors)
                 .setLoadErrorHandlingPolicy(RetryPolicy)
@@ -131,6 +143,7 @@ object PlayerHolder {
 
     private fun listener(p: ExoPlayer) = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) { pipStateChanges.value++ }
+        override fun onTracksChanged(tracks: Tracks) { subtitleFallback(p, tracks) }
         override fun onPlayerError(e: PlaybackException) {
             if (currentUrl == null) return
             val url = source ?: return
@@ -236,7 +249,9 @@ object PlayerHolder {
     private fun startSource(p: ExoPlayer, startMs: Long = 0, wantsPlay: Boolean = true) {
         val url = source ?: return
         sourceStartMs = startMs.coerceAtLeast(0)
-        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().clearOverridesOfType(C.TRACK_TYPE_AUDIO).build()
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT).build()
+        subtitleFallbackDone = false
         // The provider's small notice clip heuristic applies only to endless live streams.
         // A short movie or direct add-on video is valid regardless of its size or audio language.
         progressive = isLive && !url.contains(".m3u8")
@@ -269,7 +284,56 @@ object PlayerHolder {
     private fun item(url: String, forceHls: Boolean): MediaItem {
         val b = MediaItem.Builder().setUri(url)
         if (forceHls || url.contains(".m3u8")) b.setMimeType(MimeTypes.APPLICATION_M3U8)
+        val sidecars = externalSubtitles.mapNotNull { sub ->
+            val mime = subtitleMimeType(sub.url) ?: return@mapNotNull null
+            MediaItem.SubtitleConfiguration.Builder(android.net.Uri.parse(sub.url))
+                .setMimeType(mime)
+                .setLanguage(sub.language)
+                .setLabel(sub.label)
+                .build()
+        }
+        if (sidecars.isNotEmpty()) b.setSubtitleConfigurations(sidecars)
         return b.build()
+    }
+
+    // ------------------------------------------------------------------ subtitles
+
+    /** Sidecar subtitle files for the current movie or episode (Xtream `subtitles`). */
+    private var externalSubtitles: List<ExternalSubtitle> = emptyList()
+    private var subtitleFallbackDone = false
+
+    internal fun subtitleMimeType(url: String): String? =
+        when (url.substringBefore('?').substringBefore('#').substringAfterLast('.', "").lowercase()) {
+            "srt" -> MimeTypes.APPLICATION_SUBRIP
+            "vtt", "webvtt" -> MimeTypes.TEXT_VTT
+            "ass", "ssa" -> MimeTypes.TEXT_SSA
+            "ttml", "dfxp", "xml" -> MimeTypes.APPLICATION_TTML
+            else -> null
+        }
+
+    /**
+     * Settings > Subtitles. Off selects no text track (forced subtitles for foreign dialogue still show); On prefers
+     * English, then untagged tracks such as CEA-608 captions, then (see [subtitleFallback]) the first text track.
+     * The text renderer is never left disabled from an earlier "Off" choice in the player's Subtitles menu.
+     */
+    private fun applySubtitlePreference(b: TrackSelectionParameters.Builder): TrackSelectionParameters.Builder {
+        b.clearOverridesOfType(C.TRACK_TYPE_TEXT).setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+        return if (Repo.prefs.subtitlesOn.value) b.setPreferredTextLanguages("en", "eng").setSelectUndeterminedTextLanguage(true)
+        else b.setPreferredTextLanguages().setSelectUndeterminedTextLanguage(false)
+    }
+
+    /** Subtitles On but no English or untagged track was picked: show the first playable text track instead. */
+    private fun subtitleFallback(p: ExoPlayer, tracks: Tracks) {
+        if (subtitleFallbackDone || !Repo.prefs.subtitlesOn.value) return
+        val params = p.trackSelectionParameters
+        if (C.TRACK_TYPE_TEXT in params.disabledTrackTypes) return
+        val text = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+        if (text.isEmpty()) return
+        subtitleFallbackDone = true
+        if (text.any { it.isSelected } || params.overrides.keys.any { it.type == C.TRACK_TYPE_TEXT }) return
+        val group = text.firstOrNull { g -> (0 until g.length).any(g::isTrackSupported) } ?: return
+        val index = (0 until group.length).first(group::isTrackSupported)
+        p.trackSelectionParameters = params.buildUpon().setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, index)).build()
     }
 
     /**
@@ -280,7 +344,7 @@ object PlayerHolder {
      * channel explicitly can promote that preview into one watch without reconnecting it.
      */
     @Suppress("UNUSED_PARAMETER") // Kept for callers from older request models; audio is never restricted.
-    fun play(url: String, live: Boolean, startMs: Long = 0, backups: List<String> = emptyList(), key: String? = null, requireEnglishAudio: Boolean = false, recordWatched: Boolean = true) {
+    fun play(url: String, live: Boolean, startMs: Long = 0, backups: List<String> = emptyList(), key: String? = null, requireEnglishAudio: Boolean = false, recordWatched: Boolean = true, subtitles: List<ExternalSubtitle> = emptyList()) {
         TwoChannelPlayer.stop()
         playbackIntent.requestStart()
         val p = player
@@ -294,10 +358,11 @@ object PlayerHolder {
         p.stop()
         p.volume = 1f
         p.playWhenReady = appForeground
-        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+        p.trackSelectionParameters = applySubtitlePreference(p.trackSelectionParameters.buildUpon()
             .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
             .setPreferredAudioLanguages("en", "eng")
-            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false).build()
+            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)).build()
+        externalSubtitles = if (live) emptyList() else subtitles
         currentUrl = url
         isLive = live
         channelKey = key
@@ -311,6 +376,14 @@ object PlayerHolder {
         error.value = null
         unavailable.value = null
         startSource(p, startMs)
+    }
+
+    /** Settings > Subtitles changed: apply it to whatever is playing now. */
+    fun subtitlePreferenceChanged() {
+        val p = exo ?: return
+        p.trackSelectionParameters = applySubtitlePreference(p.trackSelectionParameters.buildUpon()).build()
+        subtitleFallbackDone = false
+        subtitleFallback(p, p.currentTracks)
     }
 
     /**

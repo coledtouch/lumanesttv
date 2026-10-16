@@ -82,6 +82,11 @@ fun SettingsScreen(state: AppState) {
     val localZip by Repo.prefs.localZip.collectAsState()
     val usOnly by Repo.prefs.usOnly.collectAsState()
     val categoryOrder by Repo.prefs.categoryOrder.collectAsState()
+    val subtitlesOn by Repo.prefs.subtitlesOn.collectAsState()
+    val adultUnlocked by Repo.prefs.adultUnlocked.collectAsState()
+    var passcodeDialog by remember { mutableStateOf<PasscodeMode?>(null) }
+    var restoreAdult by remember { mutableStateOf(false) }
+    val adultFocus = remember { FocusRequester() }
     var sheetFor by remember { mutableStateOf<Source?>(null) }
     var confirmDelete by remember { mutableStateOf<Source?>(null) }
     var themeSheet by remember { mutableStateOf(false) }
@@ -107,6 +112,9 @@ fun SettingsScreen(state: AppState) {
     }
     LaunchedEffect(restoreLocalMarket, windowFocused) {
         if (restoreLocalMarket && windowFocused && requestAttachedFocus(localMarketFocus)) restoreLocalMarket = false
+    }
+    LaunchedEffect(restoreAdult, windowFocused) {
+        if (restoreAdult && windowFocused && requestAttachedFocus(adultFocus)) restoreAdult = false
     }
     LaunchedEffect(restoreTheme, windowFocused) {
         if (restoreTheme && windowFocused && requestAttachedFocus(themeFocus)) restoreTheme = false
@@ -185,6 +193,20 @@ fun SettingsScreen(state: AppState) {
                 )
             }
 
+            item(key = "subtitles") {
+                SettingRow(
+                    "Subtitles",
+                    if (subtitlesOn) "On · English preferred, otherwise the first subtitles or closed captions in the stream"
+                    else "Off · Press OK to show English subtitles and closed captions automatically",
+                    trailing = if (subtitlesOn) "On" else "Off",
+                    onClick = {
+                        Repo.prefs.setSubtitlesOn(!subtitlesOn)
+                        PlayerHolder.subtitlePreferenceChanged()
+                        Toasts.show(if (!subtitlesOn) "Subtitles on. English is chosen when a stream has it." else "Subtitles off")
+                    },
+                )
+            }
+
             header("Guide")
             item(key = "us-only") {
                 SettingRow(
@@ -237,6 +259,35 @@ fun SettingsScreen(state: AppState) {
                 )
             }
 
+            header("Adult content")
+            item(key = "adult") {
+                SettingRow(
+                    "Adult content",
+                    if (adultUnlocked) "XXX and adult categories are shown. Press OK to hide them again."
+                    else "XXX and adult categories are hidden. Press OK and enter your passcode to show them.",
+                    trailing = if (adultUnlocked) "Unlocked" else "Locked",
+                    modifier = Modifier.focusRequester(adultFocus),
+                    onClick = {
+                        if (adultUnlocked) {
+                            Repo.prefs.setAdultUnlocked(false)
+                            // Nothing adult keeps playing behind the guide once it is locked again.
+                            PlayerHolder.stop()
+                            Repo.load()
+                            Toasts.show("Adult content hidden")
+                        } else passcodeDialog = PasscodeMode.UNLOCK
+                    },
+                )
+            }
+            item(key = "adult-pin$rev") {
+                val hasPasscode = Repo.prefs.hasAdultPasscode
+                SettingRow(
+                    if (hasPasscode) "Change passcode" else "Adult content passcode",
+                    if (hasPasscode) "Needs the current passcode. Forgot it? Clear the app's data in your TV's settings."
+                    else "No passcode yet. You'll create one the first time you unlock adult content.",
+                    onClick = { if (hasPasscode) passcodeDialog = PasscodeMode.CHANGE else passcodeDialog = PasscodeMode.UNLOCK },
+                )
+            }
+
             header("Data")
             item {
                 SettingRow(
@@ -277,6 +328,20 @@ fun SettingsScreen(state: AppState) {
             }
         }
 
+        passcodeDialog?.let { mode ->
+            PasscodeDialog(
+                mode,
+                onDone = {
+                    passcodeDialog = null; rev++; restoreAdult = true
+                    if (mode == PasscodeMode.UNLOCK) {
+                        Repo.prefs.setAdultUnlocked(true)
+                        Repo.load()
+                        Toasts.show("Adult content unlocked")
+                    } else Toasts.show("Passcode changed")
+                },
+                onClose = { passcodeDialog = null; rev++; restoreAdult = true },
+            )
+        }
         if (remoteHelp) OnnRemoteHelp(onClose = { remoteHelp = false; restoreRemoteHelp = true })
         if (localMarketSheet) ActionSheet(
             title = "Local stations",
@@ -346,7 +411,7 @@ private fun OnnRemoteHelp(onClose: () -> Unit) {
             "Channel + / −" to "Change channels while watching live TV.",
             "Multi View" to "Choose two channels and Watch both. OK on a video selects its audio; Channel + / − changes the focused channel.",
             "Hold OK" to "While watching live TV, add or remove the channel from Favorites.",
-            "Down" to "While watching a movie or episode, open Audio and Subtitles.",
+            "Subtitles" to "While watching live TV, press Right for Subtitles and Audio. During a movie or episode, press Down. Settings > Subtitles turns them on for every stream.",
             "Star shortcut" to "In Google TV remote settings, set the star button to launch Tuner.",
             "Home" to "Return to Google TV. Volume and app shortcut buttons keep their usual functions.",
         )
