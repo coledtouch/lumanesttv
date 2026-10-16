@@ -153,7 +153,7 @@ export async function diagnostics(req: Request) {
   const {credentials} = await session(req);
   const params = new URL(req.url).searchParams;
   const profile = params.get('profile') || 'default';
-  if (!['default', 'ua', 'http', 'http-ua'].includes(profile)) throw new ServiceError(400, 'invalid_diagnostic_profile', 'Choose a supported diagnostic profile.');
+  if (!['default', 'ua', 'http', 'http-ua', 'cast'].includes(profile)) throw new ServiceError(400, 'invalid_diagnostic_profile', 'Choose a supported diagnostic profile.');
   const indices = params.getAll('index');
   const explicitIndex = indices.length > 0;
   if (indices.length > 1 || (explicitIndex && (!/^(0|[1-9]\d{0,4})$/.test(indices[0]) || Number(indices[0]) > 49999))) throw new ServiceError(400, 'invalid_diagnostic_index', 'Choose a channel from your playlist.');
@@ -163,6 +163,7 @@ export async function diagnostics(req: Request) {
   if (index >= entries.length) throw new ServiceError(400, 'invalid_diagnostic_index', 'Choose a channel from your playlist.');
   const entry = entries[index];
   const selection = explicitIndex ? {index, format: entry.format} : {};
+  if (profile === 'cast') return {profile, index, format: entry.format, steps: await castDiagnostics(entry.url, signal)};
   const source = new URL(entry.url);
   const originalHTTP = profile === 'http' || profile === 'http-ua';
   const configuredPortal = new URL(portal());
@@ -182,6 +183,36 @@ export async function diagnostics(req: Request) {
     const errorCode = blockedOrigin ? 'stream_origin_blocked' : error instanceof ServiceError && knownCodes.has(error.code) ? error.code : signal.aborted ? 'stream_request_aborted' : 'stream_fetch_failed';
     return {profile, ...selection, hops, error: 'stream_connection_failed', ...(explicitIndex ? {errorCode, ...(blockedOrigin ? {blockedOrigin} : {})} : {})};
   }
+}
+type CastStep = {hops: DiagnosticHop[]; container?: string; playlist?: {master: boolean; entries: number; childOrigin: string; childExtension: string; childApproved: boolean}; error?: string};
+/** Follows what a Cast receiver would fetch (playlist, variant, first segment) and reports only origins, statuses and formats. */
+async function castDiagnostics(entryURL: string, signal: AbortSignal) {
+  const steps: CastStep[] = [];
+  let next: string;
+  try {next = castSource(streamURL(entryURL).href).url;} catch {return [{hops: [], error: 'stream_origin_blocked'}];}
+  for (let depth = 0; depth < 3; depth++) {
+    const step: CastStep = {hops: []};
+    steps.push(step);
+    let response: Response;
+    try {response = await safeFetch(next, {headers: {Accept: '*/*'}, signal}, 0, {onResponse: hop => step.hops.push(hop), onBlockedOrigin: () => {step.error = 'stream_origin_blocked';}});}
+    catch (error) {step.error ||= error instanceof ServiceError ? error.code : signal.aborted ? 'stream_request_aborted' : 'stream_fetch_failed'; break;}
+    if (!response.ok) {await response.body?.cancel(); step.error = 'upstream_' + response.status; break;}
+    const finalURL = relaySources.get(response) || response.url || next;
+    const type = response.headers.get('Content-Type') || '';
+    if (!/mpegurl/i.test(type) && !/\.m3u8$/i.test(new URL(finalURL).pathname)) {step.container = await sampleDiagnosticContainer(response.body, signal); break;}
+    let text: string;
+    try {text = await limitedText(response, 2 * 1024 * 1024);} catch {step.error = 'playlist_unreadable'; break;}
+    step.container = text.trimStart().startsWith('#EXTM3U') ? 'hls' : 'not-hls';
+    const lines = text.split(/\r?\n/).map(line => line.trim()).filter(line => line && !line.startsWith('#'));
+    if (step.container !== 'hls' || !lines.length) break;
+    const child = new URL(lines[0], finalURL);
+    let childApproved = true;
+    try {streamURL(child.href);} catch {childApproved = false;}
+    step.playlist = {master: text.includes('#EXT-X-STREAM-INF'), entries: lines.length, childOrigin: child.origin, childExtension: /\.([a-z0-9]{1,5})$/i.exec(child.pathname)?.[1].toLowerCase() || '', childApproved};
+    if (!childApproved) break;
+    next = child.href;
+  }
+  return steps;
 }
 export async function media(req: Request) {
   const {binding, credentials} = await session(req);
