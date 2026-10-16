@@ -19,7 +19,7 @@ function approvedStreamURL(value: string) {
 const streamURL = (value: string) => approvedStreamURL(normalizeProviderURL(value, portal()).href);
 const relaySources = new WeakMap<Response, string>();
 type DiagnosticHop = {origin: string; status: number; contentType: string};
-type FetchTrace = {onResponse: (hop: DiagnosticHop) => void; onBlockedOrigin?: (origin: string) => void; normalizePortal?: boolean};
+type FetchTrace = {onResponse: (hop: DiagnosticHop, url: string) => void; onBlockedOrigin?: (origin: string) => void; normalizePortal?: boolean};
 const diagnosticTypes = new Set(['video/mp4', 'video/mp2t', 'video/webm', 'audio/mpeg', 'audio/x-mpegurl', 'application/vnd.apple.mpegurl', 'application/x-mpegurl', 'application/octet-stream', 'application/json', 'text/html', 'text/plain']);
 function secret() {
   const key = settings().PLAYER_COOKIE_KEY || '';
@@ -91,7 +91,7 @@ export async function safeFetch(url: string, options: RequestInit = {}, hops = 0
     const response = await fetchPlayerRelay(source, settings().PLAYER_STREAM_RELAY_URL, settings().PLAYER_STREAM_RELAY_KEY, options, fetch, settings().STREAM_RELAY_ALLOWED_HOSTS);
     relaySources.set(response, source.href);
     const type = (response.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
-    trace?.onResponse({origin: source.origin, status: response.status, contentType: diagnosticTypes.has(type) ? type : 'other'});
+    trace?.onResponse({origin: source.origin, status: response.status, contentType: diagnosticTypes.has(type) ? type : 'other'}, source.href);
     return response;
   }
   const aliasZone = new URL(portal()).hostname.replace(/^tv\./, '');
@@ -100,7 +100,7 @@ export async function safeFetch(url: string, options: RequestInit = {}, hops = 0
   catch {throw new ServiceError(503, 'invalid_stream_origin_map', 'The stream connection is being configured. Please contact support.');}
   const res = await fetch(endpoint.href, {...options, redirect: 'manual'});
   const contentType = (res.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
-  trace?.onResponse({origin: endpoint.origin, status: res.status, contentType: diagnosticTypes.has(contentType) ? contentType : 'other'});
+  trace?.onResponse({origin: endpoint.origin, status: res.status, contentType: diagnosticTypes.has(contentType) ? contentType : 'other'}, endpoint.href);
   if ([301, 302, 303, 307, 308].includes(res.status)) {
     const target = res.headers.get('Location');
     await res.body?.cancel();
@@ -158,12 +158,12 @@ export async function diagnostics(req: Request) {
   const explicitIndex = indices.length > 0;
   if (indices.length > 1 || (explicitIndex && (!/^(0|[1-9]\d{0,4})$/.test(indices[0]) || Number(indices[0]) > 49999))) throw new ServiceError(400, 'invalid_diagnostic_index', 'Choose a channel from your playlist.');
   const index = explicitIndex ? Number(indices[0]) : 0;
-  const signal = AbortSignal.any([req.signal, AbortSignal.timeout(20000)]);
+  const signal = AbortSignal.any([req.signal, AbortSignal.timeout(profile === 'cast' ? 45000 : 20000)]);
   const entries = await playlist(credentials, signal);
   if (index >= entries.length) throw new ServiceError(400, 'invalid_diagnostic_index', 'Choose a channel from your playlist.');
   const entry = entries[index];
   const selection = explicitIndex ? {index, format: entry.format} : {};
-  if (profile === 'cast') return {profile, index, format: entry.format, steps: await castDiagnostics(entry.url, signal)};
+  if (profile === 'cast') return {profile, index, format: entry.format, ...await castDiagnostics(entry.url, signal)};
   const source = new URL(entry.url);
   const originalHTTP = profile === 'http' || profile === 'http-ua';
   const configuredPortal = new URL(portal());
@@ -184,7 +184,8 @@ export async function diagnostics(req: Request) {
     return {profile, ...selection, hops, error: 'stream_connection_failed', ...(explicitIndex ? {errorCode, ...(blockedOrigin ? {blockedOrigin} : {})} : {})};
   }
 }
-type CastStep = {request?: string; hops: DiagnosticHop[]; container?: string; playlist?: {master: boolean; entries: number; childOrigin: string; childExtension: string; childApproved: boolean}; error?: string};
+type CastHop = DiagnosticHop & {path: string};
+type CastStep = {request?: string; hops: CastHop[]; container?: string; playlist?: {master: boolean; entries: number; childOrigin: string; childExtension: string; childApproved: boolean}; error?: string};
 // "/live/user/pass/123.m3u8" -> "/live/*/*/N.m3u8": the shape of a request without its login or tokens.
 const pathShape = (value: string) => new URL(value).pathname.split('/').map(part =>
   ['', 'live', 'movie', 'series', 'hls', 'play'].includes(part) ? part : /^\d+(\.[a-z0-9]{1,5})?$/i.test(part) ? part.replace(/^\d+/, 'N') : '*' + (/\.[a-z0-9]{1,5}$/i.exec(part)?.[0] || '')).join('/');
@@ -192,12 +193,12 @@ const pathShape = (value: string) => new URL(value).pathname.split('/').map(part
 async function castDiagnostics(entryURL: string, signal: AbortSignal) {
   const steps: CastStep[] = [];
   let next: string;
-  try {next = castSource(streamURL(entryURL).href).url;} catch {return [{hops: [], error: 'stream_origin_blocked'}];}
+  try {next = castSource(streamURL(entryURL).href).url;} catch {return {steps: [{hops: [], error: 'stream_origin_blocked'}]};}
   for (let depth = 0; depth < 3; depth++) {
     const step: CastStep = {request: pathShape(next), hops: []};
     steps.push(step);
     let response: Response;
-    try {response = await safeFetch(next, {headers: {Accept: '*/*'}, signal}, 0, {onResponse: hop => step.hops.push(hop), onBlockedOrigin: () => {step.error = 'stream_origin_blocked';}});}
+    try {response = await safeFetch(next, {headers: {Accept: '*/*'}, signal}, 0, {onResponse: (hop, url) => step.hops.push({...hop, path: pathShape(url)}), onBlockedOrigin: () => {step.error = 'stream_origin_blocked';}});}
     catch (error) {step.error ||= error instanceof ServiceError ? error.code : signal.aborted ? 'stream_request_aborted' : 'stream_fetch_failed'; break;}
     if (!response.ok) {await response.body?.cancel(); step.error = 'upstream_' + response.status; break;}
     const finalURL = relaySources.get(response) || response.url || next;
@@ -215,7 +216,29 @@ async function castDiagnostics(entryURL: string, signal: AbortSignal) {
     if (!childApproved) break;
     next = child.href;
   }
-  return steps;
+  if (steps[0]?.container === 'hls') return {steps};
+  // The provider didn't answer with HLS: try the other ways an Xtream panel can be asked for it.
+  const first = new URL(castSource(streamURL(entryURL).href).url);
+  const live = /^\/live\/([^/]+)\/([^/]+)\/([^/.]+)\.m3u8$/.exec(first.pathname);
+  const probes: {label: string; url: string; headers?: Record<string, string>}[] = [];
+  if (live) {
+    probes.push({label: 'short-path', url: new URL(`/${live[1]}/${live[2]}/${live[3]}.m3u8${first.search}`, first).href});
+    probes.push({label: 'output-param', url: new URL(`/live/${live[1]}/${live[2]}/${live[3]}.m3u8?output=m3u8`, first).href});
+    const xtream = (settings().TV_APP_XTREAM_SERVER || '').trim().replace(/\/+$/, '');
+    if (xtream) {try {const server = new URL(/^[a-z]+:/i.test(xtream) ? xtream : 'https://' + xtream); if (server.origin !== first.origin) probes.push({label: 'xtream-server', url: new URL(first.pathname, server).href});} catch {}}
+  }
+  probes.push({label: 'vlc-agent', url: first.href, headers: {'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20'}});
+  const variants = [];
+  for (const probe of probes) {
+    const step: CastStep & {label: string} = {label: probe.label, request: pathShape(probe.url), hops: []};
+    variants.push(step);
+    try {
+      const response = await safeFetch(probe.url, {headers: {Accept: '*/*', ...probe.headers}, signal}, 0, {onResponse: (hop, url) => step.hops.push({...hop, path: pathShape(url)}), onBlockedOrigin: () => {step.error = 'stream_origin_blocked';}});
+      if (response.ok) step.container = await sampleDiagnosticContainer(response.body, signal);
+      else {await response.body?.cancel(); step.error = 'upstream_' + response.status;}
+    } catch (error) {step.error ||= error instanceof ServiceError ? error.code : signal.aborted ? 'stream_request_aborted' : 'stream_fetch_failed';}
+  }
+  return {steps, variants};
 }
 export async function media(req: Request) {
   const {binding, credentials} = await session(req);
