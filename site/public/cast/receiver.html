@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<title>LumaNest TV</title>
+<!--
+  LumaNest TV Google Cast Web Receiver (registered app; see docs/casting.md).
+  Chromecast, Google TV and TVs with Cast built in load this page and play the cast link the web player sends.
+  Live channels arrive as raw MPEG-TS, which Google's own players cannot play, so receiver.js hands those links to
+  mpegts.js (served next to this page) and leaves HLS and MP4 links to the Cast framework's players.
+-->
+<style>
+@font-face{font-family:'Manrope';font-style:normal;font-weight:400 800;font-display:swap;src:url(/fonts/manrope-latin.woff2) format('woff2')}
+@font-face{font-family:'DM Sans';font-style:normal;font-weight:400 700;font-display:swap;src:url(/fonts/dm-sans-latin.woff2) format('woff2')}
+:root{--night:#0e0c1a;--violet:#7c3aed;--lavender:#c4b5fd;--mist:#bdb5ca}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--night);color:#fff;font-family:'DM Sans',sans-serif}
+video{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;background:#000}
+.screen{position:absolute;top:0;right:0;bottom:0;left:0;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at 50% 40%,#2a1846 0%,var(--night) 70%);transition:opacity .6s ease;z-index:2}
+.screen.hidden{opacity:0;pointer-events:none}
+/* Old Chromecasts run Chrome 70: no CSS inset or flex gap. Idle screens drift slowly so nothing stays burned into a TV panel. */
+.card{display:flex;flex-direction:column;align-items:center;text-align:center;max-width:70vw;padding:5vh 6vw;animation:drift 90s ease-in-out infinite alternate}
+@keyframes drift{0%{transform:translate(-3vw,-3vh)}50%{transform:translate(2vw,2vh)}100%{transform:translate(3vw,-2vh)}}
+.logo{width:34vh;max-width:40vw;height:auto;margin-bottom:6vh}
+.spinner{width:7vh;height:7vh;border:.6vh solid #ffffff22;border-top-color:var(--violet);border-radius:50%;margin-bottom:4vh;animation:spin 1s linear infinite;display:none}
+.screen[data-state=loading] .spinner{display:block}
+@keyframes spin{to{transform:rotate(360deg)}}
+h1{font-family:'Manrope',sans-serif;font-weight:600;font-size:6vh;letter-spacing:-.15vh;margin:0 0 2.5vh;line-height:1.15}
+p{font-size:3vh;line-height:1.55;color:var(--mist);margin:0;max-width:60vw}
+.action{margin-top:4vh;color:var(--lavender);font-weight:700;font-size:3.2vh;display:none}
+.screen[data-state=error] .action{display:block}
+.screen[data-state=error] h1{color:#fff}
+.eyebrow{font-size:2vh;letter-spacing:.5vh;font-weight:700;color:var(--lavender);margin:0 0 2vh;display:flex;align-items:center}
+.eyebrow i{width:1.1vh;height:1.1vh;border-radius:50%;background:var(--violet);display:inline-block;margin-right:1.2vh}
+.pill{position:absolute;right:5vw;top:6vh;z-index:3;display:flex;align-items:center;padding:1.6vh 2.6vh;border-radius:5vh;background:#0e0c1acc;border:1px solid #4b3a6b;font-size:2.6vh;color:#e9e1f7;transition:opacity .4s ease}
+.pill.hidden{opacity:0}
+.pill i{width:1.4vh;height:1.4vh;border-radius:50%;background:var(--violet);margin-right:1.5vh;animation:pulse 1.2s ease-in-out infinite alternate}
+@keyframes pulse{from{opacity:.35}to{opacity:1}}
+</style>
+</head>
+<body>
+<video id="player" class="castMediaElement" playsinline></video>
+<div id="screen" class="screen" data-state="idle">
+  <div class="card">
+    <img class="logo" src="/logo.png" alt="LumaNest TV">
+    <div class="spinner" aria-hidden="true"></div>
+    <p class="eyebrow" id="screen-eyebrow"><i></i> LUMANEST TV</p>
+    <h1 id="screen-title">Ready to cast</h1>
+    <p id="screen-text">Choose a channel in the LumaNest web player, then tap Cast to TV.</p>
+    <p id="screen-action" class="action"></p>
+  </div>
+</div>
+<div id="pill" class="pill hidden" role="status"><i></i><span id="pill-text"></span></div>
+<script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+<script src="/cast/mpegts.js"></script>
+<script src="/cast/receiver.js"></script>
+</body>
+</html>

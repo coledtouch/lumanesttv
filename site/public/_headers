@@ -1,0 +1,8 @@
+# Cloudflare static asset headers. The build copies this file to dist/client/_headers; with it present, vinext no
+# longer writes its own, so its rule for content-hashed assets is repeated here.
+/_next/static/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Google Cast receiver (docs/casting.md). Cast devices cache receiver pages aggressively; always serve the current one.
+/cast/*
+  Cache-Control: no-store

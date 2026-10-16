@@ -1,5 +1,5 @@
 import {settings, ServiceError} from './mybunny';
-import {parseM3U, trustedStreamURL, normalizeProviderURL, mapProviderOrigin, rewriteHLS, castSource, validSession, validMedia, type PlayerSession, type PlayerMedia} from './player-data';
+import {parseM3U, trustedStreamURL, normalizeProviderURL, mapProviderOrigin, rewriteHLS, castSource, transportStreamSource, validSession, validMedia, type PlayerSession, type PlayerMedia} from './player-data';
 import {seal, open, digest} from './player-crypto';
 import {relayPlayerStream} from './player-stream-relay';
 import {sampleDiagnosticContainer} from './player-diagnostic-container';
@@ -254,7 +254,7 @@ export async function media(req: Request) {
 }
 
 /** Fetches one approved upstream URL for the web player or a cast device; HLS playlists get re-signed child URLs. */
-async function serveMedia(req: Request, item: {url: string; root?: 1}, checkRevoked: () => Promise<void>, sign: (source: string) => Promise<string>, extraHeaders: Record<string, string>) {
+async function serveMedia(req: Request, item: {url: string; root?: 1; kind?: 'ts'}, checkRevoked: () => Promise<void>, sign: (source: string) => Promise<string>, extraHeaders: Record<string, string>, castExpires?: number) {
   if (item.root === 1) await checkRevoked();
   const url = streamURL(item.url);
   const headers: Record<string, string> = {Accept: '*/*'};
@@ -282,10 +282,12 @@ async function serveMedia(req: Request, item: {url: string; root?: 1}, checkRevo
     return new Response(output, {headers: {'Content-Type': 'application/vnd.apple.mpegurl', 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff', ...extraHeaders}});
   }
   // Only media types are served from this origin; anything else (for example upstream HTML) becomes inert bytes.
-  const mediaType = /^(?:video|audio)\/[a-z0-9.+-]+$|^application\/(?:vnd\.apple\.mpegurl|x-mpegurl|mp4|octet-stream)$/i.test(type.split(';')[0].trim()) ? type : type ? 'application/octet-stream' : 'video/mp2t';
+  // A raw MPEG-TS cast link is always video/mp2t: the provider labels its TS video/mp4, and the receiver relies on it.
+  const mediaType = item.kind === 'ts' ? 'video/mp2t' : /^(?:video|audio)\/[a-z0-9.+-]+$|^application\/(?:vnd\.apple\.mpegurl|x-mpegurl|mp4|octet-stream)$/i.test(type.split(';')[0].trim()) ? type : type ? 'application/octet-stream' : 'video/mp2t';
   const responseHeaders: Record<string, string> = {'Content-Type': mediaType, 'Content-Security-Policy': "sandbox; default-src 'none'", 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff', ...extraHeaders};
   for (const name of ['Content-Range', 'Accept-Ranges']) {const value = upstream.headers.get(name); if (value) responseHeaders[name] = value;}
-  return new Response(relayPlayerStream(upstream.body, controller), {status: upstream.status, headers: responseHeaders});
+  const body = relayPlayerStream(upstream.body, controller);
+  return new Response(castExpires === undefined ? body : limitCastStream(body, controller, castExpires, checkRevoked), {status: upstream.status, headers: responseHeaders});
 }
 
 // ---------------------------------------------------------------- casting
@@ -293,24 +295,34 @@ async function serveMedia(req: Request, item: {url: string; root?: 1}, checkRevo
 // short-lived, cookie-free token for one channel, tied to the player session's id so signing out stops it.
 export const CAST_TTL_MS = 4 * 60 * 60 * 1000;
 export const castHeaders = {'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Range', 'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges'};
-type CastMedia = {url: string; sid: string; exp: number; root?: 1};
+// kind 'ts' marks a root link to a raw MPEG-TS live channel for LumaNest's own receiver (public/cast/receiver.js).
+type CastMedia = {url: string; sid: string; exp: number; root?: 1; kind?: 'ts'};
 function validCast(value: unknown, now = Date.now()): value is CastMedia {
   if (!value || typeof value !== 'object') return false;
   const item = value as Partial<CastMedia>;
   return typeof item.url === 'string' && item.url.length > 0 && typeof item.sid === 'string' && item.sid.length > 0 &&
-    typeof item.exp === 'number' && Number.isFinite(item.exp) && item.exp > now && (item.root === undefined || item.root === 1);
+    typeof item.exp === 'number' && Number.isFinite(item.exp) && item.exp > now && (item.root === undefined || item.root === 1) &&
+    (item.kind === undefined || (item.kind === 'ts' && item.root === 1));
 }
 export async function createCast(req: Request, body: unknown) {
   const {binding, credentials} = await session(req);
   await assertNotRevoked(credentials);
-  const raw = body && typeof body === 'object' && typeof (body as {token?: unknown}).token === 'string' ? (body as {token: string}).token : '';
+  const fields = body && typeof body === 'object' ? body as {token?: unknown; receiver?: unknown} : {};
+  const raw = typeof fields.token === 'string' ? fields.token : '';
   if (!raw || raw.length > 6000) throw new ServiceError(400, 'missing_stream', 'Choose a channel to cast.');
   const key = secret();
   let item: unknown;
   try {item = await open<unknown>(raw, key, 'player-media');} catch {throw new ServiceError(403, 'stream_forbidden', 'This stream is no longer available. Refresh your channel list.');}
   if (!validMedia(item, binding) || item.root !== 1) throw new ServiceError(403, 'stream_forbidden', 'This stream belongs to another or expired player session.');
-  const source = castSource(streamURL(item.url).href);
+  const approved = streamURL(item.url).href;
   const exp = Math.min(credentials.exp, Date.now() + CAST_TTL_MS);
+  // LumaNest's own Cast receiver plays the channel's original MPEG-TS with mpegts.js. Google's Default Media
+  // Receiver and AirPlay need HLS, so without the receiver field the link asks the provider for HLS as before.
+  if (fields.receiver === 'lumanest' && transportStreamSource(approved)) {
+    const token = await seal({url: approved, sid: credentials.sid, exp, root: 1, kind: 'ts'} satisfies CastMedia, key, 'player-cast');
+    return {url: new URL(castPath(approved, 'live.ts', 'ts') + encodeURIComponent(token), req.url).href, contentType: 'video/mp2t', live: true, format: 'mpegts' as const, expiresAt: exp};
+  }
+  const source = castSource(approved);
   const token = await seal({url: source.url, sid: credentials.sid, exp, root: 1} satisfies CastMedia, key, 'player-cast');
   return {url: new URL(castPath(source.url, source.live ? 'live.m3u8' : 'video.mp4') + encodeURIComponent(token), req.url).href, contentType: source.contentType, live: source.live, expiresAt: exp};
 }
@@ -327,14 +339,34 @@ export async function castMedia(req: Request) {
     if (revoked) throw new ServiceError(401, 'player_session_expired', 'You signed out of the web player, so casting stopped.');
   };
   return serveMedia(req, cast, checkRevoked, async source =>
-    castPath(source) + encodeURIComponent(await seal({url: source, sid: cast.sid, exp: cast.exp} satisfies CastMedia, key, 'player-cast')), castHeaders);
+    castPath(source) + encodeURIComponent(await seal({url: source, sid: cast.sid, exp: cast.exp} satisfies CastMedia, key, 'player-cast')), castHeaders, cast.exp);
+}
+// A cast stream is one connection that can stay open for hours (a live.ts channel never ends), so the link's expiry
+// and signing out are enforced while it plays, not only when it starts. Cutting it ends the TV's connection; the
+// receiver reconnects and is refused with 403 (expired) or 401 (signed out).
+const CAST_RECHECK_MS = 60000;
+function limitCastStream(body: ReadableStream<Uint8Array> | null, upstream: AbortController, expires: number, checkRevoked: () => Promise<void>) {
+  if (!body) return body;
+  let end!: () => void;
+  // terminate() throws once the stream has already closed (a recheck can land just as the channel ends).
+  const limited = new TransformStream<Uint8Array, Uint8Array>({start(controller) {end = () => {try {controller.terminate();} catch { /* already closed */ }};}, flush: clearTimers});
+  const stop = () => {clearTimers(); end(); upstream.abort();};
+  const expiry = setTimeout(stop, Math.max(0, expires - Date.now()));
+  // Only a confirmed sign-out stops the cast; a failed D1 read leaves it playing until the next check.
+  const recheck = setInterval(() => {checkRevoked().catch(error => {if (error instanceof ServiceError) stop();});}, CAST_RECHECK_MS);
+  function clearTimers() {clearTimeout(expiry); clearInterval(recheck);}
+  // The relay aborts the upstream request when it fails or the TV hangs up; a stream that finishes reaches flush.
+  upstream.signal.addEventListener('abort', clearTimers, {once: true});
+  return body.pipeThrough(limited);
 }
 // Receivers pick a parser from the file extension in the path (Shaka on Chromecast, Chrome's Remote Playback), and
 // can't see one in a query token, so each cast link ends in a name with the upstream extension: /api/cast/live.m3u8?t=…
+// A .ts inside an HLS playlist is a segment; a raw MPEG-TS channel for LumaNest's receiver is the live.ts root link.
 const castNames: Record<string, string> = {m3u8: 'live.m3u8', ts: 'segment.ts', aac: 'audio.aac', m4s: 'segment.m4s', mp4: 'video.mp4', m4v: 'video.m4v', mov: 'video.mov', vtt: 'subtitles.vtt', key: 'media.key'};
-function castPath(source: string, fallback = 'media') {
+const transportStreamNames: Record<string, string> = {...castNames, ts: 'live.ts'};
+function castPath(source: string, fallback = 'media', kind?: 'ts') {
   const ext = /\.([a-z0-9]{2,4})$/i.exec(new URL(source).pathname)?.[1].toLowerCase() || '';
-  return '/api/cast/' + (castNames[ext] || fallback) + '?t=';
+  return '/api/cast/' + ((kind === 'ts' ? transportStreamNames : castNames)[ext] || fallback) + '?t=';
 }
 // Device pairing (lib/pairing.ts) hands a TV app the same line login this web player session proved.
 export const playerSecret = () => secret();

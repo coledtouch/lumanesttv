@@ -3,7 +3,7 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import type Hls from 'hls.js';
 import type mpegts from 'mpegts.js';
-import CastControls from './cast-controls';
+import CastControls, {useCastSession} from './cast-controls';
 import SubtitleControls from './subtitle-controls';
 import AdultLock from './adult-lock';
 import {isAdultGroup} from '../../lib/player-data';
@@ -27,7 +27,7 @@ function typingTarget(target: EventTarget | null) {
     target instanceof HTMLSelectElement;
 }
 
-export default function Player({portal, support}: {portal: string; support: string}) {
+export default function Player({portal, support, castAppId}: {portal: string; support: string; castAppId: string}) {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [username, setUsername] = useState('');
   const [checking, setChecking] = useState(true);
@@ -53,6 +53,14 @@ export default function Player({portal, support}: {portal: string; support: stri
   const [engine, setEngine] = useState<Hls | null>(null);
   // Adult categories are hidden until unlocked with this browser's passcode; unlocking lasts until the page reloads.
   const [adultUnlocked, setAdultUnlocked] = useState(false);
+  // While a channel plays on a TV, this page's own stream stays stopped (castHold) so the line serves only the TV.
+  // It stays stopped after casting ends until the viewer presses play.
+  const [castHold, setCastHold] = useState(false);
+  const [casting, setCasting] = useState(false);
+  const castEnded = useCallback(() => setCasting(false), []);
+  // The Cast session is followed for the whole signed-in page: while one is live, nothing plays here.
+  const {available: castAvailable, device: castDevice, checked: castChecked, stop: stopCast} = useCastSession(Boolean(username), castAppId, castEnded);
+  const castLive = Boolean(castDevice);
   const video = useRef<HTMLVideoElement>(null);
   const viewingArea = useRef<HTMLDivElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -60,10 +68,11 @@ export default function Player({portal, support}: {portal: string; support: stri
   const channelList = useRef<HTMLDivElement>(null);
   const hls = useRef<Hls | null>(null);
   const startPlayback = useRef<(() => void) | null>(null);
+  const stopLocal = useRef<(() => void) | null>(null);
   const channelRequest = useRef<AbortController | null>(null);
 
   const clearSession = useCallback((message = '') => {
-    setUsername(''); setChannels([]); setSelected(null); setDetectedStream(null); setExpiresAt(null);
+    setUsername(''); setChannels([]); setSelected(null); setDetectedStream(null); setExpiresAt(null); setCastHold(false);
     setQuery(''); setGroup('All channels'); setFavoriteOnly(false); setAdultUnlocked(false);
     setPlayError(''); setStatus('Choose a channel'); setError(message);
   }, []);
@@ -166,6 +175,9 @@ export default function Player({portal, support}: {portal: string; support: stri
   const resume = useMemo(() => !selected && lastChannel ? visible.find(channel => channel.id === lastChannel && channel.token) || null : null, [visible, lastChannel, selected]);
 
   function choose(channel: Channel) {
+    // While a Cast session is live, the cast controls send the new channel to the TV; otherwise it plays here again.
+    setCastHold(castLive);
+    if (castLive) setCasting(true);
     if (channel.id === selected?.id) setRetry(current => current + 1);
     else {setDetectedStream(null); setSelected(channel);}
     setLastChannel(channel.id);
@@ -174,9 +186,17 @@ export default function Player({portal, support}: {portal: string; support: stri
   }
   function resetFilters() {setQuery(''); setGroup('All channels'); setFavoriteOnly(false); setLimit(60);}
   function stopPlayback() {
-    setSelected(null); setDetectedStream(null); setPlayError('');
+    // Stopping stops the TV too: without a selected channel the page has no cast controls left to stop it with.
+    if (castLive) stopCast();
+    setSelected(null); setDetectedStream(null); setPlayError(''); setCastHold(false);
     setStatus('Choose a channel'); setQualities([]); setQuality(-1);
   }
+  /** Before a channel goes to a TV: tear down this page's stream now, so mpegts.js/hls.js stop downloading at once. */
+  const castStarted = useCallback(() => {
+    stopLocal.current?.();
+    setCastHold(true); setCasting(true);
+    setPlayError(''); setQualities([]); setQuality(-1);
+  }, []);
   /** Locking hides adult categories at once, stopping an adult channel that is playing. */
   function lockAdult() {
     setAdultUnlocked(false);
@@ -190,7 +210,7 @@ export default function Player({portal, support}: {portal: string; support: stri
     let engine: Hls | null = null;
     let recoveredMedia = false;
     const element = video.current;
-    if (!element || !selected?.token) return;
+    if (!element || !selected?.token || castHold || castLive || !castChecked) return;
     const playbackController = new AbortController();
     const playback = createPlaybackSession(element, {
       status: setStatus, error: setPlayError,
@@ -267,24 +287,27 @@ export default function Player({portal, support}: {portal: string; support: stri
       } catch (cause) {fail(cause instanceof Error ? cause.message : 'Playback is unavailable. Please try again.');}
     }
     void start();
+    const teardown = () => playback.dispose([
+      () => playbackController.abort(),
+      () => probe.abort(),
+      () => {if (startPlayback.current === play) startPlayback.current = null;},
+      () => {if (hls.current === engine) hls.current = null;},
+      () => setEngine(current => current === engine ? null : current),
+      () => engine?.destroy(),
+      () => transport?.unload(),
+      () => transport?.detachMediaElement(),
+      () => transport?.destroy(),
+      () => element.pause(),
+      () => {element.srcObject = null;},
+      () => element.removeAttribute('src'),
+      () => element.load(),
+    ]);
+    stopLocal.current = teardown;
     return () => {
-      playback.dispose([
-        () => playbackController.abort(),
-        () => probe.abort(),
-        () => {if (startPlayback.current === play) startPlayback.current = null;},
-        () => {if (hls.current === engine) hls.current = null;},
-        () => setEngine(current => current === engine ? null : current),
-        () => engine?.destroy(),
-        () => transport?.unload(),
-        () => transport?.detachMediaElement(),
-        () => transport?.destroy(),
-        () => element.pause(),
-        () => {element.srcObject = null;},
-        () => element.removeAttribute('src'),
-        () => element.load(),
-      ]);
+      if (stopLocal.current === teardown) stopLocal.current = null;
+      teardown();
     };
-  }, [selected, retry, clearSession, streamFormat]);
+  }, [selected, retry, clearSession, streamFormat, castHold, castLive, castChecked]);
 
   async function fullscreen() {
     const element = video.current as (HTMLVideoElement & {webkitEnterFullscreen?: () => void}) | null;
@@ -343,7 +366,11 @@ export default function Player({portal, support}: {portal: string; support: stri
     return () => window.removeEventListener('keydown', shortcut);
   });
 
-  const connecting = selected && !playError && ['Connecting…', 'Reconnecting…', 'Buffering…'].includes(status);
+  // Local playback also waits while a Cast session is live (the channel is on its way to the TV) and, right after
+  // the page loads, until Chrome has had its chance to rejoin a session that is still running.
+  const castWaiting = !castHold && (castLive || !castChecked);
+  const connecting = selected && !castHold && !playError && (castWaiting || ['Connecting…', 'Reconnecting…', 'Buffering…'].includes(status));
+  const shownStatus = castHold ? (casting ? 'Playing on your TV' : 'Casting ended') : castWaiting ? 'Connecting…' : status;
 
   return <div className="watch-shell">
     <SiteHeader portal={portal} current="/watch" actions={username ? <button type="button" onClick={logout} disabled={signingOut}>{signingOut ? 'Signing out…' : 'Sign out'}</button> : undefined}/>
@@ -366,11 +393,12 @@ export default function Player({portal, support}: {portal: string; support: stri
           <div className="video-wrap" ref={viewingArea}>
             <video key={(selected?.token || 'empty') + ':' + streamFormat + ':' + retry} ref={video} aria-label={selected ? 'Watching ' + selected.name : 'LumaNest TV video player'} controls={!connecting} playsInline x-webkit-airplay="allow" preload="none"/>
             {!selected && <div className="video-empty"><span aria-hidden="true">▶</span><h2>The night is yours.</h2>{resume ? <button type="button" className="button primary watch-resume" onClick={() => choose(resume)}>Continue with {resume.name} ▶</button> : <p>Choose a channel from your lineup to start watching.</p>}</div>}
-            {connecting && <div className="watch-loading"><span className="watch-spinner" aria-hidden="true"/><span>{status}</span></div>}
-            {selected && !playError && status === 'Press play to start' && <div className="watch-start"><button className="button primary" onClick={() => startPlayback.current?.()}>Play {selected.name} ▶</button></div>}
+            {selected && castHold && <div className="video-empty watch-cast-hold"><span aria-hidden="true">📺</span><h2>{casting ? 'Playing on your TV' : 'Casting ended'}</h2>{casting ? <p>{selected.name} is on your TV. This screen stays off so your line streams only once.</p> : <button type="button" className="button primary watch-resume" onClick={() => setCastHold(false)}>Play {selected.name} here ▶</button>}</div>}
+            {connecting && <div className="watch-loading"><span className="watch-spinner" aria-hidden="true"/><span>{shownStatus}</span></div>}
+            {selected && !castHold && !castWaiting && !playError && status === 'Press play to start' && <div className="watch-start"><button className="button primary" onClick={() => startPlayback.current?.()}>Play {selected.name} ▶</button></div>}
           </div>
-          <div className="now-playing"><div><small>NOW PLAYING</small><h2>{selected?.name || 'Make yourself at home.'}</h2><p>{selected?.group || 'Your channels are waiting.'}</p></div><div><span className="playback-status" role="status" aria-live="polite">{selected ? status : 'Choose a channel'}</span>{selected && <><button className="small-button" onClick={stopPlayback}>Stop playback ■</button><button className="small-button" aria-keyshortcuts="F" onClick={fullscreen}>Fullscreen ⛶</button></>}</div></div>
-          {selected && <div className="watch-player-tools"><div className="watch-channel-navigation"><button className="small-button" aria-label="Previous channel in this lineup" disabled={selectedIndex <= 0} onClick={() => choose(playable[selectedIndex - 1])}>← Previous</button><button className="small-button" aria-label="Next channel in this lineup" disabled={selectedIndex < 0 || selectedIndex >= playable.length - 1} onClick={() => choose(playable[selectedIndex + 1])}>Next →</button></div>{qualities.length > 1 && <label className="quality-select">Picture quality<select value={quality} onChange={event => {const next = Number(event.target.value); setQuality(next); if (hls.current) hls.current.currentLevel = next;}}><option value={-1}>Automatic</option>{qualities.map(item => <option key={item.index} value={item.index}>{item.height ? item.height + 'p' : 'Quality ' + (item.index + 1)}</option>)}</select></label>}<SubtitleControls key={(selected.token || '') + ':' + streamFormat + ':' + retry} video={video} engine={engine} supported={streamFormat !== 'mpegts'}/>{selected.token && <CastControls token={selected.token} name={selected.name} video={video}/>}</div>}
+          <div className="now-playing"><div><small>NOW PLAYING</small><h2>{selected?.name || 'Make yourself at home.'}</h2><p>{selected?.group || 'Your channels are waiting.'}</p></div><div><span className="playback-status" role="status" aria-live="polite">{selected ? shownStatus : 'Choose a channel'}</span>{selected && <><button className="small-button" onClick={stopPlayback}>Stop playback ■</button><button className="small-button" aria-keyshortcuts="F" onClick={fullscreen}>Fullscreen ⛶</button></>}</div></div>
+          {selected && <div className="watch-player-tools"><div className="watch-channel-navigation"><button className="small-button" aria-label="Previous channel in this lineup" disabled={selectedIndex <= 0} onClick={() => choose(playable[selectedIndex - 1])}>← Previous</button><button className="small-button" aria-label="Next channel in this lineup" disabled={selectedIndex < 0 || selectedIndex >= playable.length - 1} onClick={() => choose(playable[selectedIndex + 1])}>Next →</button></div>{qualities.length > 1 && <label className="quality-select">Picture quality<select value={quality} onChange={event => {const next = Number(event.target.value); setQuality(next); if (hls.current) hls.current.currentLevel = next;}}><option value={-1}>Automatic</option>{qualities.map(item => <option key={item.index} value={item.index}>{item.height ? item.height + 'p' : 'Quality ' + (item.index + 1)}</option>)}</select></label>}<SubtitleControls key={(selected.token || '') + ':' + streamFormat + ':' + retry} video={video} engine={engine} supported={streamFormat !== 'mpegts'}/>{selected.token && <CastControls token={selected.token} name={selected.name} format={streamFormat} video={video} castAppId={castAppId} castAvailable={castAvailable} castDevice={castDevice} onCastStart={castStarted} onCastStop={stopCast}/>}</div>}
           {playError && <div className="watch-error" role="alert"><p>{playError}</p><button className="small-button" onClick={() => setRetry(current => current + 1)}>Try this channel again</button></div>}
           <div className="watch-bottom"><p>Playback uses one of your plan’s simultaneous screens. Available channels and formats depend on your line.</p><div className="watch-bottom-links"><button type="button" className="watch-shortcuts-open" aria-keyshortcuts="Shift+?" onClick={() => shortcutsDialog.current?.showModal()}>Keyboard shortcuts</button>{(hasAdult || adultUnlocked) && <AdultLock unlocked={adultUnlocked} onUnlock={() => {setAdultUnlocked(true); setAnnouncement('Adult content unlocked');}} onLock={lockAdult}/>}<a href={'mailto:' + support}>Need a hand? Contact support ↗</a></div></div>
           <span className="sr-only" role="status">{announcement}</span>
