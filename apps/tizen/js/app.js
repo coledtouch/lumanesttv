@@ -2748,10 +2748,10 @@
     if (client) client.cancel();
   });
   function resize() {
+    // Scale by width only: the TV's on-screen keyboard shortens the window's height while it is open, and
+    // scaling by height would shrink the whole app into a corner until the keyboard closes.
     document.getElementById("app").style.transform =
-      "scale(" +
-      Math.min(window.innerWidth / 1920, window.innerHeight / 1080) +
-      ")";
+      "scale(" + window.innerWidth / 1920 + ")";
     if (S.fullscreen) player.setRect(FULL_RECT);
     else if (dualActive) applyDualRects();
     else previewRect();

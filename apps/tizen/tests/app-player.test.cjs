@@ -20,7 +20,7 @@ function realData() {
 
 function harness(options = {}) {
     let now = 1000, timerId = 0;
-    const timers = new Map(), documentEvents = {};
+    const timers = new Map(), documentEvents = {}, windowEvents = {};
     const document = { hidden: false };
     class Element {
         constructor(tag) {
@@ -119,7 +119,7 @@ function harness(options = {}) {
         },
         TunerPlayer: { create(value) { playerOptions = value; return single; } },
         tizen: { tvinputdevice: { getSupportedKeys() { return ['Caption', 'ColorF2Yellow', '1'].map((name, code) => ({ name, code })); }, registerKey() {} } },
-        addEventListener() {}
+        addEventListener(type, fn) { (windowEvents[type] ||= []).push(fn); }
     };
     class FixtureDate extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } }
     vm.runInNewContext(appSource, {
@@ -144,6 +144,7 @@ function harness(options = {}) {
     return {
         document, node, calls, settings, single, values: real.values, advance,
         key(code) { emit('keydown', code); emit('keyup', code); },
+        resize(width, height) { window.innerWidth = width; window.innerHeight = height; (windowEvents.resize || []).forEach(fn => fn({})); },
         state(status) { single.state = { ...single.state, status }; playerOptions.onState(single.state); },
         subtitle(text, duration) { playerOptions.onSubtitle(text, duration); },
         get playerOptions() { return playerOptions; },
@@ -194,6 +195,13 @@ test('full-screen playback sets the whole stage before opening, including channe
     h.key(40);
     assert.deepEqual(before('live:3'), FULL, 'the next visible channel opens full screen');
     assert.deepEqual(h.calls.filter(call => call[0] === 'rect').at(-1)[1], FULL);
+});
+
+test('the on-screen keyboard shortening the window does not shrink the app', () => {
+    const h = harness();
+    h.resize(1920, 1080); assert.equal(h.node('app').style.transform, 'scale(1)');
+    h.resize(1920, 560); assert.equal(h.node('app').style.transform, 'scale(1)', 'keyboard open: still full width');
+    h.resize(1280, 720); assert.equal(h.node('app').style.transform, 'scale(' + 1280 / 1920 + ')', 'a 720p browser still fits');
 });
 
 test('subtitles: the chooser lists tracks for live TV, an empty stream says so, cues are drawn', () => {
