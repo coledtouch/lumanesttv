@@ -14,6 +14,7 @@ Later releases:
 | --- | --- | --- |
 | `Tuner-1.6.0.apk` | 1.6.0, Android version code 15 | Signed Android TV / Google TV / Fire TV app: LumaNest branding, phone pairing, Torrentio removed |
 | `Tuner-1.6.1.apk` | 1.6.1, Android version code 16 | Lineup chosen in the customer hub, USA-only switch, category order, first-load banner |
+| `Tuner-1.6.2.apk` | 1.6.2, Android version code 17 | Subtitles for live, movies and series; passcode-locked adult categories |
 | `tuner-roku-1.0.1.zip` | 1.0.1 | Roku app ZIP for developer-mode sideloading, served from the website's public downloads directory; built with `npm run build` in `apps/roku` |
 | `tv.lumanest.tuner_1.0.4_all.ipk` | 1.0.4 | LG development IPK made with `ares-package`, served from the website's downloads: subtitles, passcode-locked adult categories, player controls that always hide |
 | `tuner-roku-1.0.2.zip` | 1.0.2 | Roku sideload ZIP served from the website's downloads: subtitles and passcode-locked adult categories |
