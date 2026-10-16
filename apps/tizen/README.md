@@ -1,6 +1,6 @@
 # Tuner for Samsung Tizen TV
 
-This is the Samsung TV web application in the LumaNest TV monorepo, separate from `../android` and `../webos`. It provides Live TV with a guide and preview, Movies, Series, Search, Favorites and Settings, using a directional pad, OK and Back. The application/package IDs are `TunerTv001.Tuner` / `TunerTv001`; version is 1.4.11.
+This is the Samsung TV web application in the LumaNest TV monorepo, separate from `../android` and `../webos`. It provides Live TV with a guide and preview, Movies, Series, Search, Favorites and Settings, using a directional pad, OK and Back. The application/package IDs are `TunerTv001.Tuner` / `TunerTv001`; version is 1.4.12.
 
 The runtime uses ES5 JavaScript, local HTML/CSS and Samsung's built-in AVPlay. HTTP(S) provider requests and artwork are allowed; scripts are restricted to the packaged application and the TV's local WebAPI library. No remote scripts, inline script handlers or eval are permitted. Provider accounts are entered on the device and must never be embedded in a widget or committed to source.
 
@@ -19,7 +19,7 @@ npm test
 npm run build
 ```
 
-The build copies only `config.xml`, `index.html`, `css/app.css`, the four runtime JavaScript files, and `assets/icon.png`. Tools, tests, node_modules, provider exports, preferences and certificates are excluded. Outputs go to the repository's ignored `output/tizen` directory (`../../output/tizen` from here). Every build creates clean staging, validates ES5 syntax, application identifiers, privileges, CSP and ZIP checksums, and produces `Tuner-1.4.11-tizen-UNSIGNED.wgt`. Pass an output folder to `node tools/build.js <output-folder>` or use the PowerShell packager's `-OutputDirectory` option to choose another location.
+The build copies only `config.xml`, `index.html`, `css/app.css`, the four runtime JavaScript files, and `assets/icon.png`. Tools, tests, node_modules, provider exports, preferences and certificates are excluded. Outputs go to the repository's ignored `output/tizen` directory (`../../output/tizen` from here). Every build creates clean staging, validates ES5 syntax, application identifiers, privileges, CSP and ZIP checksums, and produces `Tuner-1.4.12-tizen-UNSIGNED.wgt`. Pass an output folder to `node tools/build.js <output-folder>` or use the PowerShell packager's `-OutputDirectory` option to choose another location.
 
 **The unsigned widget is a staging artifact. It cannot be installed on a physical Samsung TV.** It needs a Samsung author/distributor certificate profile containing the target TV's DUID.
 
@@ -71,7 +71,7 @@ After that one-time profile setup:
 
 ```powershell
 .\tools\Package-Tizen.ps1 -CertificateProfile TunerTV
-.\tools\Install-Tizen.ps1 -TvAddress <TV-IP> -Widget ..\..\output\tizen\Tuner-1.4.11-tizen.wgt -Launch
+.\tools\Install-Tizen.ps1 -TvAddress <TV-IP> -Widget ..\..\output\tizen\Tuner-1.4.12-tizen.wgt -Launch
 ```
 
 The package script builds fresh staging, invokes the official signer and checks that both widget signature files exist. Their presence does not prove validity: the Samsung CLI and the target TV perform certificate validation. The installer rejects unsigned widgets, checks the developer port, uses an explicit device serial, and only launches Tuner when `-Launch` is supplied. It does not uninstall other applications or reset TV settings.
@@ -84,7 +84,7 @@ Subtitles work the same way for live channels, movies and episodes. While watchi
 
 Adult categories are hidden by default across Live TV, Movies, Series, the guide, Search, Favorites, Most Watched and Continue Watching. A category is adult when the provider marks it or its streams `is_adult`, or its name contains a standalone XXX, Adult(s), 18+ or Porn (Adult Swim is not adult). Settings → **Adult content: Locked/Unlocked** unlocks them with a 4-digit passcode, created on first use by entering it twice; locking needs no passcode, and the lock returns when Tuner restarts. **Change passcode** asks for the current one. Five wrong entries impose a 60-second wait. The passcode is entered with the remote's number keys or an on-screen digit pad; only a random salt and an iterated, salted SHA-256 digest are stored locally. A forgotten passcode is reset by reinstalling the app or clearing its data.
 
-The full-screen player always uses the whole 1920x1080 stage (`setDisplayRect(0, 0, 1920, 1080)`), reapplied after preparation, resume, buffering and channel changes, so the guide preview's rectangle cannot remain. Back in the guide, the picture returns to the preview frame. The display method is always letterbox: some Samsung TVs keep a full-screen display mode covering the whole panel after the rectangle shrinks, and a full-stage letterbox already fills the screen for 16:9 video. Playback controls hide five seconds after the last remote key; they stay while a dialog is open or playback is paused or failed.
+The full-screen player always uses the whole 1920x1080 stage (`setDisplayRect(0, 0, 1920, 1080)`), reapplied after preparation, resume, buffering and channel changes, so the guide preview's rectangle cannot remain. Back in the guide, the picture returns to the preview frame. The display method is letterbox, set once per stream before preparation and never changed during playback: some Samsung TVs keep a full-screen display mode covering the whole panel after the rectangle shrinks, and a full-stage letterbox already fills the screen for 16:9 video. Playback controls hide five seconds after the last remote key; they stay while a dialog is open or playback is paused or failed.
 
 Multiview targets **two live channels**, respecting a two-stream provider limit. On supported Tizen 7.0+ devices it uses two native AVPlayStore managers in Samsung's in-app MAIN/SUB multiview mode, with one audible channel. Ordinary single-channel playback remains available when a Samsung device cannot allocate dual players; the app reports the limitation. The browser preview uses two HTML video surfaces for UI checks, which does not verify native dual playback or the M7's decoder resources. A PC bridge is not required by this port. See the [AVPlayStore API](https://developer.samsung.com/smarttv/develop/api-references/samsung-product-api-references/avplaystore-api.html) for model-dependent native player support.
 

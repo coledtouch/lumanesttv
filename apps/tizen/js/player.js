@@ -159,20 +159,14 @@
       element.style.background = 'transparent';
       element.style.objectFit = 'contain';
     }
-    function nativeDisplay() {
-      // Coordinates are the app's logical 1920x1080 stage, which AVPlay maps to the panel. Always LETTER_BOX:
-      // on some Samsung TVs FULL_SCREEN keeps covering the whole panel after the rect shrinks to the guide
-      // preview. A 0,0,1920,1080 letterbox already fills the screen for 16:9 video and keeps other shapes intact.
-      av.setDisplayRect(rect.left, rect.top, rect.width, rect.height);
-      try { av.setDisplayMethod('PLAYER_DISPLAY_MODE_LETTER_BOX'); } catch (ignoreDisplay) {}
-    }
     function displayRect() {
       mediaRect(object, !!av && !!state.request);
       mediaRect(video, !av && !!state.request);
       if (av && !operation && !suspended && ownership.owner === api) {
         var s = nativeState();
         if (s === 'IDLE' || s === 'READY' || s === 'PLAYING' || s === 'PAUSED') {
-          try { nativeDisplay(); } catch (ignore) {}
+          // Coordinates are the app's logical 1920x1080 stage, which AVPlay maps to the panel.
+          try { av.setDisplayRect(rect.left, rect.top, rect.width, rect.height); } catch (ignore) {}
         }
       }
     }
@@ -509,7 +503,11 @@
           onerrormsg: function (error) { if (!suspended) { fail(t, friendlyError(error)); } },
           onresourceconflicted: function () { if (!suspended) { fail(t, 'Playback was interrupted by another TV app. Please retry.'); } }
         });
-        nativeDisplay();
+        av.setDisplayRect(rect.left, rect.top, rect.width, rect.height);
+        // Letterbox, set once per stream before preparation. Some Samsung TVs keep a FULL_SCREEN picture over the
+        // whole panel after the rect shrinks to the guide preview, so the mode never changes during playback.
+        // A 0,0,1920,1080 letterbox fills the screen for 16:9 video and keeps other shapes intact.
+        try { av.setDisplayMethod('PLAYER_DISPLAY_MODE_LETTER_BOX'); } catch (ignoreDisplay) {}
         try { av.setTimeoutForBuffering(30); } catch (ignoreTimeout) {}
         av.prepareAsync(function () {
           if (!current(t) || suspended) { return; }
