@@ -159,12 +159,12 @@
       element.style.background = 'transparent';
       element.style.objectFit = 'contain';
     }
-    function fullRect() { return rect.left === 0 && rect.top === 0 && rect.width === 1920 && rect.height === 1080; }
     function nativeDisplay() {
-      // Coordinates are the app's logical 1920x1080 stage, which AVPlay maps to the panel.
-      // The whole stage uses FULL_SCREEN so no previous preview geometry or letterbox can remain.
+      // Coordinates are the app's logical 1920x1080 stage, which AVPlay maps to the panel. Always LETTER_BOX:
+      // on some Samsung TVs FULL_SCREEN keeps covering the whole panel after the rect shrinks to the guide
+      // preview. A 0,0,1920,1080 letterbox already fills the screen for 16:9 video and keeps other shapes intact.
       av.setDisplayRect(rect.left, rect.top, rect.width, rect.height);
-      try { av.setDisplayMethod(fullRect() && !options.multiviewResource ? 'PLAYER_DISPLAY_MODE_FULL_SCREEN' : 'PLAYER_DISPLAY_MODE_LETTER_BOX'); } catch (ignoreDisplay) {}
+      try { av.setDisplayMethod('PLAYER_DISPLAY_MODE_LETTER_BOX'); } catch (ignoreDisplay) {}
     }
     function displayRect() {
       mediaRect(object, !!av && !!state.request);
