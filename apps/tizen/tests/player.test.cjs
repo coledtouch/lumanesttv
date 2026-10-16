@@ -855,15 +855,20 @@ test('HTML video: tracks announced after metadata are picked up for live streams
   assert.equal(trackListeners.length, 0, 'the track listener is released with the stream');
 });
 
-test('the whole stage uses full-screen display mode and is reapplied once preparation finishes', () => {
+test('the display rect is reapplied after preparation and resume, and always letterboxes', () => {
   const h = subtitleHarness(true, false);
+  const last = name => h.av.calls.filter(x => x[0] === name).at(-1);
   h.player.setRect({ left: 1398, top: 145, width: 466, height: 263 });
   h.player.play({ url: 'https://example.test/live.m3u8', live: true });
-  assert.deepEqual(h.av.calls.filter(x => x[0] === 'setDisplayMethod').at(-1), ['setDisplayMethod', 'PLAYER_DISPLAY_MODE_LETTER_BOX']);
+  assert.deepEqual(last('setDisplayMethod'), ['setDisplayMethod', 'PLAYER_DISPLAY_MODE_LETTER_BOX']);
   h.player.setRect({ left: 0, top: 0, width: 1920, height: 1080 });
   h.av.completePrepare();
-  assert.deepEqual(h.av.calls.filter(x => x[0] === 'setDisplayRect').at(-1), ['setDisplayRect', 0, 0, 1920, 1080]);
-  assert.deepEqual(h.av.calls.filter(x => x[0] === 'setDisplayMethod').at(-1), ['setDisplayMethod', 'PLAYER_DISPLAY_MODE_FULL_SCREEN']);
+  assert.deepEqual(last('setDisplayRect'), ['setDisplayRect', 0, 0, 1920, 1080]);
   h.player.pause(); h.player.resume();
-  assert.deepEqual(h.av.calls.filter(x => x[0] === 'setDisplayRect').at(-1), ['setDisplayRect', 0, 0, 1920, 1080]);
+  assert.deepEqual(last('setDisplayRect'), ['setDisplayRect', 0, 0, 1920, 1080]);
+  // Back to the guide: the picture returns to the preview frame. FULL_SCREEN would keep it covering the panel.
+  h.player.setRect({ left: 1398, top: 145, width: 466, height: 263 });
+  assert.deepEqual(last('setDisplayRect'), ['setDisplayRect', 1398, 145, 466, 263]);
+  assert.deepEqual(last('setDisplayMethod'), ['setDisplayMethod', 'PLAYER_DISPLAY_MODE_LETTER_BOX']);
+  assert.equal(h.av.calls.some(x => x[0] === 'setDisplayMethod' && x[1] !== 'PLAYER_DISPLAY_MODE_LETTER_BOX'), false);
 });
