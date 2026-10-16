@@ -134,3 +134,18 @@ export function castSource(value: string) {
   const kind = /\.m3u8$/i.test(url.pathname) ? 'hls' : /\.(mp4|m4v|mov)$/i.test(url.pathname) ? 'file' : 'hls';
   return {url: url.href, contentType: kind === 'file' ? 'video/mp4' : 'application/x-mpegURL', live: kind === 'hls'};
 }
+
+/**
+ * Adult categories stay hidden in the web player until the viewer unlocks them with a passcode. A category counts as
+ * adult when its name holds XXX, adult(s), 18+/+18 or porn as a word of its own, so "Adult Swim" (a cartoon channel)
+ * and names such as "Adultos Mayores" or "XXXL" are not caught.
+ */
+export function isAdultGroup(name: string) {
+  return /(^|[^a-z0-9])(xxx|adults?|18\+|\+18|porn)(?![a-z0-9])/i.test(name.replace(/adult\s*swim/gi, ' '));
+}
+
+/** Hex SHA-256 of a salt and a passcode. Only this hash and its salt are kept in the browser, never the digits. */
+export async function hashPasscode(passcode: string, salt: string) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(salt + ':' + passcode));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
