@@ -103,6 +103,7 @@ import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 import java.util.Locale
 
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
 fun VideoSurface(modifier: Modifier, texture: Boolean) {
     AndroidView(
@@ -856,6 +857,7 @@ private fun TrackDialog(type: Int, version: Int, onClose: () -> Unit) {
 }
 
 /** Closed captions carried inside the video (CEA-608 / CEA-708) have no language tag; name them plainly. */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 private fun captionKind(f: androidx.media3.common.Format): String? {
     val mime = listOfNotNull(f.sampleMimeType, f.codecs).joinToString(" ")
     return when {
