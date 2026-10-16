@@ -184,14 +184,17 @@ export async function diagnostics(req: Request) {
     return {profile, ...selection, hops, error: 'stream_connection_failed', ...(explicitIndex ? {errorCode, ...(blockedOrigin ? {blockedOrigin} : {})} : {})};
   }
 }
-type CastStep = {hops: DiagnosticHop[]; container?: string; playlist?: {master: boolean; entries: number; childOrigin: string; childExtension: string; childApproved: boolean}; error?: string};
+type CastStep = {request?: string; hops: DiagnosticHop[]; container?: string; playlist?: {master: boolean; entries: number; childOrigin: string; childExtension: string; childApproved: boolean}; error?: string};
+// "/live/user/pass/123.m3u8" -> "/live/*/*/N.m3u8": the shape of a request without its login or tokens.
+const pathShape = (value: string) => new URL(value).pathname.split('/').map(part =>
+  ['', 'live', 'movie', 'series', 'hls', 'play'].includes(part) ? part : /^\d+(\.[a-z0-9]{1,5})?$/i.test(part) ? part.replace(/^\d+/, 'N') : '*' + (/\.[a-z0-9]{1,5}$/i.exec(part)?.[0] || '')).join('/');
 /** Follows what a Cast receiver would fetch (playlist, variant, first segment) and reports only origins, statuses and formats. */
 async function castDiagnostics(entryURL: string, signal: AbortSignal) {
   const steps: CastStep[] = [];
   let next: string;
   try {next = castSource(streamURL(entryURL).href).url;} catch {return [{hops: [], error: 'stream_origin_blocked'}];}
   for (let depth = 0; depth < 3; depth++) {
-    const step: CastStep = {hops: []};
+    const step: CastStep = {request: pathShape(next), hops: []};
     steps.push(step);
     let response: Response;
     try {response = await safeFetch(next, {headers: {Accept: '*/*'}, signal}, 0, {onResponse: hop => step.hops.push(hop), onBlockedOrigin: () => {step.error = 'stream_origin_blocked';}});}
