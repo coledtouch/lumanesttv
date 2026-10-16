@@ -44,14 +44,24 @@
     }
     function metadata(row, keys) { var values = []; keys.forEach(function (key) { var value = row[key]; (Array.isArray(value) ? value : [value]).forEach(function (v) { if (text(v)) values.push(text(v)); }); }); return unique(values).join(';'); }
     function memberships(row) { return unique([row.category_id].concat(Array.isArray(row.category_ids) ? row.category_ids : []).map(text).filter(Boolean)); }
-    function parseCategories(rows) { if (!Array.isArray(rows)) throw new Error('The provider did not return categories. Check your login details.'); var seen = Object.create(null); return rows.filter(function (row) { var id = text(row.category_id); if (!id || seen[id]) return false; seen[id] = true; return true; }).map(function (row) { return { id: text(row.category_id), name: text(row.category_name) || 'Other' }; }); }
+    // Adult content: a category name with a standalone XXX, adult(s), 18+ or porn token (but not "Adult Swim"),
+    // or the Xtream is_adult flag on a category or stream. Hidden unless the passcode-protected lock is open.
+    var adultPattern = /(^|[^a-z0-9])(xxx|adults?|18\+|porn)(?![a-z0-9])/i;
+    function adultFlag(value) { return value === 1 || value === '1' || value === true; }
+    function adultName(name) { return adultPattern.test(text(name).replace(/adult[\s_-]*swim/ig, ' ')); }
+    function isAdultCategory(cat) { return !!cat && (cat.adult === true || adultName(cat.name)); }
+    function adultFilter(items, categories) {
+        var blocked = Object.create(null), cats = (categories || []).filter(function (cat) { if (!isAdultCategory(cat)) return true; blocked[cat.id] = true; return false; });
+        return { items: (items || []).filter(function (item) { return !item.adult && !(item.categoryIds || []).some(function (id) { return blocked[id] === true; }) && blocked[item.categoryId] !== true; }), categories: cats };
+    }
+    function parseCategories(rows) { if (!Array.isArray(rows)) throw new Error('The provider did not return categories. Check your login details.'); var seen = Object.create(null); return rows.filter(function (row) { var id = text(row.category_id); if (!id || seen[id]) return false; seen[id] = true; return true; }).map(function (row) { var cat = { id: text(row.category_id), name: text(row.category_name) || 'Other' }; if (adultFlag(row.is_adult)) cat.adult = true; return cat; }); }
     function parseXtream(rows, kind, source, format) {
         if (!Array.isArray(rows)) throw new Error('The provider did not return a catalog. Check your login details.');
         var byId = Object.create(null), result = [], key = sourceKey(source);
         rows.forEach(function (row) {
             var rawId = text(kind === 'series' ? row.series_id : row.stream_id), cats = memberships(row), previous = byId[rawId], item, direct;
             if (!rawId) return;
-            if (previous) { previous.categoryIds = unique(previous.categoryIds.concat(cats)); previous.country = unique([previous.country, metadata(row, ['country', 'country_code', 'country_name', 'stream_country', 'tvg-country'])].filter(Boolean)).join(';'); return; }
+            if (previous) { if (adultFlag(row.is_adult)) previous.adult = true; previous.categoryIds = unique(previous.categoryIds.concat(cats)); previous.country = unique([previous.country, metadata(row, ['country', 'country_code', 'country_name', 'stream_country', 'tvg-country'])].filter(Boolean)).join(';'); return; }
             direct = safeUrl(row.direct_source);
             if (kind === 'live' && direct) direct = direct.replace(/\.(ts|m3u8)(\?|$)/i, '.' + (format || 'm3u8') + '$2');
             item = { id: (kind === 'live' ? 'x:' : kind === 'movies' ? 'm:' : 's:') + rawId, streamId: rawId, sourceKey: key,
@@ -63,6 +73,7 @@
                 added: Number(kind === 'series' ? row.last_modified : row.added) || 0,
                 country: metadata(row, ['country', 'country_code', 'country_name', 'stream_country', 'tvg-country']),
                 language: metadata(row, ['language', 'lang', 'original_language', 'audio_language', 'stream_language', 'tvg-language']) };
+            if (adultFlag(row.is_adult)) item.adult = true;
             byId[rawId] = item; result.push(item);
         });
         return kind === 'live' ? renumber(result) : result;
@@ -211,15 +222,17 @@
         var groups = Object.create(null), order = [], merged = Object.create(null), result = [], favored = Object.create(null);
         catalog.categories.forEach(function (cat) { if (/most\s+watched|trending|popular/i.test(cat.name)) favored[cat.id] = true; });
         catalog.items.forEach(function (item, index) { if (idleEvent(item.name) || offAir(item.name, now === undefined ? Date.now() : now)) return; var name = displayName(item.name), key = stationKey(item.name) || nameKey(name) || item.id, score = (item.epgId ? 8 : 0) + (item.categoryIds.some(function (id) { return favored[id]; }) ? 4 : 0) + (/[a-z]/.test(name) ? 3 : 0) - (/back\s*up/i.test(item.name) ? 10 : 0) - (/\b(4K|UHD)\b/i.test(item.name) ? 2 : 0) - (/\bSD\b/i.test(item.name) ? 1 : 0), resolution = /\b(\d{3,4})p(\d{2})?\b/i.exec(item.name); if (resolution) score += +resolution[1] >= 1080 ? 2 : +resolution[1] >= 720 ? 1 : -3; if (!groups[key]) { groups[key] = []; order.push(key); } groups[key].push({ item: item, name: name, score: score, index: index }); });
-        order.forEach(function (key) { var ranked = groups[key].sort(function (a, b) { return b.score - a.score || a.index - b.index; }), kept = copy(ranked[0].item), categoryIds = [], urls = [], chosenName = ranked[0].name; ranked.forEach(function (entry) { categoryIds = categoryIds.concat(entry.item.categoryIds); urls = urls.concat([entry.item.url], entry.item.backups || []); merged[entry.item.id] = kept.id; if (!kept.image && entry.item.image) kept.image = entry.item.image; if (!kept.epgId && entry.item.epgId) kept.epgId = entry.item.epgId; }); ranked.some(function (entry) { if (/[a-z]/.test(entry.name)) { chosenName = entry.name; return true; } return false; }); kept.name = chosenName; kept.categoryIds = unique(categoryIds); kept.backups = unique(urls.filter(function (url) { return url && url !== kept.url; })); result.push(kept); });
+        order.forEach(function (key) { var ranked = groups[key].sort(function (a, b) { return b.score - a.score || a.index - b.index; }), kept = copy(ranked[0].item), categoryIds = [], urls = [], chosenName = ranked[0].name; ranked.forEach(function (entry) { if (entry.item.adult) kept.adult = true; categoryIds = categoryIds.concat(entry.item.categoryIds); urls = urls.concat([entry.item.url], entry.item.backups || []); merged[entry.item.id] = kept.id; if (!kept.image && entry.item.image) kept.image = entry.item.image; if (!kept.epgId && entry.item.epgId) kept.epgId = entry.item.epgId; }); ranked.some(function (entry) { if (/[a-z]/.test(entry.name)) { chosenName = entry.name; return true; } return false; }); kept.name = chosenName; kept.categoryIds = unique(categoryIds); kept.backups = unique(urls.filter(function (url) { return url && url !== kept.url; })); result.push(kept); });
         return { items: result, categories: usedCategories(result, catalog.categories, '__tuner_us', 'USA'), merged: merged };
     }
-    function foldMovies(items) { var groups = Object.create(null), order = []; items.forEach(function (item) { var key = text(item.name).toLowerCase().replace(/[^a-z0-9]/g, '') || item.id; if (!groups[key]) { groups[key] = []; order.push(key); } groups[key].push(item); }); return order.map(function (key) { var copies = groups[key].sort(function (a, b) { return (b.added || 0) - (a.added || 0); }), kept = copy(copies[0]), ids = [], urls = []; copies.forEach(function (item) { ids = ids.concat(item.categoryIds); urls = urls.concat([item.url], item.backups || []); }); kept.categoryIds = unique(ids); kept.categoryId = kept.categoryIds[0] || ''; kept.backups = unique(urls.filter(function (url) { return url && url !== kept.url; })); return kept; }); }
+    function foldMovies(items) { var groups = Object.create(null), order = []; items.forEach(function (item) { var key = text(item.name).toLowerCase().replace(/[^a-z0-9]/g, '') || item.id; if (!groups[key]) { groups[key] = []; order.push(key); } groups[key].push(item); }); return order.map(function (key) { var copies = groups[key].sort(function (a, b) { return (b.added || 0) - (a.added || 0); }), kept = copy(copies[0]), ids = [], urls = []; copies.forEach(function (item) { if (item.adult) kept.adult = true; ids = ids.concat(item.categoryIds); urls = urls.concat([item.url], item.backups || []); }); kept.categoryIds = unique(ids); kept.categoryId = kept.categoryIds[0] || ''; kept.backups = unique(urls.filter(function (url) { return url && url !== kept.url; })); return kept; }); }
     // order: 'featured' (main cable groups first, the default), 'provider' (as the line delivers them) or 'az'.
     function categoryItems(categories, hasMostWatched, order) { var ranked = ['SPORTS', 'PREMIUM', 'NEWS', 'MOVIES', 'ENTERTAINMENT', 'DOCUMENTARIES', 'LOCAL NEWS'], seen = Object.create(null), result = [{ id: '__all', name: 'All Channels' }, { id: '__fav', name: 'Favorites' }]; if (hasMostWatched !== false) result.push({ id: '__hot', name: 'Most Watched' }); var remaining = categories.filter(function (cat) { if (/^__(all|fav|hot)$/.test(cat.id) || seen[cat.id]) return false; seen[cat.id] = true; return true; }).map(function (cat, index) { var value = upper(cat.name).replace(/[^A-Z0-9]+/g, ' ').trim().replace(/^USA? /, ''), rank = ranked.indexOf(value); return { cat: cat, index: index, rank: order === 'provider' || order === 'az' ? 0 : rank < 0 ? 7 : rank, key: text(cat.name).replace(/^[^A-Za-z0-9]+/, '').toLowerCase() }; }).sort(function (a, b) { return a.rank - b.rank || (order === 'az' && a.key !== b.key ? (a.key < b.key ? -1 : 1) : 0) || a.index - b.index; }); return result.concat(remaining.map(function (value) { return value.cat; })); }
 
     // Finished catalogues stay private to this widget. IndexedDB avoids the small settings quota.
     var catalogDatabase = null, catalogMemory = Object.create(null), catalogMemoryIdentity = '';
+    // Version 2 records carry the adult flags; older saved catalogues reload once.
+    var CATALOG_RECORD_SCHEMA = 2;
     function catalogStorageApi() { try { return root.indexedDB && typeof root.indexedDB.open === 'function' ? root.indexedDB : null; } catch (_) { return null; } }
     // SHA-256 (FIPS 180-4), synchronous so source changes cannot race catalogue selection.
     function catalogDigest(value) {
@@ -306,7 +319,7 @@
         if (catalogMemoryIdentity !== identity) { catalogMemory = Object.create(null); catalogMemoryIdentity = identity; }
         try { storage = root.localStorage; } catch (_) {}
         function valid(record, kind) {
-            if (!record || record.schema !== 1 || record.identity !== identity || record.kind !== kind ||
+            if (!record || record.schema !== CATALOG_RECORD_SCHEMA || record.identity !== identity || record.kind !== kind ||
                 typeof record.updated !== 'number' || record.updated <= 0 || record.updated > Date.now() + 300000 ||
                 !record.payload || !Array.isArray(record.payload.items) || !Array.isArray(record.payload.categories) ||
                 (kind === 'live' && (!record.payload.merged || typeof record.payload.merged !== 'object' || Array.isArray(record.payload.merged)))) return false;
@@ -350,7 +363,7 @@
             });
         }
         function write(kind, payload) {
-            var record = { id: prefix + kind, schema: 1, identity: identity, kind: kind, updated: Date.now(), payload: payload };
+            var record = { id: prefix + kind, schema: CATALOG_RECORD_SCHEMA, identity: identity, kind: kind, updated: Date.now(), payload: payload };
             if (catalogMemoryIdentity === identity) catalogMemory[record.id] = record;
             if (!catalogStorageApi()) return root.Promise.resolve(saveFallback(record));
             return openCatalogDatabase().then(function (database) {
@@ -379,6 +392,58 @@
             fresh: function (record) { var age = Date.now() - record.updated; return age >= 0 && age < (record.kind === 'live' ? 7200000 : 43200000); } };
     }
 
+    // Adult lock passcode. Only a random salt and an iterated, salted SHA-256 digest are saved; never the digits.
+    // Five wrong entries in a row impose a 60 second wait, which also survives an app restart.
+    var PASSCODE_KEY = 'tuner.tv.adultlock.v1', PASSCODE_ROUNDS = 64, PASSCODE_TRIES = 5, PASSCODE_WAIT = 60000;
+    function validPasscode(pin) { return typeof pin === 'string' && /^[0-9]{4}$/.test(pin); }
+    function passcodeSalt() {
+        var bytes = [], values, i;
+        try { values = new root.Uint8Array(16); root.crypto.getRandomValues(values); for (i = 0; i < 16; i++) bytes.push(values[i]); } catch (_) { bytes = []; }
+        if (bytes.length !== 16) { bytes = []; for (i = 0; i < 16; i++) bytes.push(Math.floor(Math.random() * 256)); }
+        return bytes.map(function (value) { return ('0' + value.toString(16)).slice(-2); }).join('');
+    }
+    function hashPasscode(pin, salt) {
+        var digest = catalogDigest('tuner-adult-lock:' + salt + ':' + pin), i;
+        for (i = 1; i < PASSCODE_ROUNDS; i++) digest = catalogDigest(salt + ':' + digest);
+        return digest;
+    }
+    function createPasscodeLock(storage, clock) {
+        if (!storage) { try { storage = root.localStorage; } catch (_) {} }
+        clock = clock || function () { return Date.now(); };
+        function load() {
+            var value = null;
+            try { value = JSON.parse(storage.getItem(PASSCODE_KEY)); } catch (_) {}
+            if (!value || typeof value !== 'object' || Array.isArray(value)) value = {};
+            if (typeof value.salt !== 'string' || !/^[0-9a-f]{32}$/.test(value.salt) || typeof value.hash !== 'string' || !/^[0-9a-f]{64}$/.test(value.hash)) { delete value.salt; delete value.hash; }
+            value.failures = Math.max(0, Math.floor(Number(value.failures) || 0));
+            value.until = Math.max(0, Number(value.until) || 0);
+            return value;
+        }
+        function save(value) { try { storage.setItem(PASSCODE_KEY, JSON.stringify(value)); return true; } catch (_) { return false; } }
+        var lock = {
+            hasPasscode: function () { return !!load().hash; },
+            waitRemaining: function () { var wait = load().until - clock(); return wait > 0 ? wait : 0; },
+            setPasscode: function (pin) {
+                if (!validPasscode(pin)) return false;
+                var salt = passcodeSalt();
+                return save({ salt: salt, hash: hashPasscode(pin, salt), failures: 0, until: 0 });
+            },
+            verify: function (pin) {
+                var value = load(), now = clock();
+                if (!value.hash) return { ok: false, wait: 0, left: PASSCODE_TRIES, missing: true };
+                if (value.until > now) return { ok: false, wait: value.until - now, left: 0 };
+                if (validPasscode(pin) && hashPasscode(pin, value.salt) === value.hash) {
+                    value.failures = 0; value.until = 0; save(value);
+                    return { ok: true, wait: 0, left: PASSCODE_TRIES };
+                }
+                value.failures++;
+                if (value.failures >= PASSCODE_TRIES) { value.failures = 0; value.until = now + PASSCODE_WAIT; save(value); return { ok: false, wait: PASSCODE_WAIT, left: 0 }; }
+                value.until = 0; save(value);
+                return { ok: false, wait: 0, left: PASSCODE_TRIES - value.failures };
+            }
+        };
+        return lock;
+    }
     function createStore(storage) {
         if (!storage) { try { storage = root.localStorage; } catch (_) {} }
         function read(key, fallback) { try { var parsed = JSON.parse(storage.getItem(key)); return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : fallback; } catch (_) { return fallback; } }
@@ -398,6 +463,7 @@
             recordWatched: function (id) { var entry = row(), canonical = resolve(id), old = entry.watches[canonical] || { count: 0, updated: 0 }; entry.watches[canonical] = { count: old.count + 1, updated: Date.now() }; entry.lastWatched = canonical; return persist(); },
             mostWatched: function () { var entry = row(), totals = Object.create(null); Object.keys(entry.watches).forEach(function (id) { var canonical = resolve(id), old = totals[canonical] || { count: 0, updated: 0 }, value = entry.watches[id]; totals[canonical] = { count: old.count + (Number(value.count) || 0), updated: Math.max(old.updated, Number(value.updated) || 0) }; }); return Object.keys(totals).sort(function (a, b) { return totals[b].count - totals[a].count || totals[b].updated - totals[a].updated || a.localeCompare(b); }).slice(0, 50); },
             lastWatched: function () { return resolve(row().lastWatched || ''); } };
+        store.adultLock = createPasscodeLock(storage);
         return store;
     }
     function decodeBase64(value) { value = text(value); if (!value) return ''; if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value) || value.length % 4 !== 0) return value; try { var raw = root.atob(value), escaped = ''; for (var i = 0; i < raw.length; i++) escaped += '%' + ('0' + raw.charCodeAt(i).toString(16)).slice(-2); return decodeURIComponent(escaped).trim(); } catch (_) { return value; } }
@@ -585,5 +651,6 @@
     }
     root.TunerData = { createStore: createStore, createClient: createClient, sourceKey: sourceKey, catalogIdentity: catalogIdentity, normalizeSource: normalizeSource, categoryItems: categoryItems,
         parseXtream: parseXtream, parseCategories: parseCategories, parseM3u: parseM3u, usPolicy: usPolicy, allPolicy: allPolicy, localPolicy: localPolicy, foldLive: foldLive, foldMovies: foldMovies,
+        adultName: adultName, isAdultCategory: isAdultCategory, adultFilter: adultFilter, hashPasscode: hashPasscode, createPasscodeLock: createPasscodeLock,
         parseGuide: parseGuide, parseSeriesInfo: parseSeriesInfo, parseXmltv: parseXmltv, parseXmltvAsync: parseXmltvAsync, xmlTime: xmlTime, marketForZip: marketForZip, displayName: displayName, idleEvent: idleEvent, offAir: offAir };
 }(typeof window !== 'undefined' ? window : this));

@@ -1,15 +1,17 @@
 {
   "name": "lumanest-webos-tv",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
   "description": "LumaNest TV webOS app and clean development staging tools",
   "scripts": {
     "check": "node tools/check.js",
     "test": "node --test",
-    "build": "node tools/build.js"
+    "build": "node tools/build.js",
+    "sync": "node tools/sync-from-tizen.js"
   },
   "devDependencies": {
-    "acorn": "8.19.0"
+    "acorn": "8.19.0",
+    "terser": "5.47.1"
   },
   "engines": {
     "node": ">=18"

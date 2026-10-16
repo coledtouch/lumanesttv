@@ -59,6 +59,13 @@
     var progressConfirmed = false;
     var silentReopenUsed = false;
     var htmlListeners = [];
+    // Subtitles: null follows the Subtitles setting for each new stream; -1 is off; otherwise a track index.
+    var subtitleChoice = null;
+    var subtitleShowing = false;
+    var subtitleCheckAt = 0;
+    var subtitleChecks = 0;
+    var textTrackList = null;
+    var textTrackListener = null;
 
     function emit(status, error) {
       if (status) { state.status = status; }
@@ -152,13 +159,20 @@
       element.style.background = 'transparent';
       element.style.objectFit = 'contain';
     }
+    function fullRect() { return rect.left === 0 && rect.top === 0 && rect.width === 1920 && rect.height === 1080; }
+    function nativeDisplay() {
+      // Coordinates are the app's logical 1920x1080 stage, which AVPlay maps to the panel.
+      // The whole stage uses FULL_SCREEN so no previous preview geometry or letterbox can remain.
+      av.setDisplayRect(rect.left, rect.top, rect.width, rect.height);
+      try { av.setDisplayMethod(fullRect() && !options.multiviewResource ? 'PLAYER_DISPLAY_MODE_FULL_SCREEN' : 'PLAYER_DISPLAY_MODE_LETTER_BOX'); } catch (ignoreDisplay) {}
+    }
     function displayRect() {
       mediaRect(object, !!av && !!state.request);
       mediaRect(video, !av && !!state.request);
       if (av && !operation && !suspended && ownership.owner === api) {
         var s = nativeState();
         if (s === 'IDLE' || s === 'READY' || s === 'PLAYING' || s === 'PAUSED') {
-          try { av.setDisplayRect(rect.left, rect.top, rect.width, rect.height); } catch (ignore) {}
+          try { nativeDisplay(); } catch (ignore) {}
         }
       }
     }
@@ -179,6 +193,55 @@
         video.removeEventListener(htmlListeners[i][0], htmlListeners[i][1]);
       }
       htmlListeners = [];
+      if (textTrackList && textTrackListener) {
+        try { textTrackList.removeEventListener('addtrack', textTrackListener); } catch (ignoreTrackList) {}
+      }
+      textTrackList = null; textTrackListener = null;
+    }
+    function showSubtitle(text, duration) {
+      if (options.onSubtitle) { options.onSubtitle(typeof text === 'string' ? text : (text === null || text === undefined ? '' : String(text)), Math.max(0, number(duration, 0))); }
+    }
+    function wantsSubtitles() {
+      return typeof options.subtitles === 'function' ? !!options.subtitles() : !!options.subtitles;
+    }
+    function preferredSubtitle() {
+      var list = trackCache.subtitles, i;
+      for (i = 0; i < list.length; i += 1) {
+        if (/^(en|eng|english)\b/i.test(list[i].language || '') || /\benglish\b/i.test(list[i].label || '')) { return list[i]; }
+      }
+      return list[0] || null;
+    }
+    function autoSubtitles() {
+      // Each stream follows the Subtitles setting until the viewer chooses a track for it.
+      if (subtitleChoice !== null || !state.request) { return; }
+      var track = wantsSubtitles() ? preferredSubtitle() : null;
+      if (track) { subtitleChoice = track.index; chooseSubtitle(track.index); }
+      else if (!wantsSubtitles()) { chooseSubtitle(-1); }
+    }
+    function laterSubtitles() {
+      // Live streams can announce text tracks after preparation. Look again a few times while playing.
+      if (subtitleChoice !== null || !wantsSubtitles() || !av || subtitleChecks >= 6) { return; }
+      var now = progressClock();
+      if (now - subtitleCheckAt < 5000) { return; }
+      subtitleCheckAt = now; subtitleChecks += 1;
+      nativeTracks(); autoSubtitles();
+    }
+    function chooseSubtitle(index) {
+      var i, list;
+      if (av) {
+        if (index === -1 && !subtitleShowing && !trackCache.subtitles.length) {
+          try { av.setSilentSubtitle(true); } catch (ignoreSilent) {}
+          return;
+        }
+        queuedTracks.subtitles = index; applyTracks();
+        return;
+      }
+      list = video && video.textTracks;
+      for (i = 0; list && i < list.length; i += 1) {
+        if (!list[i].kind || /^(subtitles|captions)$/.test(list[i].kind)) { list[i].mode = i === index ? 'showing' : 'disabled'; }
+      }
+      subtitleShowing = index !== -1;
+      markTrack('subtitles', index);
     }
     function closeMedia() {
       clearWait();
@@ -289,10 +352,10 @@
           if (key === 'audio' && s !== 'PLAYING') { continue; }
           if (s !== 'PLAYING' && s !== 'PAUSED') { continue; }
           try {
-            if (key === 'subtitles' && index === -1) { av.setSilentSubtitle(true); }
+            if (key === 'subtitles' && index === -1) { subtitleShowing = false; showSubtitle('', 0); av.setSilentSubtitle(true); }
             else {
               av.setSelectTrack(key === 'audio' ? 'AUDIO' : 'TEXT', index);
-              if (key === 'subtitles') { av.setSilentSubtitle(false); }
+              if (key === 'subtitles') { av.setSilentSubtitle(false); subtitleShowing = true; }
             }
             markTrack(key, index);
           } catch (ignore) { report('This track is not supported by this stream.'); }
@@ -349,7 +412,7 @@
           throw audioError;
         }
         if (wantedPlaying) {
-          if (s !== 'PLAYING') { av.play(); }
+          if (s !== 'PLAYING') { av.play(); displayRect(); }
           applyTracks();
           emit(buffering ? 'loading' : 'playing');
           startProgress(t);
@@ -426,7 +489,7 @@
           onbufferingprogress: function () { if (current(t)) { startWait(t); } },
           onbufferingcomplete: function () {
             if (!current(t) || suspended || !prepared || operation) { return; }
-            buffering = false; clearWait(); emit(wantedPlaying ? 'playing' : 'paused');
+            buffering = false; clearWait(); displayRect(); emit(wantedPlaying ? 'playing' : 'paused');
             startProgress(t);
           },
           oncurrentplaytime: function (position) {
@@ -435,14 +498,18 @@
             time(position, state.duration);
             if (wantedPlaying && state.status !== 'playing') { emit('playing'); }
             startProgress(t);
+            laterSubtitles();
+          },
+          onsubtitlechange: function (duration, text) {
+            if (!current(t) || suspended || !subtitleShowing) { return; }
+            showSubtitle(text, duration);
           },
           onstreamcompleted: function () { finish(t); },
           onerror: function (error) { if (!suspended) { fail(t, friendlyError(error)); } },
           onerrormsg: function (error) { if (!suspended) { fail(t, friendlyError(error)); } },
           onresourceconflicted: function () { if (!suspended) { fail(t, 'Playback was interrupted by another TV app. Please retry.'); } }
         });
-        av.setDisplayRect(rect.left, rect.top, rect.width, rect.height);
-        try { av.setDisplayMethod('PLAYER_DISPLAY_MODE_LETTER_BOX'); } catch (ignoreDisplay) {}
+        nativeDisplay();
         try { av.setTimeoutForBuffering(30); } catch (ignoreTimeout) {}
         av.prepareAsync(function () {
           if (!current(t) || suspended) { return; }
@@ -452,7 +519,7 @@
           // No language filtering: all tracks the TV supports remain available.
           if (!state.request.live && start > 0 && queuedSeek === null) { queuedSeek = start; }
           drainNative(t);
-          if (current(t) && !operation) { nativeTracks(); }
+          if (current(t) && !operation) { nativeTracks(); autoSubtitles(); }
         }, function (error) { if (!suspended) { fail(t, friendlyError(error)); } });
       } catch (error) { fail(t, friendlyError(error)); }
     }
@@ -466,6 +533,8 @@
         list = groups[key];
         for (i = 0; i < list.length; i += 1) {
           item = list[i];
+          // HLS ID3 and chapter data also arrive as text tracks; only subtitles and captions are offered.
+          if (key === 'subtitles' && item.kind && !/^(subtitles|captions)$/.test(item.kind)) { continue; }
           trackCache[key].push({ index: i, language: item.language || '',
             label: item.label || item.language || (key === 'audio' ? 'Audio ' : 'Subtitle ') + (i + 1),
             selected: key === 'audio' ? !!item.enabled : item.mode === 'showing' });
@@ -507,8 +576,15 @@
           catch (ignoreSeek) { report('This stream could not restore its previous position.'); }
         }
         htmlTrackInfo();
+        autoSubtitles();
         if (wantedPlaying) { htmlPlay(t); } else { clearWait(); emit('paused'); }
       });
+      // Live HLS captions (CEA-608/708) and subtitle renditions may be announced after metadata.
+      textTrackList = video.textTracks || null;
+      if (textTrackList && typeof textTrackList.addEventListener === 'function') {
+        textTrackListener = function () { if (current(t) && prepared) { htmlTrackInfo(); autoSubtitles(); } };
+        textTrackList.addEventListener('addtrack', textTrackListener);
+      }
       listen('playing', function () {
         if (suspended || !wantedPlaying) { video.pause(); return; }
         clearWait(); emit('playing');
@@ -537,6 +613,8 @@
       closeMedia();
       trackCache = { audio: [], subtitles: [] };
       queuedTracks = {};
+      subtitleChoice = null; subtitleShowing = false; subtitleCheckAt = 0; subtitleChecks = 0;
+      showSubtitle('', 0);
       ended = false;
       progressConfirmed = false;
       state.position = state.request.live ? 0 : Math.max(0, number(position, 0));
@@ -620,6 +698,7 @@
       if (ownership && ownership.owner === api) { ownership.owner = null; }
       wantedPlaying = false; suspended = false; queuedSeek = null; ended = false;
       sources = []; trackCache = { audio: [], subtitles: [] }; queuedTracks = {};
+      subtitleChoice = null; subtitleShowing = false; showSubtitle('', 0);
       state.request = null;
       time(0, 0); emit('idle', ''); displayRect();
     };
@@ -637,6 +716,7 @@
       }
       return { audio: trackCache.audio.slice(), subtitles: trackCache.subtitles.slice() };
     };
+    api.subtitlesShowing = function () { return subtitleShowing; };
     api.setMuted = function (value, quiet) {
       var previousMuted = muted, previousPending = audioPending;
       if (av && state.request && options.mainAudioOnly && options.mainAudioOnly()) {
@@ -661,13 +741,11 @@
       var i, found = key === 'subtitles' && index === -1;
       for (i = 0; i < trackCache[key].length; i += 1) { if (trackCache[key][i].index === index) { found = true; } }
       if (!found) { return false; }
+      if (key === 'subtitles') { subtitleChoice = index; chooseSubtitle(index); return true; }
       if (av) { queuedTracks[key] = index; applyTracks(); }
       else {
-        var list = key === 'audio' ? video.audioTracks : video.textTracks;
-        for (i = 0; list && i < list.length; i += 1) {
-          if (key === 'audio') { list[i].enabled = i === index; }
-          else { list[i].mode = i === index ? 'showing' : 'disabled'; }
-        }
+        var list = video.audioTracks;
+        for (i = 0; list && i < list.length; i += 1) { list[i].enabled = i === index; }
         markTrack(key, index);
       }
       return true;

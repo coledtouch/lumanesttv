@@ -203,3 +203,39 @@ test("the Tizen Return key code (10009) and Escape behave like LG Back", () => {
         assert.equal(h.focused.id, "tab-4");
     }
 });
+
+// Settings shared with the Samsung app: subtitles default and the passcode-protected adult lock.
+test("Settings offers Subtitles and a passcode-protected adult lock that works with LG number keys", () => {
+    const h = harness();
+    assert.match(h.node("subtitles-setting").textContent, /Subtitles: Off/);
+    h.node("subtitles-setting").click();
+    assert.match(h.node("subtitles-setting").textContent, /Subtitles: On/);
+    assert.match(h.node("adult-setting").textContent, /Adult content: Locked/);
+    h.node("adult-setting").click();
+    assert.equal(h.dialogOpen, true);
+    assert.match(h.node("dialog-layer").textContent, /Create a passcode/);
+    assert.match(h.node("dialog-layer").textContent, /Forgot the passcode\? Remove and reinstall the app, or clear its data\./);
+    for (const digit of "73917391") h.key(48 + Number(digit));
+    assert.equal(h.dialogOpen, false);
+    assert.match(h.node("adult-setting").textContent, /Unlocked/);
+    const saved = JSON.parse(h.window.localStorage.getItem("tuner.tv.adultlock.v1"));
+    assert.match(saved.hash, /^[0-9a-f]{64}$/);
+    assert.ok(!JSON.stringify(saved).includes("7391"));
+    h.node("adult-setting").click();
+    assert.equal(h.dialogOpen, false, "locking needs no passcode");
+    h.node("adult-setting").click();
+    assert.match(h.node("dialog-layer").textContent, /Unlock adult content/);
+    assert.equal(h.focused.id, "pin-1");
+    h.key(39); h.key(40); assert.equal(h.focused.id, "pin-5", "the digit pad follows the arrows");
+    h.key(461);
+    assert.equal(h.dialogOpen, false, "Back closes the pad");
+    assert.match(h.node("adult-setting").textContent, /Locked/);
+});
+
+test("the LG scripts are generated from the current Samsung sources", async t => {
+    let sync;
+    try { require.resolve("terser"); sync = require("../tools/sync-from-tizen"); } catch (error) { t.skip("terser is not installed"); return; }
+    const files = await sync.generate();
+    for (const [name, content] of Object.entries(files))
+        assert.equal(fs.readFileSync(path.join(__dirname, "..", name), "utf8"), content, name + " is out of date: run npm run sync");
+});

@@ -107,3 +107,26 @@ test("with the real player, AVPlay is ignored and the stream goes to the HTML vi
     assert.equal(video.src, "");
     assert.equal(window.TunerPlayer.createDual, null);
 });
+
+test("live HLS captions on the HTML video element follow the Subtitles setting and the chooser", () => {
+    const {window, video, object} = realPlayer();
+    video.textTracks = [{kind: "metadata", mode: "hidden"}, {kind: "captions", language: "en", label: "CC1", mode: "disabled"}];
+    let subtitlesOn = true;
+    const player = window.TunerPlayer.create({objectElement: object, videoElement: video, subtitles: () => subtitlesOn});
+    player.play({id: "live:1", url: "http://example.invalid/live/1.m3u8", live: true});
+    video.listeners.filter(entry => entry[0] === "loadedmetadata").forEach(entry => entry[1]());
+    assert.equal(video.textTracks[1].mode, "showing", "On selects the English caption track");
+    assert.equal(video.textTracks[0].mode, "hidden", "data tracks are left alone");
+    assert.deepEqual(JSON.parse(JSON.stringify(player.tracks().subtitles.map(track => track.label))), ["CC1"]);
+    player.selectTrack("TEXT", -1);
+    assert.equal(video.textTracks[1].mode, "disabled");
+    subtitlesOn = false;
+    player.play({id: "live:2", url: "http://example.invalid/live/2.m3u8", live: true});
+    video.textTracks[1].mode = "showing";
+    video.listeners.filter(entry => entry[0] === "loadedmetadata").forEach(entry => entry[1]());
+    assert.equal(video.textTracks[1].mode, "disabled", "Off keeps captions hidden on each new stream");
+    video.textTracks = [];
+    player.play({id: "live:3", url: "http://example.invalid/live/3.m3u8", live: true});
+    video.listeners.filter(entry => entry[0] === "loadedmetadata").forEach(entry => entry[1]());
+    assert.equal(player.tracks().subtitles.length, 0);
+});

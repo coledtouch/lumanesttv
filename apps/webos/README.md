@@ -1,8 +1,18 @@
 # Tuner for LG webOS TV
 
-This directory contains the LG webOS application source for Tuner 1.0.3, application ID `tv.lumanest.tuner`. It is separate from the Android app and Samsung Tizen widget. Provider accounts are entered on the device and are stored locally. Do not put provider exports, saved preferences, TV connection details, or private keys in this directory.
+This directory contains the LG webOS application source for Tuner 1.0.4, application ID `tv.lumanest.tuner`. It is separate from the Android app and Samsung Tizen widget. Provider accounts are entered on the device and are stored locally. Do not put provider exports, saved preferences, TV connection details, or private keys in this directory.
 
 The app uses packaged ES5 JavaScript, HTML, CSS and the TV's HTML video player. `js/webos-platform.js` selects that player instead of Samsung AVPlay and disables the Samsung dual-player entry point. Native Android Picture-in-Picture and the Android torrent engine are not included. Supported streams and codecs depend on the TV model and webOS version; desktop checks do not establish physical-TV playback compatibility.
+
+## Shared sources
+
+`js/data.js`, `js/player.js` and `js/app.js` are generated, minified, from the Samsung app in `../tizen/js`; `css/app.css` and `js/pairing.js` are copied from it. Make changes there, then run `npm run sync` here. `tools/sync-from-tizen.js` removes Multi View and the Samsung TV APIs and adds the LG Back key (461), PalmSystem exit and LG texts. `npm test` fails when the LG files are out of date.
+
+## Subtitles and adult content
+
+Subtitles work for live channels, movies and episodes. While watching, the yellow key, a CC/subtitle key where the remote has one, or the **CC Subtitles** player button opens a chooser with Off and the stream's subtitle and caption tracks (`video.textTracks` of kind `subtitles` or `captions`; the TV's HTML video exposes HLS subtitle renditions and, for live HLS, embedded CEA-608/708 captions when present). The chosen track is set to `showing` and drawn by the TV; the others are `disabled`. A stream without text tracks shows "No subtitles in this stream". Settings → **Subtitles: Off/On** sets the default: when On, each new stream selects an English track, or the first one, including tracks announced after playback starts.
+
+Adult categories are hidden by default across Live TV, Movies, Series, the guide, Search, Favorites, Most Watched and Continue Watching. A category is adult when the provider marks it or its streams `is_adult`, or its name contains a standalone XXX, Adult(s), 18+ or Porn (Adult Swim is not adult). Settings → **Adult content: Locked/Unlocked** unlocks them with a 4-digit passcode, created on first use by entering it twice; locking needs no passcode, and the lock returns when Tuner restarts. **Change passcode** asks for the current one. Five wrong entries impose a 60-second wait. Enter digits with the remote's number keys or the on-screen pad with the arrows and OK. Only a random salt and an iterated, salted SHA-256 digest are stored. A forgotten passcode is reset by reinstalling the app or clearing its data.
 
 ## Validate and prepare clean staging
 
@@ -28,12 +38,12 @@ $build = Get-Content ../../output/webos/build.json -Raw | ConvertFrom-Json
 ares-package --no-minify -o ../../output/webos $build.staging
 ```
 
-The expected package name is `tv.lumanest.tuner_1.0.3_all.ipk`. Package the clean staging folder, rather than this development directory, so private files and tooling stay excluded. `--no-minify` preserves the validated runtime files for development and debugging. LG's packager generates the package metadata from `appinfo.json`; no Samsung author/distributor certificate is used by this webOS workflow.
+The expected package name is `tv.lumanest.tuner_1.0.4_all.ipk`. Package the clean staging folder, rather than this development directory, so private files and tooling stay excluded. `--no-minify` preserves the validated runtime files for development and debugging. LG's packager generates the package metadata from `appinfo.json`; no Samsung author/distributor certificate is used by this webOS workflow.
 
 This is a development IPK, not a store-approved or production-signed release. To test on your own TV, follow LG's [Developer Mode setup](https://webostv.developer.lge.com/develop/getting-started/developer-mode-app). Register the TV through the CLI, keep its Developer Mode session active, and use the chosen device name in the official installation and launch commands:
 
 ```powershell
-ares-install --device myTV ../../output/webos/tv.lumanest.tuner_1.0.3_all.ipk
+ares-install --device myTV ../../output/webos/tv.lumanest.tuner_1.0.4_all.ipk
 ares-launch --device myTV tv.lumanest.tuner
 ```
 
