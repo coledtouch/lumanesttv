@@ -582,6 +582,13 @@ p {
 .detail-copy button {
   margin: 18px 18px 18px 0;
 }
+/* Scrolling rows measure their children's offsetTop/offsetLeft (scrollToElement), which only works when the
+   row itself is the children's offset parent. Without this the episode list scrolled the focused row out of view. */
+.chip-row,
+.cards,
+.episodes {
+  position: relative;
+}
 .episodes {
   height: 360px;
   overflow: auto;
