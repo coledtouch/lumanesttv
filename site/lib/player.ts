@@ -1,7 +1,7 @@
+import * as workers from 'cloudflare:workers';
 import {settings, ServiceError} from './mybunny';
 import {parseM3U, trustedStreamURL, normalizeProviderURL, mapProviderOrigin, rewriteHLS, castSource, transportStreamSource, validSession, validMedia, type PlayerSession, type PlayerMedia} from './player-data';
 import {seal, open, digest} from './player-crypto';
-import {relayPlayerStream} from './player-stream-relay';
 import {sampleDiagnosticContainer} from './player-diagnostic-container';
 import {fetchPlayerRelay, providerRelaySource, relayConfigured} from './player-relay';
 import {db} from './paypal';
@@ -56,7 +56,9 @@ export async function revokeSession(req: Request) {
   try {credentials = await open<unknown>(value, secret(), 'player-session');} catch {return false;}
   if (!validSession(credentials)) return false;
   liveSessions.delete(credentials.sid);
-  await db().prepare('INSERT OR IGNORE INTO player_revoked_sessions (id,expires) VALUES (?,?)').bind(credentials.sid, credentials.exp).run();
+  // Kept until the last cast link this session could have made has expired: one made just before the sign-in
+  // expires lasts CAST_TTL_MS longer, and maintenance cleanup deletes rows once `expires` has passed.
+  await db().prepare('INSERT OR IGNORE INTO player_revoked_sessions (id,expires) VALUES (?,?)').bind(credentials.sid, credentials.exp + CAST_TTL_MS).run();
   return true;
 }
 async function limitedText(res: Response, max = 8 * 1024 * 1024) {
@@ -255,17 +257,23 @@ export async function media(req: Request) {
 
 /** Fetches one approved upstream URL for the web player or a cast device; HLS playlists get re-signed child URLs. */
 async function serveMedia(req: Request, item: {url: string; root?: 1; kind?: 'ts'}, checkRevoked: () => Promise<void>, sign: (source: string) => Promise<string>, extraHeaders: Record<string, string>, castExpires?: number) {
-  if (item.root === 1) await checkRevoked();
+  // Durations only (the sign-out check, then each upstream hop), so devtools on the TV or phone show a slow start.
+  const timing: string[] = [];
+  let mark = Date.now(), hops = 0;
+  const lap = (name: string) => {const now = Date.now(); timing.push(name + ';dur=' + (now - mark)); mark = now;};
+  if (item.root === 1) {await checkRevoked(); lap('session');}
   const url = streamURL(item.url);
   const headers: Record<string, string> = {Accept: '*/*'};
   const range = req.headers.get('Range');
   if (range && /^bytes=\d*-\d*(,\d*-\d*)*$/.test(range)) headers.Range = range;
   const controller = new AbortController();
+  // Only the wait for the first response; afterwards the controller ends the body (hang-up, expiry, sign-out).
   const timeout = setTimeout(() => controller.abort(), 25000);
   let upstream: Response;
-  try {upstream = await safeFetch(url.href, {headers, signal: AbortSignal.any([req.signal, controller.signal])});}
+  try {upstream = await safeFetch(url.href, {headers, signal: AbortSignal.any([req.signal, controller.signal])}, 0, {onResponse: () => lap('hop' + ++hops)});}
   catch (e) {if (e instanceof ServiceError) throw e; throw new ServiceError(502, 'stream_unavailable', 'This channel could not be reached. Choose another channel or try again.');}
   finally {clearTimeout(timeout);}
+  const sharedHeaders = {...extraHeaders, 'Server-Timing': timing.join(', ')};
   if (!upstream.ok) {
     await upstream.body?.cancel();
     throw new ServiceError(upstream.status === 401 || upstream.status === 403 ? 403 : 502, 'stream_unavailable', 'This channel could not be loaded. Check your subscription or choose another channel.');
@@ -279,20 +287,71 @@ async function serveMedia(req: Request, item: {url: string; root?: 1; kind?: 'ts
     const text = await limitedText(upstream, 2 * 1024 * 1024);
     if (!text.trimStart().startsWith('#EXTM3U')) throw new ServiceError(502, 'invalid_media', 'The provider returned an invalid media playlist.');
     const output = await rewriteHLS(text, finalURL.href, next => sign(streamURL(next).href));
-    return new Response(output, {headers: {'Content-Type': 'application/vnd.apple.mpegurl', 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff', ...extraHeaders}});
+    return new Response(output, {headers: {'Content-Type': 'application/vnd.apple.mpegurl', 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff', ...sharedHeaders}});
   }
   // Only media types are served from this origin; anything else (for example upstream HTML) becomes inert bytes.
   // A raw MPEG-TS cast link is always video/mp2t: the provider labels its TS video/mp4, and the receiver relies on it.
   const mediaType = item.kind === 'ts' ? 'video/mp2t' : /^(?:video|audio)\/[a-z0-9.+-]+$|^application\/(?:vnd\.apple\.mpegurl|x-mpegurl|mp4|octet-stream)$/i.test(type.split(';')[0].trim()) ? type : type ? 'application/octet-stream' : 'video/mp2t';
-  const responseHeaders: Record<string, string> = {'Content-Type': mediaType, 'Content-Security-Policy': "sandbox; default-src 'none'", 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff', ...extraHeaders};
+  const responseHeaders: Record<string, string> = {'Content-Type': mediaType, 'Content-Security-Policy': "sandbox; default-src 'none'", 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff', ...sharedHeaders};
   for (const name of ['Content-Range', 'Accept-Ranges']) {const value = upstream.headers.get(name); if (value) responseHeaders[name] = value;}
-  const body = relayPlayerStream(upstream.body, controller);
-  return new Response(castExpires === undefined ? body : limitCastStream(body, controller, castExpires, checkRevoked), {status: upstream.status, headers: responseHeaders});
+  // A HEAD (some receivers probe the type first) is not playback, so it isn't logged as a live stream ending.
+  const cast = castExpires === undefined ? undefined : {expires: castExpires, checkRevoked, live: item.kind === 'ts' && req.method !== 'HEAD'};
+  const body = pipeMedia(upstream.body, controller, req.signal, cast);
+  const handoff = req.method === 'GET' ? mediaHandoff() : undefined;
+  if (body && handoff) {
+    handoff.body = body; handoff.status = upstream.status;
+    return new Response(null, {status: upstream.status, headers: {...responseHeaders, [MEDIA_HANDOFF_HEADER]: '1'}});
+  }
+  return new Response(body, {status: upstream.status, headers: responseHeaders});
+}
+// Vinext wraps every route response body in JavaScript streams of its own, so a media body returned through it would
+// still run JavaScript per chunk. In production, scripts/cloudflare-entry.mjs runs each media GET inside this store:
+// the native body is handed to the entry here, Vinext gets the same status and headers with no body, and the entry
+// puts the body back on the response it gets from Vinext. Without the store (tests, local preview) nothing changes.
+type MediaHandoff = {body?: ReadableStream<Uint8Array>; status?: number};
+const MEDIA_HANDOFF_HEADER = 'X-LumaNest-Media-Handoff';
+function mediaHandoff() {
+  const store = (globalThis as unknown as Record<symbol, {getStore(): MediaHandoff | undefined} | undefined>)[Symbol.for('lumanest.mediaHandoff')];
+  const slot = store?.getStore();
+  return slot && !slot.body ? slot : undefined;
+}
+// A live channel is one response that can stay open for hours, and Workers bill the CPU time of every JavaScript stream
+// hop against that one request until it is cut off. So the body is pumped natively into an IdentityTransformStream and
+// no JavaScript runs per chunk. A viewer hanging up cancels its readable side, and the pipe then cancels the upstream.
+//
+// A cast stream also enforces the link's expiry and signing out while it plays, not only when it starts. Aborting the
+// controller errors the pipe, which ends the TV's connection and the upstream request; the receiver reconnects and is
+// refused with 403 (expired) or 401 (signed out).
+const CAST_RECHECK_MS = 60000;
+type CastLimit = {expires: number; checkRevoked: () => Promise<void>; live: boolean};
+function pipeMedia(body: ReadableStream<Uint8Array> | null, upstream: AbortController, request: AbortSignal, cast?: CastLimit) {
+  if (!body) return null;
+  const output = new IdentityTransformStream();
+  let stopped: 'expired' | 'revoked' | undefined;
+  const stop = (reason: 'expired' | 'revoked') => {stopped ||= reason; upstream.abort();};
+  const expiry = cast ? setTimeout(() => stop('expired'), Math.max(0, cast.expires - Date.now())) : undefined;
+  // Only a confirmed sign-out stops the cast; a failed D1 read leaves it playing until the next check.
+  const recheck = cast ? setInterval(() => {cast.checkRevoked().catch(error => {if (error instanceof ServiceError) stop('revoked');});}, CAST_RECHECK_MS) : undefined;
+  const started = Date.now();
+  const ended = body.pipeTo(output.writable, {signal: upstream.signal}).then(() => 'clean', (error: unknown) => {
+    upstream.abort();
+    // With enable_request_signal a hang-up aborts the request's signal; its AbortError also reaches the pipe.
+    return stopped || (request.aborted || (error as {name?: unknown} | null)?.name === 'AbortError' ? 'abort' : 'error');
+  }).then(end => {
+    clearTimeout(expiry); clearInterval(recheck);
+    // Visible with `wrangler tail`: how long the TV's live channel ran and why it ended, without the link or line login.
+    if (cast?.live) console.log('lumanest_cast_stream_end', JSON.stringify({seconds: Math.round((Date.now() - started) / 1000), end}));
+  });
+  // A hang-up tears down the request's context; waitUntil lets the pipe settle so the timers stop and the end is logged.
+  try {workers.waitUntil?.(ended);} catch { /* not running in Workers */ }
+  return output.readable;
 }
 
 // ---------------------------------------------------------------- casting
 // A Chromecast or AirPlay receiver fetches media itself, without this browser's session cookie. A cast link is a
-// short-lived, cookie-free token for one channel, tied to the player session's id so signing out stops it.
+// short-lived, cookie-free token for one channel, tied to the player session's id so signing out stops it. It lasts
+// CAST_TTL_MS from when it is made, even past the web player's own sign-in expiry, so a cast started late in a sign-in
+// isn't cut short; a sign-out still ends it within CAST_RECHECK_MS.
 export const CAST_TTL_MS = 4 * 60 * 60 * 1000;
 export const castHeaders = {'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Range', 'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges'};
 // kind 'ts' marks a root link to a raw MPEG-TS live channel for LumaNest's own receiver (public/cast/receiver.js).
@@ -315,7 +374,7 @@ export async function createCast(req: Request, body: unknown) {
   try {item = await open<unknown>(raw, key, 'player-media');} catch {throw new ServiceError(403, 'stream_forbidden', 'This stream is no longer available. Refresh your channel list.');}
   if (!validMedia(item, binding) || item.root !== 1) throw new ServiceError(403, 'stream_forbidden', 'This stream belongs to another or expired player session.');
   const approved = streamURL(item.url).href;
-  const exp = Math.min(credentials.exp, Date.now() + CAST_TTL_MS);
+  const exp = Date.now() + CAST_TTL_MS;
   // LumaNest's own Cast receiver plays the channel's original MPEG-TS with mpegts.js. Google's Default Media
   // Receiver and AirPlay need HLS, so without the receiver field the link asks the provider for HLS as before.
   if (fields.receiver === 'lumanest' && transportStreamSource(approved)) {
@@ -340,24 +399,6 @@ export async function castMedia(req: Request) {
   };
   return serveMedia(req, cast, checkRevoked, async source =>
     castPath(source) + encodeURIComponent(await seal({url: source, sid: cast.sid, exp: cast.exp} satisfies CastMedia, key, 'player-cast')), castHeaders, cast.exp);
-}
-// A cast stream is one connection that can stay open for hours (a live.ts channel never ends), so the link's expiry
-// and signing out are enforced while it plays, not only when it starts. Cutting it ends the TV's connection; the
-// receiver reconnects and is refused with 403 (expired) or 401 (signed out).
-const CAST_RECHECK_MS = 60000;
-function limitCastStream(body: ReadableStream<Uint8Array> | null, upstream: AbortController, expires: number, checkRevoked: () => Promise<void>) {
-  if (!body) return body;
-  let end!: () => void;
-  // terminate() throws once the stream has already closed (a recheck can land just as the channel ends).
-  const limited = new TransformStream<Uint8Array, Uint8Array>({start(controller) {end = () => {try {controller.terminate();} catch { /* already closed */ }};}, flush: clearTimers});
-  const stop = () => {clearTimers(); end(); upstream.abort();};
-  const expiry = setTimeout(stop, Math.max(0, expires - Date.now()));
-  // Only a confirmed sign-out stops the cast; a failed D1 read leaves it playing until the next check.
-  const recheck = setInterval(() => {checkRevoked().catch(error => {if (error instanceof ServiceError) stop();});}, CAST_RECHECK_MS);
-  function clearTimers() {clearTimeout(expiry); clearInterval(recheck);}
-  // The relay aborts the upstream request when it fails or the TV hangs up; a stream that finishes reaches flush.
-  upstream.signal.addEventListener('abort', clearTimers, {once: true});
-  return body.pipeThrough(limited);
 }
 // Receivers pick a parser from the file extension in the path (Shaka on Chromecast, Chrome's Remote Playback), and
 // can't see one in a query token, so each cast link ends in a name with the upstream extension: /api/cast/live.m3u8?t=…

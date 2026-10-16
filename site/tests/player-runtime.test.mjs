@@ -19,18 +19,22 @@ test.before(async () => {
         import {POST as castPOST} from './app/api/player/cast/route.ts';
         import {GET as castGET, HEAD as castHEAD} from './app/api/cast/stream/route.ts';
         import {GET as castFileGET} from './app/api/cast/[file]/route.ts';
-        import {seal} from './lib/player-crypto.ts';
+        import {seal, open} from './lib/player-crypto.ts';
         import {PLAYER_COOKIE} from './lib/player.ts';
+        import {cleanup} from './lib/maintenance.ts';
         import {env} from 'cloudflare:workers';
         // Casts re-check sign-out once a minute; here every 200 ms, so a test can see an open cast stop.
         const setIntervalOnce = globalThis.setInterval.bind(globalThis);
         globalThis.setInterval = (callback, delay, ...args) => setIntervalOnce(callback, delay >= 60000 ? 200 : delay, ...args);
+        // Keeps console.log lines, which \`wrangler tail\` would show, for /test/logs.
+        const logged = [];
+        console.log = (...args) => {logged.push(args.join(' '));};
         export default {async fetch(request) {
           globalThis.__testHeaders = request.headers;
           const headers = new Headers(request.headers);
           const kind = headers.get('test-player-session');
           // A 'brief' player session expires 4 seconds after its first request.
-          if (kind === 'valid' || kind === 'revocable' || kind === 'brief') {
+          if (kind === 'valid' || kind === 'revocable' || kind === 'brief' || kind === 'swept') {
             const sessions = globalThis.__testPlayerSessions ||= {};
             sessions[kind] ||= await seal({username:'runtime-private-user',password:'runtime-secret-password',exp:Date.now()+(kind === 'brief' ? 4000 : 60000),sid:crypto.randomUUID()}, env.PLAYER_COOKIE_KEY, 'player-session');
             headers.set('Cookie', PLAYER_COOKIE + '=' + sessions[kind]);
@@ -38,6 +42,17 @@ test.before(async () => {
           // Miniflare rejects Origin on direct worker fetches; the test adds the same-site header here instead.
           if (headers.get('test-same-origin')) headers.set('Origin', new URL(request.url).origin);
           const pathname = new URL(request.url).pathname;
+          if (pathname === '/test/logs') return Response.json(logged.splice(0));
+          // Maintenance cleanup as if it ran at ?now= (it runs about every 15 minutes in production).
+          if (pathname === '/test/cleanup') return Response.json(await cleanup(Number(new URL(request.url).searchParams.get('now'))));
+          // Re-seals a cast link to expire sooner, as if it had been made hours ago.
+          if (pathname === '/test/shorten-cast') {
+            const params = new URL(request.url).searchParams, link = new URL(params.get('link'));
+            const item = await open(link.searchParams.get('t'), env.PLAYER_COOKIE_KEY, 'player-cast');
+            item.exp = Date.now() + Number(params.get('ms'));
+            link.searchParams.set('t', await seal(item, env.PLAYER_COOKIE_KEY, 'player-cast'));
+            return Response.json({url: link.href, expiresAt: item.exp});
+          }
           if (pathname === '/api/player/cast') return castPOST(new Request(request, {headers}));
           if (pathname === '/api/cast/stream') return castGET(new Request(request, {headers}));
           if (pathname.startsWith('/api/cast/')) return request.method === 'HEAD' ? castHEAD(new Request(request, {headers})) : castFileGET(new Request(request, {headers}));
@@ -52,19 +67,20 @@ test.before(async () => {
       builder.onLoad({filter:/.*/,namespace:'mock-framework'}, args => ({contents:args.path.endsWith('/headers') ? 'export async function headers(){return globalThis.__testHeaders || new Headers();}' : 'export function redirect(){throw new Error("Unexpected navigation");}',loader:'js'}));
     }}]
   });
+  // enable_request_signal as in production (scripts/prepare-cloudflare.mjs): a viewer hanging up aborts request.signal.
   runtime = new Miniflare({
     compatibilityDate:'2026-05-15', compatibilityFlags:['nodejs_compat'], cf:false,
     workers:[{
-      name:'player-runtime', compatibilityDate:'2026-05-15', compatibilityFlags:['nodejs_compat'], modules:true, script:bundle.outputFiles[0].text,scriptPath:fileURLToPath(new URL('../player-runtime-worker.js',import.meta.url)),d1Databases:{DB:'player-owner-default'},
+      name:'player-runtime', compatibilityDate:'2026-05-15', compatibilityFlags:['nodejs_compat','enable_request_signal'], modules:true, script:bundle.outputFiles[0].text,scriptPath:fileURLToPath(new URL('../player-runtime-worker.js',import.meta.url)),d1Databases:{DB:'player-owner-default'},
       bindings:{ADMIN_USER_ID:'runtime-owner',PLAYER_COOKIE_KEY:'a'.repeat(64),CUSTOMER_PORTAL_URL:'https://tv.lumanest.tv',PLAYER_ALLOWED_HOSTS:'tv.lumanest.tv',PLAYER_ALLOWED_HTTP_HOSTS:'tv.lumanest.tv,turbobunny.net,38.190.178.54'},outboundService:'mock-player-upstream'
     },{
-      name:'player-runtime-mapped', compatibilityDate:'2026-05-15', compatibilityFlags:['nodejs_compat'], modules:true, script:bundle.outputFiles[0].text,scriptPath:fileURLToPath(new URL('../player-runtime-worker.js',import.meta.url)),d1Databases:{DB:'player-owner-mapped'},
+      name:'player-runtime-mapped', compatibilityDate:'2026-05-15', compatibilityFlags:['nodejs_compat','enable_request_signal'], modules:true, script:bundle.outputFiles[0].text,scriptPath:fileURLToPath(new URL('../player-runtime-worker.js',import.meta.url)),d1Databases:{DB:'player-owner-mapped'},
       bindings:{ADMIN_USER_ID:'runtime-owner',PLAYER_COOKIE_KEY:'a'.repeat(64),CUSTOMER_PORTAL_URL:'https://tv.lumanest.tv',PLAYER_ALLOWED_HOSTS:'tv.lumanest.tv',PLAYER_ALLOWED_HTTP_HOSTS:'tv.lumanest.tv,turbobunny.net,38.190.178.54,media.lumanest.tv',PLAYER_STREAM_ORIGIN_MAP:JSON.stringify({'http://38.190.178.54':'http://media.lumanest.tv'})},outboundService:'mock-player-upstream'
     },{
-      name:'player-runtime-public-alias', compatibilityDate:'2026-05-15', compatibilityFlags:['nodejs_compat'], modules:true, script:bundle.outputFiles[0].text,scriptPath:fileURLToPath(new URL('../player-runtime-worker.js',import.meta.url)),d1Databases:{DB:'player-owner-public-alias'},
+      name:'player-runtime-public-alias', compatibilityDate:'2026-05-15', compatibilityFlags:['nodejs_compat','enable_request_signal'], modules:true, script:bundle.outputFiles[0].text,scriptPath:fileURLToPath(new URL('../player-runtime-worker.js',import.meta.url)),d1Databases:{DB:'player-owner-public-alias'},
       bindings:{ADMIN_USER_ID:'runtime-owner',PLAYER_COOKIE_KEY:'a'.repeat(64),CUSTOMER_PORTAL_URL:'https://portal.lumanest.tv',CUSTOMER_PORTAL_PRIMARY_URL:'https://tv.lumanest.tv',PLAYER_ALLOWED_HOSTS:'tv.lumanest.tv,portal.lumanest.tv',PLAYER_ALLOWED_HTTP_HOSTS:'tv.lumanest.tv,portal.lumanest.tv,turbobunny.net,38.190.178.54,media.lumanest.tv',PLAYER_STREAM_ORIGIN_MAP:JSON.stringify({'http://38.190.178.54':'http://media.lumanest.tv'})},outboundService:'mock-player-upstream'
     },{
-      name:'player-runtime-relay', compatibilityDate:'2026-05-15', compatibilityFlags:['nodejs_compat'], modules:true, script:bundle.outputFiles[0].text,scriptPath:fileURLToPath(new URL('../player-runtime-worker.js',import.meta.url)),d1Databases:{DB:'player-owner-relay'},
+      name:'player-runtime-relay', compatibilityDate:'2026-05-15', compatibilityFlags:['nodejs_compat','enable_request_signal'], modules:true, script:bundle.outputFiles[0].text,scriptPath:fileURLToPath(new URL('../player-runtime-worker.js',import.meta.url)),d1Databases:{DB:'player-owner-relay'},
       bindings:{ADMIN_USER_ID:'runtime-owner',PLAYER_COOKIE_KEY:'a'.repeat(64),CUSTOMER_PORTAL_URL:'https://tv.lumanest.tv',PLAYER_ALLOWED_HOSTS:'tv.lumanest.tv',PLAYER_ALLOWED_HTTP_HOSTS:'tv.lumanest.tv,turbobunny.net,38.190.178.54,media.lumanest.tv',PLAYER_STREAM_ORIGIN_MAP:JSON.stringify({'http://38.190.178.54':'http://media.lumanest.tv'}),PLAYER_STREAM_RELAY_URL:'https://streams.lumanest.tv/relay',PLAYER_STREAM_RELAY_KEY:'b'.repeat(64)},outboundService:'mock-player-upstream'
     },{
       name:'mock-player-upstream', modules:true, compatibilityFlags:['streams_enable_constructors'],
@@ -82,7 +98,7 @@ test.before(async () => {
           }
           if (url.pathname === '/m3u') {
             if (url.origin !== 'https://tv.lumanest.tv' || url.searchParams.get('u') !== 'runtime-private-user' || url.searchParams.get('p') !== 'runtime-secret-password') return new Response('wrong-playlist-connection',{status:404});
-            return new Response('#EXTM3U\\n#EXTINF:-1,First\\nhttp://tv.lumanest.tv/live/runtime-private-user/runtime-secret-password/1?token=runtime-private-token\\n#EXTINF:-1,Private second channel\\nhttps://tv.lumanest.tv/live/runtime-private-user/runtime-secret-password/2.m3u8?token=runtime-private-token\\n#EXTINF:-1,Unapproved provider source\\nhttps://127.0.0.1/private-stream?token=runtime-private-token\\n#EXTINF:-1,Blocked redirect\\nhttps://tv.lumanest.tv/live/runtime-private-user/runtime-secret-password/3?token=runtime-private-token\\n#EXTINF:-1,Rotating provider stream\\nhttp://136.148.65.42/live/runtime-private-user/runtime-secret-password/42?token=runtime-private-token\\n#EXTINF:-1,Other public stream\\nhttp://8.8.8.8/live/runtime-private-user/runtime-secret-password/42?token=runtime-private-token\\n#EXTINF:-1,Relay HLS playlist\\nhttp://136.148.65.43/live/runtime-private-user/runtime-secret-password/playlist.m3u8?token=runtime-private-token\\n#EXTINF:-1,Rotating provider redirect\\nhttps://tv.lumanest.tv/live/runtime-private-user/runtime-secret-password/4?token=runtime-private-token\\n#EXTINF:-1,Legacy direct provider\\nhttp://38.190.178.54/live/runtime-private-user/runtime-secret-password/42?token=runtime-private-token\\n#EXTINF:-1,Raw TS live\\nhttps://tv.lumanest.tv/live/runtime-private-user/runtime-secret-password/5.ts?token=runtime-private-token\\n#EXTINF:-1,Endless TS live\\nhttps://tv.lumanest.tv/live/runtime-private-user/runtime-secret-password/6.ts?token=runtime-private-token', {headers:{'Content-Type':'text/plain'}});
+            return new Response('#EXTM3U\\n#EXTINF:-1,First\\nhttp://tv.lumanest.tv/live/runtime-private-user/runtime-secret-password/1?token=runtime-private-token\\n#EXTINF:-1,Private second channel\\nhttps://tv.lumanest.tv/live/runtime-private-user/runtime-secret-password/2.m3u8?token=runtime-private-token\\n#EXTINF:-1,Unapproved provider source\\nhttps://127.0.0.1/private-stream?token=runtime-private-token\\n#EXTINF:-1,Blocked redirect\\nhttps://tv.lumanest.tv/live/runtime-private-user/runtime-secret-password/3?token=runtime-private-token\\n#EXTINF:-1,Rotating provider stream\\nhttp://136.148.65.42/live/runtime-private-user/runtime-secret-password/42?token=runtime-private-token\\n#EXTINF:-1,Other public stream\\nhttp://8.8.8.8/live/runtime-private-user/runtime-secret-password/42?token=runtime-private-token\\n#EXTINF:-1,Relay HLS playlist\\nhttp://136.148.65.43/live/runtime-private-user/runtime-secret-password/playlist.m3u8?token=runtime-private-token\\n#EXTINF:-1,Rotating provider redirect\\nhttps://tv.lumanest.tv/live/runtime-private-user/runtime-secret-password/4?token=runtime-private-token\\n#EXTINF:-1,Legacy direct provider\\nhttp://38.190.178.54/live/runtime-private-user/runtime-secret-password/42?token=runtime-private-token\\n#EXTINF:-1,Raw TS live\\nhttps://tv.lumanest.tv/live/runtime-private-user/runtime-secret-password/5.ts?token=runtime-private-token\\n#EXTINF:-1,Endless TS live\\nhttps://tv.lumanest.tv/live/runtime-private-user/runtime-secret-password/6.ts?token=runtime-private-token\\n#EXTINF:-1,Failing TS live\\nhttps://tv.lumanest.tv/live/runtime-private-user/runtime-secret-password/7.ts?token=runtime-private-token', {headers:{'Content-Type':'text/plain'}});
           }
           if (url.pathname === '/live/runtime-private-user/runtime-secret-password/2.m3u8' && url.search === '?token=runtime-private-token' && url.origin === 'https://tv.lumanest.tv') return new Response('#EXTM3U\\nprivate-second-stream-body',{headers:{'Content-Type':'application/vnd.apple.mpegurl'}});
           if (url.pathname === '/live/runtime-private-user/runtime-secret-password/3' && url.origin === 'https://tv.lumanest.tv') return new Response(null,{status:302,headers:{Location:'https://private-user:private-password@blocked-provider.example:8443/private-path?secret=private-query'}});
@@ -94,6 +110,11 @@ test.before(async () => {
           if (url.pathname === '/live/runtime-private-user/runtime-secret-password/6.ts' && url.search === '?token=runtime-private-token' && url.origin === 'https://tv.lumanest.tv') {
             let timer;
             return new Response(new ReadableStream({start(controller) {timer = setInterval(() => {try {controller.enqueue(new TextEncoder().encode('endless-ts-chunk')); globalThis.liveChunks = (globalThis.liveChunks || 0) + 1;} catch {clearInterval(timer);}}, 50);}, cancel() {clearInterval(timer);}}),{headers:{'Content-Type':'video/mp4'}});
+          }
+          // A live channel whose connection fails after a few chunks.
+          if (url.pathname === '/live/runtime-private-user/runtime-secret-password/7.ts' && url.search === '?token=runtime-private-token' && url.origin === 'https://tv.lumanest.tv') {
+            let timer, sent = 0;
+            return new Response(new ReadableStream({start(controller) {timer = setInterval(() => {if (++sent > 3) {clearInterval(timer); controller.error(new Error('provider connection reset'));} else controller.enqueue(new TextEncoder().encode('failing-ts-chunk'));}, 50);}, cancel() {clearInterval(timer);}}),{headers:{'Content-Type':'video/mp4'}});
           }
           if (url.pathname === '/live-chunks') return new Response(String(globalThis.liveChunks || 0));
           if (url.pathname !== '/live/runtime-private-user/runtime-secret-password/1' || url.search !== '?token=runtime-private-token') return new Response('wrong-stream-path-or-query',{status:400});
@@ -376,40 +397,150 @@ test('LumaNest\'s Cast receiver gets a raw MPEG-TS live.ts link labelled video/m
   assert.equal(signedOut.status,401);assert.equal(signedOut.headers.get('Access-Control-Allow-Origin'),'*');
 });
 
+// Lines the worker logged since the last call, waiting up to 3 s for `count` of them (a stream's end is logged once it settles).
+async function loggedLines(worker,count=0){
+  const lines=[];
+  for(const started=Date.now();;await new Promise(resolve=>setTimeout(resolve,50))){
+    lines.push(...await (await worker.fetch('https://lumanest.tv/test/logs')).json());
+    if(lines.length>=count||Date.now()-started>3000)return lines;
+  }
+}
+const streamEnd=line=>{
+  const match=/^lumanest_cast_stream_end (\{"seconds":\d+,"end":"(clean|abort|error|expired|revoked)"\})$/.exec(line);
+  assert.ok(match,line);
+  return JSON.parse(match[1]);
+};
+
 test('an open live.ts cast stops when the player signs out or the cast link expires, and its provider connection closes',{timeout:20000},async()=>{
   const worker=await runtime.getWorker('player-runtime'),upstream=await runtime.getWorker('mock-player-upstream');
-  const castLive=async headers=>{
+  const createLive=async headers=>{
     const {channels}=await (await worker.fetch('https://lumanest.tv/api/player/channels',{headers})).json();
     const created=await worker.fetch('https://lumanest.tv/api/player/cast',{method:'POST',headers:{...headers,'test-same-origin':'1','Content-Type':'application/json'},body:JSON.stringify({token:channels[10].token,receiver:'lumanest'})});
     const link=await created.json();assert.match(link.url,/\/api\/cast\/live\.ts\?t=/);
-    const played=await worker.fetch(link.url);assert.equal(played.status,200);
+    return link;
+  };
+  const play=async url=>{
+    const played=await worker.fetch(url);assert.equal(played.status,200);
     const reader=played.body.getReader();
     assert.equal((await reader.read()).done,false);
-    return {link,reader};
+    return reader;
   };
   // Resolves once the server ends the TV's connection, whether it closes or fails.
   const untilCut=async reader=>{try {while(!(await reader.read()).done);} catch {}};
   const chunksSent=async()=>Number(await (await upstream.fetch('https://tv.lumanest.tv/live-chunks')).text());
-  const assertProviderClosed=async()=>{
+  // A hang-up takes a moment to travel from this client through Miniflare to the worker, hence `settle`.
+  const assertProviderClosed=async(settle=0)=>{
+    await new Promise(resolve=>setTimeout(resolve,settle));
     const sent=await chunksSent();await new Promise(resolve=>setTimeout(resolve,300));
     assert.equal(await chunksSent(),sent);
   };
+  await loggedLines(worker);
 
   const signedIn={'test-player-session':'revocable'};
-  const live=await castLive(signedIn);
+  const live=await createLive(signedIn);
+  const reader=await play(live.url);
   assert.equal((await worker.fetch('https://lumanest.tv/api/player/logout',{method:'POST',headers:{...signedIn,'test-same-origin':'1','Content-Type':'application/json'},body:'{}'})).status,200);
   const signedOutAt=Date.now();
-  await untilCut(live.reader);
+  await untilCut(reader);
   assert.ok(Date.now()-signedOutAt<5000);
   await assertProviderClosed();
-  assert.equal((await worker.fetch(live.link.url)).status,401);
+  assert.equal((await worker.fetch(live.url)).status,401);
+  assert.equal(streamEnd((await loggedLines(worker,1))[0]).end,'revoked');
 
-  const brief=await castLive({'test-player-session':'brief'});
-  assert.ok(brief.link.expiresAt<=Date.now()+4000);
-  await untilCut(brief.reader);
-  assert.ok(Date.now()>=brief.link.expiresAt-1000);
+  // The link lasts 4 hours from the cast, not until the player's sign-in expires (4 s after it starts for 'brief').
+  const brief={'test-player-session':'brief'};
+  const lasting=await createLive(brief);
+  assert.ok(lasting.expiresAt>Date.now()+4*60*60*1000-60000);
+  // A TV hanging up ends the provider connection too.
+  const hungUp=await play(lasting.url);
+  await hungUp.cancel();
+  await assertProviderClosed(300);
+  assert.equal(streamEnd((await loggedLines(worker,1))[0]).end,'abort');
+
+  // Re-sealed to end in 2 s, as if cast hours ago: the open stream is cut at expiry and reconnecting is refused.
+  const short=await (await worker.fetch('https://lumanest.tv/test/shorten-cast?ms=2000&link='+encodeURIComponent(lasting.url))).json();
+  const expiring=await play(short.url);
+  await untilCut(expiring);
+  assert.ok(Date.now()>=short.expiresAt-500);
   await assertProviderClosed();
-  assert.equal((await worker.fetch(brief.link.url)).status,403);
+  assert.equal((await worker.fetch(short.url)).status,403);
+  const expired=streamEnd((await loggedLines(worker,1))[0]);
+  assert.equal(expired.end,'expired');assert.ok(expired.seconds<=3,String(expired.seconds));
+
+  // Once the brief sign-in has expired, the 4-hour link still plays and keeps playing through sign-out rechecks.
+  while((await worker.fetch('https://lumanest.tv/api/player/channels',{headers:brief})).status!==401)await new Promise(resolve=>setTimeout(resolve,200));
+  const stillPlaying=await play(lasting.url);
+  for(const until=Date.now()+700;Date.now()<until;)assert.equal((await stillPlaying.read()).done,false);
+  await stillPlaying.cancel();
+  await assertProviderClosed(300);
+  const lines=await loggedLines(worker,1);
+  assert.equal(lines.length,1);assert.equal(streamEnd(lines[0]).end,'abort');
+});
+
+test('a live.ts cast logs one line, with no link or login, when its provider ends or fails the stream',{timeout:10000},async()=>{
+  const worker=await runtime.getWorker('player-runtime-relay'),headers={'test-player-session':'valid'};
+  const {channels}=await (await worker.fetch('https://lumanest.tv/api/player/channels',{headers})).json();
+  const cast=async index=>(await (await worker.fetch('https://lumanest.tv/api/player/cast',{method:'POST',headers:{...headers,'test-same-origin':'1','Content-Type':'application/json'},body:JSON.stringify({token:channels[index].token,receiver:'lumanest'})})).json()).url;
+  await loggedLines(worker);
+  const finished=await worker.fetch(await cast(9));
+  assert.equal(await finished.text(),'raw-ts-live-body');
+  // Timings carry durations only: the sign-out check, then the provider hop.
+  assert.match(finished.headers.get('Server-Timing'),/^session;dur=\d+, hop1;dur=\d+$/);
+  const failed=await worker.fetch(await cast(11));
+  assert.equal(failed.status,200);
+  const reader=failed.body.getReader();
+  let received='';
+  // The response is cut short; Miniflare may report that as a plain end, and a TV sees EARLY_EOF either way.
+  try {for(let read;!(read=await reader.read()).done;)received+=new TextDecoder().decode(read.value);} catch {}
+  assert.equal(received,'failing-ts-chunk'.repeat(3));
+  // A HEAD is not playback and is not logged.
+  assert.equal((await worker.fetch(await cast(9),{method:'HEAD'})).status,200);
+  const lines=await loggedLines(worker,2);
+  await new Promise(resolve=>setTimeout(resolve,300));
+  lines.push(...await loggedLines(worker));
+  assert.deepEqual(lines.map(line=>streamEnd(line).end),['clean','error']);
+  for(const secret of ['runtime-private-user','runtime-secret-password','runtime-private-token','/live/','?t=','tv.lumanest.tv'])assert.ok(!lines.join('\n').includes(secret),secret);
+});
+
+test('the web player\'s live stream is pumped natively: delivered, logged nowhere, and a hang-up closes the provider connection',{timeout:10000},async()=>{
+  const worker=await runtime.getWorker('player-runtime-relay'),upstream=await runtime.getWorker('mock-player-upstream'),headers={'test-player-session':'valid'};
+  const {channels}=await (await worker.fetch('https://lumanest.tv/api/player/channels',{headers})).json();
+  const chunksSent=async()=>Number(await (await upstream.fetch('https://tv.lumanest.tv/live-chunks')).text());
+  await loggedLines(worker);
+  const played=await worker.fetch('https://lumanest.tv/api/player/stream?token='+encodeURIComponent(channels[10].token),{headers});
+  assert.equal(played.status,200);assert.equal(played.headers.get('Content-Type'),'video/mp4');
+  assert.match(played.headers.get('Server-Timing'),/^session;dur=\d+, hop1;dur=\d+$/);
+  const reader=played.body.getReader();
+  let text='';
+  while(text.length<'endless-ts-chunk'.length*3)text+=new TextDecoder().decode((await reader.read()).value);
+  assert.match(text,/^(endless-ts-chunk)+$/);
+  await reader.cancel();
+  // Give the hang-up a moment to travel from this client through Miniflare to the worker.
+  await new Promise(resolve=>setTimeout(resolve,300));
+  const sent=await chunksSent();await new Promise(resolve=>setTimeout(resolve,300));
+  assert.equal(await chunksSent(),sent);
+  assert.deepEqual(await loggedLines(worker),[]);
+});
+
+test('a signed-out session\'s cast links stay refused after maintenance cleanup passes the sign-in\'s expiry',async()=>{
+  const worker=await runtime.getWorker('player-runtime'),headers={'test-player-session':'swept'};
+  const {channels,expiresAt:signInExpires}=await (await worker.fetch('https://lumanest.tv/api/player/channels',{headers})).json();
+  const cast=async(index,receiver)=>(await (await worker.fetch('https://lumanest.tv/api/player/cast',{method:'POST',headers:{...headers,'test-same-origin':'1','Content-Type':'application/json'},body:JSON.stringify({token:channels[index].token,receiver})})).json());
+  // A raw MPEG-TS link for LumaNest's receiver and an HLS link for other receivers; both outlive the sign-in.
+  const links=[await cast(9,'lumanest'),await cast(1)];
+  for(const link of links)assert.ok(link.expiresAt>signInExpires);
+  assert.equal((await worker.fetch('https://lumanest.tv/api/player/logout',{method:'POST',headers:{...headers,'test-same-origin':'1','Content-Type':'application/json'},body:'{}'})).status,200);
+  const refused=async()=>{for(const link of links){const response=await worker.fetch(link.url);assert.equal(response.status,401,link.url.split('?')[0]);await response.body?.cancel();}};
+  await refused();
+  // Cleanup deletes rows whose `expires` has passed. Run just after the sign-in expired, it must keep this sign-out.
+  assert.equal((await (await worker.fetch('https://lumanest.tv/test/cleanup?now='+(signInExpires+1))).json()).player_revoked_sessions,0);
+  await refused();
+  // And still just before the last of its links expires.
+  await (await worker.fetch('https://lumanest.tv/test/cleanup?now='+(Math.max(...links.map(link=>link.expiresAt))-1))).json();
+  await refused();
+  // The row is kept for exactly as long as a cast link made at the end of the sign-in could play.
+  const database=await runtime.getD1Database('DB','player-runtime');
+  assert.equal(await database.prepare('SELECT COUNT(*) AS count FROM player_revoked_sessions WHERE expires=?').bind(signInExpires+4*60*60*1000).first('count'),1);
 });
 
 test('the Cast receiver serves the installed mpegts.js build unchanged, with its license notices',async()=>{

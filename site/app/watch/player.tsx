@@ -57,6 +57,12 @@ export default function Player({portal, support, castAppId}: {portal: string; su
   // It stays stopped after casting ends until the viewer presses play.
   const [castHold, setCastHold] = useState(false);
   const [casting, setCasting] = useState(false);
+  // From the 'Cast to TV' tap until the channel's LOAD goes out to the TV (castHold takes over then) or no session came
+  // of it, this page's stream is stopped too, so the line is free when the TV connects. It plays again if the viewer
+  // closed the TV picker.
+  const [castPending, setCastPending] = useState(false);
+  // After a channel didn't reach the TV: false when sending it again can't help (the TV can't play this channel).
+  const [castRetryable, setCastRetryable] = useState(true);
   const castEnded = useCallback(() => setCasting(false), []);
   // The Cast session is followed for the whole signed-in page: while one is live, nothing plays here.
   const {available: castAvailable, device: castDevice, checked: castChecked, stop: stopCast} = useCastSession(Boolean(username), castAppId, castEnded);
@@ -194,9 +200,24 @@ export default function Player({portal, support, castAppId}: {portal: string; su
   /** Before a channel goes to a TV: tear down this page's stream now, so mpegts.js/hls.js stop downloading at once. */
   const castStarted = useCallback(() => {
     stopLocal.current?.();
-    setCastHold(true); setCasting(true);
+    setCastHold(true); setCasting(true); setCastRetryable(true);
     setPlayError(''); setQualities([]); setQuality(-1);
   }, []);
+  /**
+   * The channel didn't reach the TV, but the Cast session goes on; nothing plays here. The page offers to send it again
+   * or, when the TV can't play it, to play it here instead.
+   */
+  const castFailed = useCallback((retryable: boolean) => {setCastHold(true); setCasting(false); setCastRetryable(retryable);}, []);
+  /**
+   * Plays the selected channel here after casting ended, or instead of on the TV when the TV can't play it. That ends
+   * the Cast session first, so the line streams only once.
+   */
+  function playHere() {
+    if (castLive) stopCast();
+    setCastHold(false);
+  }
+  /** Sending a channel found the player session expired: sign in again. The TV keeps playing what it has. */
+  const castSignedOut = useCallback(() => clearSession(SESSION_EXPIRED), [clearSession]);
   /** Locking hides adult categories at once, stopping an adult channel that is playing. */
   function lockAdult() {
     setAdultUnlocked(false);
@@ -210,7 +231,7 @@ export default function Player({portal, support, castAppId}: {portal: string; su
     let engine: Hls | null = null;
     let recoveredMedia = false;
     const element = video.current;
-    if (!element || !selected?.token || castHold || castLive || !castChecked) return;
+    if (!element || !selected?.token || castHold || castLive || castPending || !castChecked) return;
     const playbackController = new AbortController();
     const playback = createPlaybackSession(element, {
       status: setStatus, error: setPlayError,
@@ -307,7 +328,7 @@ export default function Player({portal, support, castAppId}: {portal: string; su
       if (stopLocal.current === teardown) stopLocal.current = null;
       teardown();
     };
-  }, [selected, retry, clearSession, streamFormat, castHold, castLive, castChecked]);
+  }, [selected, retry, clearSession, streamFormat, castHold, castLive, castPending, castChecked]);
 
   async function fullscreen() {
     const element = video.current as (HTMLVideoElement & {webkitEnterFullscreen?: () => void}) | null;
@@ -366,11 +387,11 @@ export default function Player({portal, support, castAppId}: {portal: string; su
     return () => window.removeEventListener('keydown', shortcut);
   });
 
-  // Local playback also waits while a Cast session is live (the channel is on its way to the TV) and, right after
-  // the page loads, until Chrome has had its chance to rejoin a session that is still running.
-  const castWaiting = !castHold && (castLive || !castChecked);
+  // Local playback also waits while a Cast session is live or starting (the channel is on its way to the TV) and,
+  // right after the page loads, until Chrome has had its chance to rejoin a session that is still running.
+  const castWaiting = !castHold && (castLive || castPending || !castChecked);
   const connecting = selected && !castHold && !playError && (castWaiting || ['Connecting…', 'Reconnecting…', 'Buffering…'].includes(status));
-  const shownStatus = castHold ? (casting ? 'Playing on your TV' : 'Casting ended') : castWaiting ? 'Connecting…' : status;
+  const shownStatus = castHold ? (casting ? 'Playing on your TV' : castLive ? 'Not on your TV' : 'Casting ended') : castPending ? 'Connecting to your TV…' : castWaiting ? 'Connecting…' : status;
 
   return <div className="watch-shell">
     <SiteHeader portal={portal} current="/watch" actions={username ? <button type="button" onClick={logout} disabled={signingOut}>{signingOut ? 'Signing out…' : 'Sign out'}</button> : undefined}/>
@@ -393,12 +414,12 @@ export default function Player({portal, support, castAppId}: {portal: string; su
           <div className="video-wrap" ref={viewingArea}>
             <video key={(selected?.token || 'empty') + ':' + streamFormat + ':' + retry} ref={video} aria-label={selected ? 'Watching ' + selected.name : 'LumaNest TV video player'} controls={!connecting} playsInline x-webkit-airplay="allow" preload="none"/>
             {!selected && <div className="video-empty"><span aria-hidden="true">▶</span><h2>The night is yours.</h2>{resume ? <button type="button" className="button primary watch-resume" onClick={() => choose(resume)}>Continue with {resume.name} ▶</button> : <p>Choose a channel from your lineup to start watching.</p>}</div>}
-            {selected && castHold && <div className="video-empty watch-cast-hold"><span aria-hidden="true">📺</span><h2>{casting ? 'Playing on your TV' : 'Casting ended'}</h2>{casting ? <p>{selected.name} is on your TV. This screen stays off so your line streams only once.</p> : <button type="button" className="button primary watch-resume" onClick={() => setCastHold(false)}>Play {selected.name} here ▶</button>}</div>}
+            {selected && castHold && <div className="video-empty watch-cast-hold"><span aria-hidden="true">📺</span><h2>{shownStatus}</h2>{casting ? <p>{selected.name} is on your TV. This screen stays off so your line streams only once.</p> : castLive && castRetryable ? <button type="button" className="button primary watch-resume" onClick={() => choose(selected)}>Send {selected.name} to your TV ▶</button> : <button type="button" className="button primary watch-resume" onClick={playHere}>Play {selected.name} here ▶</button>}</div>}
             {connecting && <div className="watch-loading"><span className="watch-spinner" aria-hidden="true"/><span>{shownStatus}</span></div>}
             {selected && !castHold && !castWaiting && !playError && status === 'Press play to start' && <div className="watch-start"><button className="button primary" onClick={() => startPlayback.current?.()}>Play {selected.name} ▶</button></div>}
           </div>
           <div className="now-playing"><div><small>NOW PLAYING</small><h2>{selected?.name || 'Make yourself at home.'}</h2><p>{selected?.group || 'Your channels are waiting.'}</p></div><div><span className="playback-status" role="status" aria-live="polite">{selected ? shownStatus : 'Choose a channel'}</span>{selected && <><button className="small-button" onClick={stopPlayback}>Stop playback ■</button><button className="small-button" aria-keyshortcuts="F" onClick={fullscreen}>Fullscreen ⛶</button></>}</div></div>
-          {selected && <div className="watch-player-tools"><div className="watch-channel-navigation"><button className="small-button" aria-label="Previous channel in this lineup" disabled={selectedIndex <= 0} onClick={() => choose(playable[selectedIndex - 1])}>← Previous</button><button className="small-button" aria-label="Next channel in this lineup" disabled={selectedIndex < 0 || selectedIndex >= playable.length - 1} onClick={() => choose(playable[selectedIndex + 1])}>Next →</button></div>{qualities.length > 1 && <label className="quality-select">Picture quality<select value={quality} onChange={event => {const next = Number(event.target.value); setQuality(next); if (hls.current) hls.current.currentLevel = next;}}><option value={-1}>Automatic</option>{qualities.map(item => <option key={item.index} value={item.index}>{item.height ? item.height + 'p' : 'Quality ' + (item.index + 1)}</option>)}</select></label>}<SubtitleControls key={(selected.token || '') + ':' + streamFormat + ':' + retry} video={video} engine={engine} supported={streamFormat !== 'mpegts'}/>{selected.token && <CastControls token={selected.token} name={selected.name} format={streamFormat} video={video} castAppId={castAppId} castAvailable={castAvailable} castDevice={castDevice} onCastStart={castStarted} onCastStop={stopCast}/>}</div>}
+          {selected && <div className="watch-player-tools"><div className="watch-channel-navigation"><button className="small-button" aria-label="Previous channel in this lineup" disabled={selectedIndex <= 0} onClick={() => choose(playable[selectedIndex - 1])}>← Previous</button><button className="small-button" aria-label="Next channel in this lineup" disabled={selectedIndex < 0 || selectedIndex >= playable.length - 1} onClick={() => choose(playable[selectedIndex + 1])}>Next →</button></div>{qualities.length > 1 && <label className="quality-select">Picture quality<select value={quality} onChange={event => {const next = Number(event.target.value); setQuality(next); if (hls.current) hls.current.currentLevel = next;}}><option value={-1}>Automatic</option>{qualities.map(item => <option key={item.index} value={item.index}>{item.height ? item.height + 'p' : 'Quality ' + (item.index + 1)}</option>)}</select></label>}<SubtitleControls key={(selected.token || '') + ':' + streamFormat + ':' + retry} video={video} engine={engine} supported={streamFormat !== 'mpegts'}/>{selected.token && <CastControls channel={selected.id} token={selected.token} name={selected.name} format={streamFormat} attempt={retry} video={video} castAppId={castAppId} castAvailable={castAvailable} castDevice={castDevice} onCastPending={setCastPending} onCastStart={castStarted} onCastFailed={castFailed} onSessionExpired={castSignedOut} onCastStop={stopCast}/>}</div>}
           {playError && <div className="watch-error" role="alert"><p>{playError}</p><button className="small-button" onClick={() => setRetry(current => current + 1)}>Try this channel again</button></div>}
           <div className="watch-bottom"><p>Playback uses one of your plan’s simultaneous screens. Available channels and formats depend on your line.</p><div className="watch-bottom-links"><button type="button" className="watch-shortcuts-open" aria-keyshortcuts="Shift+?" onClick={() => shortcutsDialog.current?.showModal()}>Keyboard shortcuts</button>{(hasAdult || adultUnlocked) && <AdultLock unlocked={adultUnlocked} onUnlock={() => {setAdultUnlocked(true); setAnnouncement('Adult content unlocked');}} onLock={lockAdult}/>}<a href={'mailto:' + support}>Need a hand? Contact support ↗</a></div></div>
           <span className="sr-only" role="status">{announcement}</span>
