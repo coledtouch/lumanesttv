@@ -4,6 +4,9 @@ import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import type Hls from 'hls.js';
 import type mpegts from 'mpegts.js';
 import CastControls from './cast-controls';
+import SubtitleControls from './subtitle-controls';
+import AdultLock from './adult-lock';
+import {isAdultGroup} from '../../lib/player-data';
 import {createPlayerStreamLoader} from '../../lib/player-stream-loader';
 import {createPlaybackSession} from '../../lib/player-playback-session';
 import {playerStreamError} from '../../lib/player-error';
@@ -47,6 +50,9 @@ export default function Player({portal, support}: {portal: string; support: stri
   const [showPassword, setShowPassword] = useState(false);
   const [lastChannel, setLastChannel] = useState('');
   const [announcement, setAnnouncement] = useState('');
+  const [engine, setEngine] = useState<Hls | null>(null);
+  // Adult categories are hidden until unlocked with this browser's passcode; unlocking lasts until the page reloads.
+  const [adultUnlocked, setAdultUnlocked] = useState(false);
   const video = useRef<HTMLVideoElement>(null);
   const viewingArea = useRef<HTMLDivElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -58,7 +64,7 @@ export default function Player({portal, support}: {portal: string; support: stri
 
   const clearSession = useCallback((message = '') => {
     setUsername(''); setChannels([]); setSelected(null); setDetectedStream(null); setExpiresAt(null);
-    setQuery(''); setGroup('All channels'); setFavoriteOnly(false);
+    setQuery(''); setGroup('All channels'); setFavoriteOnly(false); setAdultUnlocked(false);
     setPlayError(''); setStatus('Choose a channel'); setError(message);
   }, []);
 
@@ -143,18 +149,21 @@ export default function Player({portal, support}: {portal: string; support: stri
     });
   }
 
-  const groups = useMemo(() => Array.from(new Set(channels.map(channel => channel.group))).sort((a, b) => a.localeCompare(b)), [channels]);
+  const hasAdult = useMemo(() => channels.some(channel => isAdultGroup(channel.group)), [channels]);
+  // Everything below (categories, search, favorites, resume) only ever sees the channels the lock allows.
+  const visible = useMemo(() => adultUnlocked || !hasAdult ? channels : channels.filter(channel => !isAdultGroup(channel.group)), [channels, adultUnlocked, hasAdult]);
+  const groups = useMemo(() => Array.from(new Set(visible.map(channel => channel.group))).sort((a, b) => a.localeCompare(b)), [visible]);
   const search = query.trim().toLowerCase();
-  const filtered = useMemo(() => channels.filter(channel =>
+  const filtered = useMemo(() => visible.filter(channel =>
     (group === 'All channels' || channel.group === group) && (!favoriteOnly || favorites.includes(channel.id)) &&
-    (!search || (channel.name + ' ' + channel.group).toLowerCase().includes(search))), [channels, group, search, favoriteOnly, favorites]);
+    (!search || (channel.name + ' ' + channel.group).toLowerCase().includes(search))), [visible, group, search, favoriteOnly, favorites]);
   const playable = useMemo(() => filtered.filter(channel => channel.token), [filtered]);
   const selectedIndex = playable.findIndex(channel => channel.id === selected?.id);
   const streamFormat = selected?.token === detectedStream?.token ? detectedStream?.format : selected?.format;
 
   // The last channel is offered as a one-tap resume rather than started on load,
   // so opening the page never starts a stream (or uses a screen) without a gesture.
-  const resume = useMemo(() => !selected && lastChannel ? channels.find(channel => channel.id === lastChannel && channel.token) || null : null, [channels, lastChannel, selected]);
+  const resume = useMemo(() => !selected && lastChannel ? visible.find(channel => channel.id === lastChannel && channel.token) || null : null, [visible, lastChannel, selected]);
 
   function choose(channel: Channel) {
     if (channel.id === selected?.id) setRetry(current => current + 1);
@@ -167,6 +176,13 @@ export default function Player({portal, support}: {portal: string; support: stri
   function stopPlayback() {
     setSelected(null); setDetectedStream(null); setPlayError('');
     setStatus('Choose a channel'); setQualities([]); setQuality(-1);
+  }
+  /** Locking hides adult categories at once, stopping an adult channel that is playing. */
+  function lockAdult() {
+    setAdultUnlocked(false);
+    if (selected && isAdultGroup(selected.group)) stopPlayback();
+    if (isAdultGroup(group)) setGroup('All channels');
+    setAnnouncement('Adult content locked');
   }
 
   useEffect(() => {
@@ -212,7 +228,10 @@ export default function Player({portal, support}: {portal: string; support: stri
             const {default: Hls} = await import('hls.js');
             if (!playback.isCurrent()) return;
             if (!Hls.isSupported()) throw new Error('HLS playback is not supported in this browser. Try another browser or the Tuner app.');
-            engine = new Hls({enableWorker: false, maxBufferLength: 20}); hls.current = engine;
+            // Captions (CEA-608/708) and subtitle playlists become text tracks on the video element, so the
+            // browser draws them and the subtitle menu can switch them.
+            engine = new Hls({enableWorker: false, maxBufferLength: 20, enableCEA708Captions: true, renderTextTracksNatively: true});
+            hls.current = engine; setEngine(engine);
             engine.on(Hls.Events.MANIFEST_PARSED, () => {
               if (!playback.isCurrent() || !engine) return;
               setQualities(engine.levels.map((level, index) => ({height: level.height, index}))); play();
@@ -254,6 +273,7 @@ export default function Player({portal, support}: {portal: string; support: stri
         () => probe.abort(),
         () => {if (startPlayback.current === play) startPlayback.current = null;},
         () => {if (hls.current === engine) hls.current = null;},
+        () => setEngine(current => current === engine ? null : current),
         () => engine?.destroy(),
         () => transport?.unload(),
         () => transport?.detachMediaElement(),
@@ -307,7 +327,7 @@ export default function Player({portal, support}: {portal: string; support: stri
   useEffect(() => {
     if (!username) return;
     function shortcut(event: KeyboardEvent) {
-      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || typingTarget(event.target) || shortcutsDialog.current?.open) return;
+      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || typingTarget(event.target) || document.querySelector('.watch-shell dialog[open]')) return;
       const key = event.key;
       if (key === 'ArrowDown' || key === 'ArrowUp') {
         // A focused video keeps its own arrow-key behaviour (seeking and volume in some browsers).
@@ -350,9 +370,9 @@ export default function Player({portal, support}: {portal: string; support: stri
             {selected && !playError && status === 'Press play to start' && <div className="watch-start"><button className="button primary" onClick={() => startPlayback.current?.()}>Play {selected.name} ▶</button></div>}
           </div>
           <div className="now-playing"><div><small>NOW PLAYING</small><h2>{selected?.name || 'Make yourself at home.'}</h2><p>{selected?.group || 'Your channels are waiting.'}</p></div><div><span className="playback-status" role="status" aria-live="polite">{selected ? status : 'Choose a channel'}</span>{selected && <><button className="small-button" onClick={stopPlayback}>Stop playback ■</button><button className="small-button" aria-keyshortcuts="F" onClick={fullscreen}>Fullscreen ⛶</button></>}</div></div>
-          {selected && <div className="watch-player-tools"><div className="watch-channel-navigation"><button className="small-button" aria-label="Previous channel in this lineup" disabled={selectedIndex <= 0} onClick={() => choose(playable[selectedIndex - 1])}>← Previous</button><button className="small-button" aria-label="Next channel in this lineup" disabled={selectedIndex < 0 || selectedIndex >= playable.length - 1} onClick={() => choose(playable[selectedIndex + 1])}>Next →</button></div>{qualities.length > 1 && <label className="quality-select">Picture quality<select value={quality} onChange={event => {const next = Number(event.target.value); setQuality(next); if (hls.current) hls.current.currentLevel = next;}}><option value={-1}>Automatic</option>{qualities.map(item => <option key={item.index} value={item.index}>{item.height ? item.height + 'p' : 'Quality ' + (item.index + 1)}</option>)}</select></label>}{selected.token && <CastControls token={selected.token} name={selected.name} video={video}/>}</div>}
+          {selected && <div className="watch-player-tools"><div className="watch-channel-navigation"><button className="small-button" aria-label="Previous channel in this lineup" disabled={selectedIndex <= 0} onClick={() => choose(playable[selectedIndex - 1])}>← Previous</button><button className="small-button" aria-label="Next channel in this lineup" disabled={selectedIndex < 0 || selectedIndex >= playable.length - 1} onClick={() => choose(playable[selectedIndex + 1])}>Next →</button></div>{qualities.length > 1 && <label className="quality-select">Picture quality<select value={quality} onChange={event => {const next = Number(event.target.value); setQuality(next); if (hls.current) hls.current.currentLevel = next;}}><option value={-1}>Automatic</option>{qualities.map(item => <option key={item.index} value={item.index}>{item.height ? item.height + 'p' : 'Quality ' + (item.index + 1)}</option>)}</select></label>}<SubtitleControls key={(selected.token || '') + ':' + streamFormat + ':' + retry} video={video} engine={engine} supported={streamFormat !== 'mpegts'}/>{selected.token && <CastControls token={selected.token} name={selected.name} video={video}/>}</div>}
           {playError && <div className="watch-error" role="alert"><p>{playError}</p><button className="small-button" onClick={() => setRetry(current => current + 1)}>Try this channel again</button></div>}
-          <div className="watch-bottom"><p>Playback uses one of your plan’s simultaneous screens. Available channels and formats depend on your line.</p><div className="watch-bottom-links"><button type="button" className="watch-shortcuts-open" aria-keyshortcuts="Shift+?" onClick={() => shortcutsDialog.current?.showModal()}>Keyboard shortcuts</button><a href={'mailto:' + support}>Need a hand? Contact support ↗</a></div></div>
+          <div className="watch-bottom"><p>Playback uses one of your plan’s simultaneous screens. Available channels and formats depend on your line.</p><div className="watch-bottom-links"><button type="button" className="watch-shortcuts-open" aria-keyshortcuts="Shift+?" onClick={() => shortcutsDialog.current?.showModal()}>Keyboard shortcuts</button>{(hasAdult || adultUnlocked) && <AdultLock unlocked={adultUnlocked} onUnlock={() => {setAdultUnlocked(true); setAnnouncement('Adult content unlocked');}} onLock={lockAdult}/>}<a href={'mailto:' + support}>Need a hand? Contact support ↗</a></div></div>
           <span className="sr-only" role="status">{announcement}</span>
           <dialog ref={shortcutsDialog} className="watch-shortcuts" aria-labelledby="watch-shortcuts-title">
             <h2 id="watch-shortcuts-title">Keyboard shortcuts</h2>

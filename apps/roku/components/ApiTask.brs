@@ -119,12 +119,18 @@ function xtreamGet(base as object, action as string) as dynamic
     return jsonOf(r)
 end function
 
+' Xtream marks adult categories and streams with is_adult = 1, "1" or true.
+function isFlagOn(v as dynamic) as boolean
+    t = asText(v)
+    return t = "1" or LCase(t) = "true"
+end function
+
 function categoriesOf(rows as dynamic) as object
     result = []
     if type(rows) <> "roArray" then return result
     for each row in rows
         id = asText(row.category_id)
-        if id <> "" then result.Push({id: id, name: asText(row.category_name)})
+        if id <> "" then result.Push({id: id, name: asText(row.category_name), adult: isFlagOn(row.is_adult)})
     end for
     return result
 end function
@@ -144,7 +150,7 @@ function grouped(categories as object, items as object) as object
     for each cat in categories
         if byCat[cat.id] <> invalid then used.Push(cat)
     end for
-    if byCat["__other"] <> invalid then used.Push({id: "__other", name: "Other"})
+    if byCat["__other"] <> invalid then used.Push({id: "__other", name: "Other", adult: false})
     return {categories: used, byCat: byCat}
 end function
 
@@ -158,7 +164,7 @@ function xtreamCatalog(account as object) as dynamic
         if id <> ""
             cat = asText(s.category_id)
             if cat = "" then cat = "__other"
-            live.Push({kind: "live", name: asText(s.name), icon: asText(s.stream_icon), cat: cat, url: base.server + "/live/" + base.user + "/" + base.pass + "/" + id + ".m3u8"})
+            live.Push({kind: "live", name: asText(s.name), icon: asText(s.stream_icon), cat: cat, adult: isFlagOn(s.is_adult), url: base.server + "/live/" + base.user + "/" + base.pass + "/" + id + ".m3u8"})
         end if
     end for
     movies = []
@@ -171,7 +177,7 @@ function xtreamCatalog(account as object) as dynamic
             if id <> ""
                 cat = asText(s.category_id)
                 if cat = "" then cat = "__other"
-                movies.Push({kind: "movie", name: asText(s.name), icon: asText(s.stream_icon), cat: cat, url: base.server + "/movie/" + base.user + "/" + base.pass + "/" + id + "." + ext})
+                movies.Push({kind: "movie", name: asText(s.name), icon: asText(s.stream_icon), cat: cat, adult: isFlagOn(s.is_adult), url: base.server + "/movie/" + base.user + "/" + base.pass + "/" + id + "." + ext})
             end if
         end for
     end if
@@ -183,7 +189,7 @@ function xtreamCatalog(account as object) as dynamic
             if id <> ""
                 cat = asText(s.category_id)
                 if cat = "" then cat = "__other"
-                series.Push({kind: "series", name: asText(s.name), icon: asText(s.cover), cat: cat, seriesId: id})
+                series.Push({kind: "series", name: asText(s.name), icon: asText(s.cover), cat: cat, adult: isFlagOn(s.is_adult), seriesId: id})
             end if
         end for
     end if
@@ -267,9 +273,9 @@ function m3uCatalog(account as object) as dynamic
             if group = "" then group = "Other"
             if not seen[section].DoesExist(group)
                 seen[section][group] = true
-                cats[section].Push({id: group, name: group})
+                cats[section].Push({id: group, name: group, adult: false})
             end if
-            lists[section].Push({kind: kind, name: pending.name, icon: pending.icon, cat: group, url: line})
+            lists[section].Push({kind: kind, name: pending.name, icon: pending.icon, cat: group, adult: false, url: line})
             pending = invalid
         end if
     end for

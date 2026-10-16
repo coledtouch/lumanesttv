@@ -1,6 +1,6 @@
 {
   "id": "tv.lumanest.tuner",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "vendor": "LumaNest TV",
   "type": "web",
   "main": "index.html",

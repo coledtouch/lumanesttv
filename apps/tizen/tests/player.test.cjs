@@ -780,3 +780,90 @@ test('failed native mute changes restore desired intent before later playback sy
   assert.equal(h.player.setMuted(false), true);
   assert.equal(h.av.audioEnabled, true, 'an explicit retry can apply the requested change');
 });
+
+function subtitleHarness(native, subtitlesOn, video) {
+  const clock = timers(), av = native ? avplay() : null, cues = [];
+  video = video || htmlVideo();
+  const window = { setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout, performance: { now() { return clock.now; } } };
+  if (av) { window.webapis = { avplay: av }; }
+  vm.runInNewContext(source, { window }, { filename: 'player.js' });
+  const setting = { on: subtitlesOn };
+  const player = window.TunerPlayer.create({ objectElement: { style: {}, setAttribute() {} }, videoElement: video,
+    subtitles() { return setting.on; }, onSubtitle(text, duration) { cues.push([text, duration]); } });
+  return { player, av, video, clock, cues, setting };
+}
+
+test('AVPlay subtitles: the On setting selects a text track per stream and cue text reaches the app', () => {
+  const h = subtitleHarness(true, true);
+  h.player.play({ url: 'https://example.test/live.m3u8', live: true });
+  h.av.completePrepare();
+  assert.deepEqual(h.av.calls.find(x => x[0] === 'setSelectTrack' && x[1] === 'TEXT'), ['setSelectTrack', 'TEXT', 11]);
+  assert.deepEqual(h.av.calls.filter(x => x[0] === 'setSilentSubtitle').at(-1), ['setSilentSubtitle', false]);
+  assert.equal(h.player.subtitlesShowing(), true);
+  h.av.event('onsubtitlechange', '2500', 'Bonjour');
+  assert.deepEqual(h.cues.at(-1), ['Bonjour', 2500]);
+  assert.equal(h.player.selectTrack('TEXT', -1), true);
+  assert.deepEqual(h.av.calls.filter(x => x[0] === 'setSilentSubtitle').at(-1), ['setSilentSubtitle', true]);
+  assert.deepEqual(h.cues.at(-1), ['', 0], 'turning subtitles off clears the text on screen');
+  const count = h.cues.length;
+  h.av.event('onsubtitlechange', 1000, 'Hidden');
+  assert.equal(h.cues.length, count, 'silenced cues are not drawn');
+});
+
+test('AVPlay subtitles stay silent with the Off setting until the viewer picks a track', () => {
+  const h = subtitleHarness(true, false);
+  h.player.play({ url: 'https://example.test/movie.mp4', live: false });
+  h.av.completePrepare();
+  assert.equal(h.av.calls.some(x => x[0] === 'setSelectTrack' && x[1] === 'TEXT'), false);
+  assert.deepEqual(h.av.calls.filter(x => x[0] === 'setSilentSubtitle').at(-1), ['setSilentSubtitle', true]);
+  h.av.event('onsubtitlechange', 1000, 'Not shown');
+  assert.equal(h.cues.filter(cue => cue[0]).length, 0);
+  assert.equal(h.player.tracks().subtitles[0].language, 'fra');
+  h.player.selectTrack('TEXT', 11);
+  h.av.event('onsubtitlechange', 1000, 'Shown');
+  assert.deepEqual(h.cues.at(-1), ['Shown', 1000]);
+  h.player.play({ url: 'https://example.test/next.mp4', live: false });
+  assert.equal(h.player.subtitlesShowing(), false, 'a new stream follows the setting again');
+});
+
+test('HTML video subtitles: captions and subtitle tracks are offered, English is preferred, data tracks are not', () => {
+  const video = htmlVideo();
+  video.textTracks = [{ kind: 'metadata', language: '', mode: 'hidden' }, { kind: 'subtitles', language: 'fra', mode: 'disabled' }, { kind: 'captions', language: 'en', mode: 'disabled' }];
+  const h = subtitleHarness(false, true, video);
+  h.player.play({ url: 'https://example.test/live.m3u8', live: true });
+  video.dispatch('loadedmetadata');
+  assert.deepEqual(video.textTracks.map(track => track.mode), ['hidden', 'disabled', 'showing']);
+  assert.deepEqual([...h.player.tracks().subtitles.map(track => track.index)], [1, 2]);
+  h.player.selectTrack('TEXT', -1);
+  assert.deepEqual(video.textTracks.map(track => track.mode), ['hidden', 'disabled', 'disabled']);
+  assert.equal(h.player.subtitlesShowing(), false);
+});
+
+test('HTML video: tracks announced after metadata are picked up for live streams', () => {
+  const video = htmlVideo(), trackListeners = [];
+  video.textTracks = [];
+  video.textTracks.addEventListener = (name, fn) => { assert.equal(name, 'addtrack'); trackListeners.push(fn); };
+  video.textTracks.removeEventListener = (name, fn) => { trackListeners.splice(trackListeners.indexOf(fn), 1); };
+  const h = subtitleHarness(false, true, video);
+  h.player.play({ url: 'https://example.test/live.m3u8', live: true });
+  video.dispatch('loadedmetadata');
+  assert.equal(h.player.tracks().subtitles.length, 0);
+  video.textTracks.push({ kind: 'captions', language: 'en', label: 'CC1', mode: 'disabled' });
+  trackListeners.forEach(fn => fn());
+  assert.equal(video.textTracks[0].mode, 'showing');
+  h.player.stop();
+  assert.equal(trackListeners.length, 0, 'the track listener is released with the stream');
+});
+
+test('the whole stage uses full-screen display mode and is reapplied once preparation finishes', () => {
+  const h = subtitleHarness(true, false);
+  h.player.setRect({ left: 1398, top: 145, width: 466, height: 263 });
+  h.player.play({ url: 'https://example.test/live.m3u8', live: true });
+  assert.deepEqual(h.av.calls.filter(x => x[0] === 'setDisplayMethod').at(-1), ['setDisplayMethod', 'PLAYER_DISPLAY_MODE_LETTER_BOX']);
+  h.player.setRect({ left: 0, top: 0, width: 1920, height: 1080 });
+  h.av.completePrepare();
+  assert.deepEqual(h.av.calls.filter(x => x[0] === 'setDisplayRect').at(-1), ['setDisplayRect', 0, 0, 1920, 1080]);
+  assert.deepEqual(h.av.calls.filter(x => x[0] === 'setDisplayMethod').at(-1), ['setDisplayMethod', 'PLAYER_DISPLAY_MODE_FULL_SCREEN']);
+  h.player.pause(); h.player.resume();
+  assert.deepEqual(h.av.calls.filter(x => x[0] === 'setDisplayRect').at(-1), ['setDisplayRect', 0, 0, 1920, 1080]);
+});

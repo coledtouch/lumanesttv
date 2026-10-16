@@ -6,6 +6,8 @@ import java.util.Locale
  * By default the provider's lineup is shown as delivered: the LumaNest customer hub decides which channels and
  * categories a line includes. Customers can switch Live TV to "USA channels only" in Settings, which keeps U.S.
  * programming and hides international channels. Movies, series and audio have no language restrictions.
+ * Adult categories (see [AdultFilter]) and everything listed in them are left out of every catalogue unless the
+ * viewer unlocked adult content with the Settings passcode.
  */
 object ContentPolicy {
     data class Catalogue<T>(val items: List<T>, val categories: List<Category>)
@@ -131,16 +133,17 @@ object ContentPolicy {
     private fun conflictingCountry(country: String?): Boolean = metadataParts(country).any { countryAliases[it] != "US" }
     private fun isEnglish(value: String): Boolean = value in englishAliases || englishMetadata.matches(value)
 
-    fun live(items: List<Channel>, categories: List<Category>, usOnly: Boolean = true): Catalogue<Channel> {
+    fun live(items: List<Channel>, categories: List<Category>, usOnly: Boolean = true, adultUnlocked: Boolean = false): Catalogue<Channel> {
+        val allowed = AdultFilter.filter(items, categories, adultUnlocked, { it.categoryIds }, { it.adult })
         if (!usOnly) {
-            val all = items.distinctBy { it.key }.map { channel ->
+            val all = allowed.distinctBy { it.key }.map { channel ->
                 val ids = channel.categoryIds.distinct().ifEmpty { listOf("__tuner_live") }
                 channel.copy(categoryId = ids.first(), categoryIds = ids)
             }
             return Catalogue(all, usedCategories(all.flatMap { it.categoryIds }, categories, "__tuner_live", "Live TV"))
         }
         val categoriesById = categories.associate { it.id to labels(it.name) }
-        val accepted = items.mapNotNull { channel ->
+        val accepted = allowed.mapNotNull { channel ->
             val named = nameLabels(channel.name)
             val epgRegion = channel.epgId?.let { epgCountry.find(it)?.groupValues?.get(1)?.lowercase(Locale.ROOT) }?.let(countryAliases::get)
             if (conflictingCountry(channel.country) || named.foreign ||
@@ -154,16 +157,18 @@ object ContentPolicy {
         return Catalogue(accepted, usedCategories(accepted.flatMap { it.categoryIds }, categories, "__tuner_us", "USA"))
     }
 
-    fun movies(items: List<Movie>, categories: List<Category>): Catalogue<Movie> {
-        val accepted = items.distinctBy { it.id }.map { movie ->
+    fun movies(items: List<Movie>, categories: List<Category>, adultUnlocked: Boolean = false): Catalogue<Movie> {
+        val allowed = AdultFilter.filter(items, categories, adultUnlocked, { it.categoryIds }, { it.adult })
+        val accepted = allowed.distinctBy { it.id }.map { movie ->
             val ids = movie.categoryIds.distinct().ifEmpty { listOf("__tuner_movies") }
             movie.copy(categoryId = ids.first(), categoryIds = ids)
         }
         return Catalogue(accepted, usedCategories(accepted.flatMap { it.categoryIds }, categories, "__tuner_movies", "Movies"))
     }
 
-    fun series(items: List<Series>, categories: List<Category>): Catalogue<Series> {
-        val accepted = items.distinctBy { it.id }.map { series ->
+    fun series(items: List<Series>, categories: List<Category>, adultUnlocked: Boolean = false): Catalogue<Series> {
+        val allowed = AdultFilter.filter(items, categories, adultUnlocked, { it.categoryIds }, { it.adult })
+        val accepted = allowed.distinctBy { it.id }.map { series ->
             val ids = series.categoryIds.distinct().ifEmpty { listOf("__tuner_series") }
             series.copy(categoryId = ids.first(), categoryIds = ids)
         }

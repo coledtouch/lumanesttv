@@ -58,12 +58,30 @@
     dualMenuCodes = [],
     dualChannels = [null, null],
     dualStates = [{ status: "idle" }, { status: "idle" }];
+  // The whole logical stage. AVPlay maps it to the panel; the app itself is scaled to fit.
+  var FULL_RECT = { left: 0, top: 0, width: 1920, height: 1080 };
+  // Provider catalogues before the adult filter. The filter runs whenever they arrive or the lock changes.
+  var rawCatalogs = {
+      live: { items: [], categories: [] },
+      movies: { items: [], categories: [] },
+      series: { items: [], categories: [] },
+    },
+    adultUnlocked = false,
+    pin = null,
+    subtitleTimer;
+  var subtitleLayer = el("div", "subtitle-layer hidden");
+  subtitleLayer.id = "subtitle-layer";
+  document.getElementById("app").appendChild(subtitleLayer);
   var player = window.TunerPlayer.create({
     objectElement: document.getElementById("av-player"),
     videoElement: document.getElementById("html-player"),
     onState: onPlayerState,
     onTime: onPlayerTime,
     onEnded: onPlayerEnded,
+    onSubtitle: showSubtitleText,
+    subtitles: function () {
+      return !!store.settings.subtitles;
+    },
     onError: function (message) {
       if (!S.fullscreen) toast(message);
     },
@@ -628,6 +646,8 @@
     currentPlayItem = c;
     S.watched = c;
     store.recordWatched(c.id);
+    // Open a full-screen stream with full-screen geometry, never the guide preview's.
+    if (full) player.setRect(FULL_RECT);
     player.play({
       url: c.url,
       backups: c.backups,
@@ -987,6 +1007,7 @@
     if (dualActive) stopDual();
     currentPlayItem = item;
     S.watched = null;
+    player.setRect(FULL_RECT);
     player.play({
       url: item.url,
       backups: item.backups || [],
@@ -1002,7 +1023,7 @@
     S.controls = true;
     applyTheme();
     overlay.className = "";
-    player.setRect({ left: 0, top: 0, width: 1920, height: 1080 });
+    player.setRect(FULL_RECT);
     if (
       player.state &&
       (player.state.status === "paused" || player.state.status === "error")
@@ -1018,6 +1039,8 @@
     applyTheme();
     overlay.className = "hidden";
     clearTimeout(overlayTimer);
+    overlayTimer = null;
+    showSubtitleText("", 0);
     if (player.state && player.state.request && !player.state.request.live) {
       saveRecent();
       player.stop();
@@ -1028,7 +1051,10 @@
   }
   function onPlayerState(state) {
     applyTheme();
-    if (S.fullscreen) renderPlayerOverlay();
+    if (S.fullscreen) {
+      renderPlayerOverlay();
+      if (S.controls && !overlayTimer) scheduleHideControls();
+    }
     else if (S.tab === 0 && S.watched) {
       var hint = main.querySelector(".preview-hint");
       if (hint)
@@ -1077,7 +1103,9 @@
     var state = player.state || {},
       old = S.focusId;
     overlay.textContent = "";
-    if (S.controls || state.status === "error" || state.status === "loading") {
+    if (subtitleLayer.className.indexOf("hidden") < 0)
+      subtitleLayer.className = "subtitle-layer" + (S.controls ? " raised" : "");
+    if (S.controls || state.status === "error") {
       overlay.appendChild(
         el(
           "div",
@@ -1123,8 +1151,9 @@
           )
         );
       actions.appendChild(
-        button("Audio / Subtitles", "play-tracks", trackDialog)
+        button("CC Subtitles", "play-subtitles", subtitleDialog)
       );
+      actions.appendChild(button("Audio", "play-tracks", audioDialog));
       actions.appendChild(button("Back", "play-back", leaveFullscreen));
       bottom.appendChild(actions);
       bottom.appendChild(
@@ -1132,8 +1161,8 @@
           "div",
           "player-hint",
           state.request && state.request.live
-            ? "OK Controls  ·  ↑ ↓ Change channel  ·  Back Guide"
-            : "OK Play / pause  ·  ← → Seek 10 seconds  ·  Back Titles"
+            ? "OK Controls  ·  ↑ ↓ Change channel  ·  Yellow Subtitles  ·  Back Guide"
+            : "OK Play / pause  ·  ← → Seek 10 seconds  ·  Yellow Subtitles  ·  Back Titles"
         )
       );
       overlay.appendChild(bottom);
@@ -1168,59 +1197,101 @@
       overlay.appendChild(status);
     }
   }
+  // One timer hides the playback controls 5 seconds after the last remote key or state change.
+  // It re-arms itself while a dialog is open, playback is paused or failed, so it can never be lost.
   function scheduleHideControls() {
     clearTimeout(overlayTimer);
-    overlayTimer = setTimeout(function () {
-      if (
-        S.fullscreen &&
-        !S.dialog &&
-        S.zone !== "player-actions" &&
-        player.state.status === "playing"
-      ) {
-        S.controls = false;
-        renderPlayerOverlay();
-      }
-    }, 5500);
+    overlayTimer = null;
+    if (!S.fullscreen) return;
+    overlayTimer = setTimeout(hideControlsWhenIdle, 5000);
   }
-  function trackDialog() {
-    var tracks = player.tracks();
+  function hideControlsWhenIdle() {
+    overlayTimer = null;
+    if (!S.fullscreen || !S.controls) return;
+    var status = player.state && player.state.status;
+    if (S.dialog || status === "paused" || status === "error") {
+      scheduleHideControls();
+      return;
+    }
+    S.controls = false;
+    S.zone = "video";
+    renderPlayerOverlay();
+  }
+  function showSubtitleText(text, duration) {
+    clearTimeout(subtitleTimer);
+    var clean = String(text || "")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<[^>]*>/g, "")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&amp;/g, "&")
+      .replace(/^\s+|\s+$/g, "");
+    subtitleLayer.textContent = "";
+    if (!clean || !S.fullscreen) {
+      subtitleLayer.className = "subtitle-layer hidden";
+      return;
+    }
+    subtitleLayer.appendChild(el("span", "", clean));
+    subtitleLayer.className = "subtitle-layer" + (S.controls ? " raised" : "");
+    subtitleTimer = setTimeout(function () {
+      subtitleLayer.className = "subtitle-layer hidden";
+      subtitleLayer.textContent = "";
+    }, duration > 0 ? Math.min(duration, 15000) + 200 : 8000);
+  }
+  function trackName(track, fallback) {
+    return track.label || track.language || track.name || fallback + " " + (track.index + 1);
+  }
+  function subtitleDialog() {
+    var tracks = player.tracks().subtitles || [],
+      on = !!(player.subtitlesShowing && player.subtitlesShowing());
+    if (!tracks.length) {
+      showDialog("Subtitles", "No subtitles in this stream.", []);
+      return;
+    }
     var actions = [
       {
-        text: "Subtitles off",
+        text: (on ? "" : "✓ ") + "Off",
         run: function () {
           player.selectTrack("TEXT", -1);
           closeDialog();
+          toast("Subtitles off");
         },
       },
     ];
-    (tracks.audio || []).forEach(function (track) {
+    tracks.forEach(function (track) {
+      var name = trackName(track, "Subtitles");
       actions.push({
-        text:
-          "Audio: " +
-          (track.label || track.language || track.name || track.index),
+        text: (on && track.selected ? "✓ " : "") + name,
+        run: function () {
+          player.selectTrack("TEXT", track.index);
+          closeDialog();
+          toast("Subtitles: " + name);
+        },
+      });
+    });
+    showDialog("Subtitles", "Choose subtitles or captions for this stream.", actions);
+  }
+  function audioDialog() {
+    var tracks = player.tracks().audio || [],
+      actions = [];
+    tracks.forEach(function (track) {
+      var name = trackName(track, "Audio");
+      actions.push({
+        text: (track.selected ? "✓ " : "") + name,
         run: function () {
           player.selectTrack("AUDIO", track.index);
           closeDialog();
         },
       });
     });
-    (tracks.subtitles || []).forEach(function (track) {
-      actions.push({
-        text:
-          "Subtitles: " +
-          (track.label || track.language || track.name || track.index),
-        run: function () {
-          player.selectTrack("TEXT", track.index);
-          closeDialog();
-        },
-      });
-    });
     showDialog(
-      "Audio and subtitles",
-      actions.length
-        ? "Choose a track. All available languages are allowed."
-        : "This stream does not expose additional tracks.",
-      actions
+      "Audio",
+      tracks.length > 1
+        ? "Choose an audio track. All available languages are allowed."
+        : "This stream does not offer other audio tracks.",
+      tracks.length > 1 ? actions : []
     );
   }
   function showDialog(title, text, actions) {
@@ -1246,6 +1317,11 @@
     focus(actions && actions.length ? "dialog-0" : "dialog-close");
   }
   function closeDialog(restore) {
+    var returnFocus = pin && pin.returnFocus;
+    if (pin) {
+      clearTimeout(pin.timer);
+      pin = null;
+    }
     S.dialog = false;
     dialogLayer.className = "hidden";
     dialogLayer.textContent = "";
@@ -1253,7 +1329,11 @@
       if (S.fullscreen) {
         S.controls = true;
         renderPlayerOverlay();
-      } else render();
+        scheduleHideControls();
+      } else {
+        render();
+        if (returnFocus && document.getElementById(returnFocus)) focus(returnFocus);
+      }
     }
     if (dualActive && S.tab === 5) scheduleDualControls();
   }
@@ -1448,6 +1528,47 @@
       e.preventDefault();
       saveSource();
     };
+    var extras = el("div", "settings-extras");
+    extras.appendChild(el("h2", "", "Playback and privacy"));
+    var extraRow = el("div", "settings-extra-row");
+    extraRow.appendChild(
+      button(
+        "Subtitles: " + (store.settings.subtitles ? "On" : "Off"),
+        "subtitles-setting",
+        function () {
+          store.saveSettings({ subtitles: !store.settings.subtitles });
+          renderSettings();
+          focus("subtitles-setting");
+          toast(
+            store.settings.subtitles
+              ? "Subtitles start automatically when a stream has them."
+              : "Subtitles are off. Turn them on while watching with CC Subtitles."
+          );
+        },
+        "extra-button"
+      )
+    );
+    extraRow.appendChild(
+      button(
+        "Adult content: " + (adultUnlocked ? "Unlocked" : "Locked"),
+        "adult-setting",
+        toggleAdult,
+        "extra-button"
+      )
+    );
+    if (store.adultLock && store.adultLock.hasPasscode())
+      extraRow.appendChild(
+        button(
+          "Change passcode",
+          "adult-passcode",
+          function () {
+            openPasscode("change");
+          },
+          "extra-button"
+        )
+      );
+    extras.appendChild(extraRow);
+    form.appendChild(extras);
     grid.appendChild(form);
     var side = el("aside", "settings-side");
     side.appendChild(el("h2", "", "Your local lineup"));
@@ -1532,7 +1653,7 @@
       button("About Tuner", "about-tuner", function () {
         showDialog(
           "Tuner for Samsung TV",
-          "Version 1.4.9 · Samsung TV\nLive TV, guide, movies, series and Favorites. Two-channel PiP works on supported TVs and playlists. Embedded torrent playback is not available on Samsung.",
+          "Version 1.4.10 · Samsung TV\nLive TV, guide, movies, series and Favorites. Two-channel PiP works on supported TVs and playlists. Embedded torrent playback is not available on Samsung.",
           []
         );
       })
@@ -1587,6 +1708,234 @@
     openTab(0);
     toast("Playlist saved. Loading your channels.");
   }
+  function applyAdultFilter(kind) {
+    var source = rawCatalogs[kind],
+      shown =
+        adultUnlocked || !D.adultFilter
+          ? source
+          : D.adultFilter(source.items, source.categories);
+    S.catalogs[kind] = shown.items;
+    S.cats[kind] = shown.categories;
+  }
+  function setAdultUnlocked(value) {
+    adultUnlocked = !!value;
+    ["live", "movies", "series"].forEach(applyAdultFilter);
+    if (adultUnlocked) return;
+    // Nothing that is now hidden may stay selected, saved for the guide preview or playing.
+    var request = player.state && player.state.request;
+    if (S.watched && S.catalogs.live.indexOf(S.watched) < 0) S.watched = null;
+    if (
+      request &&
+      request.live &&
+      !S.catalogs.live.some(function (c) {
+        return c.id === request.id;
+      })
+    )
+      player.stop();
+    if (
+      !liveCategories().some(function (cat) {
+        return cat.id === S.category;
+      })
+    )
+      S.category = "__all";
+    ["movies", "series"].forEach(function (kind) {
+      if (
+        !S.cats[kind].some(function (cat) {
+          return cat.id === S.browseCategory[kind];
+        })
+      )
+        S.browseCategory[kind] = "__all";
+    });
+    S.row = 0;
+    S.offset = 0;
+    S.cards = { movies: 0, series: 0 };
+  }
+  function toggleAdult() {
+    if (adultUnlocked) {
+      setAdultUnlocked(false);
+      renderSettings();
+      focus("adult-setting");
+      toast("Adult content is locked and hidden.");
+      return;
+    }
+    if (!store.adultLock) return;
+    openPasscode(store.adultLock.hasPasscode() ? "unlock" : "create", function () {
+      setAdultUnlocked(true);
+      renderSettings();
+      focus("adult-setting");
+      toast("Adult content unlocked until you lock it or restart Tuner.");
+    });
+  }
+  // Passcode pad: remote number keys, or the on-screen digits with the arrows and OK.
+  var PIN_KEYS = [
+    ["1", "2", "3"],
+    ["4", "5", "6"],
+    ["7", "8", "9"],
+    ["del", "0", "cancel"],
+  ];
+  function openPasscode(mode, onSuccess) {
+    pin = {
+      mode: mode,
+      step: mode === "create" ? "new" : "current",
+      digits: "",
+      first: "",
+      message: "",
+      error: false,
+      onSuccess: onSuccess,
+      returnFocus: S.focusId,
+      timer: null,
+    };
+    renderPasscode();
+  }
+  function passcodeWait() {
+    return pin && pin.step === "current" ? store.adultLock.waitRemaining() : 0;
+  }
+  function renderPasscode() {
+    if (!pin) return;
+    clearTimeout(pin.timer);
+    var old = S.focusId,
+      wait = passcodeWait(),
+      title =
+        pin.mode === "change"
+          ? "Change passcode"
+          : pin.mode === "create"
+            ? "Create a passcode"
+            : "Unlock adult content",
+      prompt =
+        pin.step === "current"
+          ? pin.mode === "change"
+            ? "Enter your current 4-digit passcode."
+            : "Enter your 4-digit passcode to show adult categories."
+          : pin.step === "new"
+            ? pin.mode === "change"
+              ? "Enter a new 4-digit passcode."
+              : "Choose a 4-digit passcode. You need it each time you unlock adult content."
+            : "Enter the same passcode again.";
+    S.dialog = true;
+    dialogLayer.className = "";
+    dialogLayer.textContent = "";
+    var box = el("div", "dialog passcode-dialog");
+    box.appendChild(el("h2", "", title));
+    box.appendChild(el("p", "", prompt));
+    var dots = el("div", "pin-dots");
+    dots.id = "pin-dots";
+    for (var i = 0; i < 4; i++)
+      dots.appendChild(
+        el("span", i < pin.digits.length ? "filled" : "", i < pin.digits.length ? "●" : "○")
+      );
+    box.appendChild(dots);
+    var message = el(
+      "p",
+      "pin-message" + (pin.error || wait ? " error" : ""),
+      wait
+        ? "Too many wrong tries. Try again in " + Math.ceil(wait / 1000) + " s."
+        : pin.message || "Use the number keys or choose the digits below."
+    );
+    message.id = "pin-message";
+    box.appendChild(message);
+    var pad = el("div", "pin-pad");
+    PIN_KEYS.forEach(function (row) {
+      row.forEach(function (key) {
+        var b = button(
+          key === "del" ? "⌫ Delete" : key === "cancel" ? "Cancel" : key,
+          "pin-" + key,
+          function () {
+            if (key === "cancel") closeDialog();
+            else if (key === "del") {
+              if (pin.digits) pin.digits = pin.digits.slice(0, -1);
+              renderPasscode();
+            } else passcodeDigit(key);
+          },
+          key === "del" || key === "cancel" ? "pin-key pin-word" : "pin-key"
+        );
+        b.disabled = !!wait && key !== "cancel";
+        pad.appendChild(b);
+      });
+    });
+    box.appendChild(pad);
+    box.appendChild(
+      el("p", "pin-note", "Forgot the passcode? Remove and reinstall the app, or clear its data.")
+    );
+    dialogLayer.appendChild(box);
+    var target = old && /^pin-/.test(old) ? document.getElementById(old) : null;
+    focus(target && !target.disabled ? old : wait ? "pin-cancel" : "pin-1");
+    if (wait)
+      pin.timer = setTimeout(function () {
+        if (pin) renderPasscode();
+      }, Math.min(1000, wait));
+  }
+  function passcodeDigit(digit) {
+    if (!pin || passcodeWait() || pin.digits.length >= 4) return;
+    pin.digits += digit;
+    pin.error = false;
+    pin.message = "";
+    if (pin.digits.length === 4) submitPasscode();
+    else renderPasscode();
+  }
+  function submitPasscode() {
+    var entered = pin.digits;
+    pin.digits = "";
+    if (pin.step === "current") {
+      var result = store.adultLock.verify(entered);
+      if (result.ok) {
+        if (pin.mode !== "change") return finishPasscode();
+        pin.step = "new";
+      } else {
+        pin.error = true;
+        pin.message = result.wait
+          ? ""
+          : "Wrong passcode. " + result.left + (result.left === 1 ? " try" : " tries") + " left.";
+      }
+    } else if (pin.step === "new") {
+      pin.first = entered;
+      pin.step = "confirm";
+    } else if (entered === pin.first) {
+      if (!store.adultLock.setPasscode(entered)) {
+        closeDialog();
+        toast("The passcode could not be saved on this TV.");
+        return;
+      }
+      return finishPasscode();
+    } else {
+      pin.first = "";
+      pin.step = "new";
+      pin.error = true;
+      pin.message = "The passcodes did not match. Choose a passcode again.";
+    }
+    renderPasscode();
+  }
+  function finishPasscode() {
+    var mode = pin.mode,
+      done = pin.onSuccess;
+    closeDialog(false);
+    if (done) done();
+    else if (mode === "change") {
+      renderSettings();
+      focus("adult-passcode");
+      toast("Passcode changed.");
+    }
+  }
+  function passcodeArrow(code) {
+    var id = (document.activeElement && document.activeElement.id) || "",
+      r = 0,
+      c = 0,
+      i,
+      j;
+    for (i = 0; i < PIN_KEYS.length; i++)
+      for (j = 0; j < 3; j++)
+        if ("pin-" + PIN_KEYS[i][j] === id) {
+          r = i;
+          c = j;
+        }
+    for (i = 0; i < 4; i++) {
+      if (code === 37) c = (c + 2) % 3;
+      else if (code === 39) c = (c + 1) % 3;
+      else if (code === 38) r = (r + 3) % 4;
+      else r = (r + 1) % 4;
+      var n = document.getElementById("pin-" + PIN_KEYS[r][c]);
+      if (n && !n.disabled) return focus(n.id);
+    }
+  }
   function connect(force) {
     if (!store.settings.source) return;
     var sameCatalog = client && client.catalogIdentity === D.catalogIdentity(store.settings.source, { zip: store.settings.zip, usOnly: !!store.settings.usOnly });
@@ -1605,6 +1954,11 @@
     if (!sameCatalog) {
       S.catalogs = { live: [], movies: [], series: [] };
       S.cats = { live: [], movies: [], series: [] };
+      rawCatalogs = {
+        live: { items: [], categories: [] },
+        movies: { items: [], categories: [] },
+        series: { items: [], categories: [] },
+      };
     }
     S.guide = {};
     S.guidesPending = {};
@@ -1615,8 +1969,8 @@
       zip: store.settings.zip,
       usOnly: !!store.settings.usOnly,
       onCatalog: function (kind, items, categories) {
-        S.catalogs[kind] = items;
-        S.cats[kind] = categories;
+        rawCatalogs[kind] = { items: items || [], categories: categories || [] };
+        applyAdultFilter(kind);
         if (S.tab === 3 && !S.fullscreen && !S.dialog) renderSearchResults();
         if (kind === "live") resumeGuidePreview();
         if (
@@ -1714,7 +2068,8 @@
   }
   function handleArrow(code) {
     if (S.dialog) {
-      moveFocus(dialogLayer, code === 37 || code === 38 ? -1 : 1);
+      if (pin) passcodeArrow(code);
+      else moveFocus(dialogLayer, code === 37 || code === 38 ? -1 : 1);
       return;
     }
     if (dualActive && S.tab === 5) {
@@ -2241,6 +2596,26 @@
       if (!e.repeat) back();
       return;
     }
+    // Any remote key while watching restarts the single controls timer.
+    if (S.fullscreen) scheduleHideControls();
+    if (pin && S.dialog) {
+      var digit = code >= 48 && code <= 57 ? code - 48 : code >= 96 && code <= 105 ? code - 96 : -1;
+      if (digit >= 0) {
+        e.preventDefault();
+        if (!e.repeat) passcodeDigit(String(digit));
+        return;
+      }
+    }
+    // Subtitles: the CC/Caption key (Samsung 10221, LG 460) or the yellow key while watching.
+    if (code === 10221 || code === 460 || code === 405) {
+      e.preventDefault();
+      if (S.fullscreen && !S.dialog && !e.repeat) {
+        S.controls = true;
+        renderPlayerOverlay();
+        subtitleDialog();
+      }
+      return;
+    }
     if (dualActive && S.tab === 5 && dualMenuCodes.indexOf(code) >= 0) {
       e.preventDefault();
       showDualControls();
@@ -2373,12 +2748,11 @@
     if (client) client.cancel();
   });
   function resize() {
+    // Scale by width only: the TV's on-screen keyboard shortens the window's height while it is open, and
+    // scaling by height would shrink the whole app into a corner until the keyboard closes.
     document.getElementById("app").style.transform =
-      "scale(" +
-      Math.min(window.innerWidth / 1920, window.innerHeight / 1080) +
-      ")";
-    if (S.fullscreen)
-      player.setRect({ left: 0, top: 0, width: 1920, height: 1080 });
+      "scale(" + window.innerWidth / 1920 + ")";
+    if (S.fullscreen) player.setRect(FULL_RECT);
     else if (dualActive) applyDualRects();
     else previewRect();
   }
@@ -2394,8 +2768,11 @@
       "MediaStop",
       "Guide",
       "ColorF0Red",
+      "ColorF2Yellow",
+      "Caption",
       "Menu",
       "Tools",
+      "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
     ].forEach(function (name) {
       if (
         supported.some(function (k) {

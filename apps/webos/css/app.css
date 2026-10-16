@@ -582,6 +582,13 @@ p {
 .detail-copy button {
   margin: 18px 18px 18px 0;
 }
+/* Scrolling rows measure their children's offsetTop/offsetLeft (scrollToElement), which only works when the
+   row itself is the children's offset parent. Without this the episode list scrolled the focused row out of view. */
+.chip-row,
+.cards,
+.episodes {
+  position: relative;
+}
 .episodes {
   height: 360px;
   overflow: auto;
@@ -1088,4 +1095,97 @@ button.primary-button {
 }
 .pair-actions button {
   margin-right: 16px;
+}
+/* Subtitles drawn from AVPlay text cues (HTML video draws its own text tracks). */
+.subtitle-layer {
+  position: absolute;
+  left: 160px;
+  right: 160px;
+  bottom: 70px;
+  z-index: 4;
+  text-align: center;
+  pointer-events: none;
+}
+.subtitle-layer.raised {
+  bottom: 290px;
+}
+.subtitle-layer span {
+  display: inline-block;
+  max-width: 100%;
+  padding: 10px 26px;
+  border-radius: 10px;
+  background: #000000c7;
+  color: #fff;
+  font-size: 46px;
+  font-weight: bold;
+  line-height: 1.3;
+  white-space: pre-line;
+  text-shadow: 0 2px 4px #000;
+}
+/* Settings: playback and privacy row */
+.settings-extras {
+  margin-top: 30px;
+}
+.settings-extras h2 {
+  font-size: 30px;
+  margin-bottom: 6px;
+}
+.settings-extra-row {
+  display: flex;
+  flex-wrap: wrap;
+}
+.settings-extra-row .extra-button {
+  margin: 12px 18px 0 0;
+  font-size: 25px;
+  padding: 15px 22px;
+  background: #32244f;
+}
+body.black .settings-extra-row .extra-button {
+  background: #141414;
+}
+/* Adult content passcode pad */
+.passcode-dialog {
+  width: 760px;
+  text-align: center;
+}
+.passcode-dialog p {
+  margin-bottom: 14px;
+}
+.pin-dots {
+  font-size: 54px;
+  letter-spacing: 22px;
+  margin: 6px 0 4px;
+  color: #cbbfdd;
+}
+.pin-dots .filled {
+  color: #fff;
+}
+.pin-message {
+  min-height: 34px;
+}
+.pin-message.error {
+  color: #ffb4b4 !important;
+}
+.pin-pad {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  width: 560px;
+  margin: 0 auto 10px;
+}
+.dialog .pin-pad .pin-key {
+  width: 160px;
+  margin: 10px;
+  font-size: 34px;
+  padding: 14px 0;
+}
+.dialog .pin-pad .pin-word {
+  font-size: 25px;
+}
+.dialog .pin-pad .pin-key[disabled] {
+  opacity: 0.35;
+}
+.passcode-dialog .pin-note {
+  font-size: 22px !important;
+  margin: 8px 0 0;
 }

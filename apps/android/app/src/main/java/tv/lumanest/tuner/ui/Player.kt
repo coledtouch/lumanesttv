@@ -87,6 +87,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.media3.common.C
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.ui.PlayerView
@@ -102,6 +103,7 @@ import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 import java.util.Locale
 
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
 fun VideoSurface(modifier: Modifier, texture: Boolean) {
     AndroidView(
@@ -110,6 +112,9 @@ fun VideoSurface(modifier: Modifier, texture: Boolean) {
                 if (texture) R.layout.player_texture else R.layout.player_surface, null, false,
             ) as PlayerView).apply {
                 player = PlayerHolder.player
+                // Full screen draws subtitles and closed captions (PlayerView's SubtitleView, styled from the
+                // device's caption settings). The small guide preview stays clean.
+                subtitleView?.visibility = if (texture) android.view.View.GONE else android.view.View.VISIBLE
                 if (!texture) addOnLayoutChangeListener { view, _, _, _, _, _, _, _, _ ->
                     val bounds = Rect()
                     if (view.getGlobalVisibleRect(bounds)) ctx.tunerActivity()?.updatePipSourceRect(bounds)
@@ -220,6 +225,7 @@ private fun LivePlayer(req: PlayRequest.Live, onExit: (Channel?) -> Unit) {
     var videoFocused by remember { mutableStateOf(true) }
     var controlsFocused by remember { mutableStateOf(false) }
     var controlsRequested by remember { mutableStateOf(false) }
+    var trackDialog by remember { mutableStateOf<Int?>(null) }
     val controlsFocus = remember { FocusRequester() }
     val rootFocus = remember { FocusRequester() }
     val ui = rememberPlaybackUi()
@@ -283,7 +289,7 @@ private fun LivePlayer(req: PlayRequest.Live, onExit: (Channel?) -> Unit) {
     }
     LaunchedEffect(ui.playing) { if (ui.playing) skips = 0 }
     LaunchedEffect(favoriteNoticeTick) { if (favoriteNotice != null) { delay(2200); favoriteNotice = null } }
-    LaunchedEffect(bannerTick, panelOpen, controlsFocused) { delay(6000); if (!panelOpen && !controlsFocused) bannerVisible = false }
+    LaunchedEffect(bannerTick, panelOpen, controlsFocused, trackDialog) { delay(6000); if (!panelOpen && !controlsFocused && trackDialog == null) bannerVisible = false }
     LaunchedEffect(controlsRequested, bannerVisible) {
         if (controlsRequested && bannerVisible && !panelOpen && !pipVideoOnly) {
             delay(40)
@@ -293,6 +299,7 @@ private fun LivePlayer(req: PlayRequest.Live, onExit: (Channel?) -> Unit) {
     }
     LaunchedEffect(pipVideoOnly) {
         panelOpen = false
+        trackDialog = null
         controlsRequested = false
         if (!pipVideoOnly) { showBanner(); delay(40); runCatching { rootFocus.requestFocus() } }
     }
@@ -308,6 +315,7 @@ private fun LivePlayer(req: PlayRequest.Live, onExit: (Channel?) -> Unit) {
 
     BackHandler(enabled = !pipVideoOnly) {
         when {
+            trackDialog != null -> trackDialog = null
             panelOpen -> panelOpen = false
             !videoFocused -> runCatching { rootFocus.requestFocus() }
             else -> onExit(channel)
@@ -377,7 +385,8 @@ private fun LivePlayer(req: PlayRequest.Live, onExit: (Channel?) -> Unit) {
         AnimatedVisibility(bannerVisible && !panelOpen, Modifier.align(Alignment.BottomCenter), enter = fadeIn(), exit = fadeOut()) {
             LiveBanner(channel, now, epgVersion, channel.key in favorites, onFavorite = { toggleFavorite(channel) },
                 playing = player.playWhenReady, onTogglePlayback = ::togglePlayback,
-                controlsFocus = controlsFocus, onControlsFocus = { controlsFocused = it }, onChannels = { panelOpen = true }, onReturnToVideo = { rootFocus.requestFocus() })
+                controlsFocus = controlsFocus, onControlsFocus = { controlsFocused = it }, onChannels = { panelOpen = true }, onReturnToVideo = { rootFocus.requestFocus() },
+                onAudio = { trackDialog = C.TRACK_TYPE_AUDIO }, onSubtitles = { trackDialog = C.TRACK_TYPE_TEXT })
         }
         if (digits.isNotEmpty()) {
             Text(
@@ -397,6 +406,9 @@ private fun LivePlayer(req: PlayRequest.Live, onExit: (Channel?) -> Unit) {
                 modifier = Modifier.align(Alignment.TopCenter).padding(top = 22.dp, start = 24.dp, end = 24.dp)
                     .clip(RoundedCornerShape(50)).background(Color(0xFF221B3A).copy(alpha = 0.95f)).padding(horizontal = 18.dp, vertical = 10.dp))
         }
+        trackDialog?.let { type ->
+            TrackDialog(type, ui.tracksVersion, onClose = { trackDialog = null; showBanner(); controlsRequested = true })
+        }
         }
     }
     LaunchedEffect(Unit) { runCatching { rootFocus.requestFocus() } }
@@ -409,7 +421,7 @@ private fun nowNext(c: Channel, now: Long): Pair<Program?, Program?> {
 }
 
 @Composable
-private fun LiveBanner(c: Channel, now: Long, epgVersion: Int, favorite: Boolean, onFavorite: () -> Unit, playing: Boolean, onTogglePlayback: () -> Unit, controlsFocus: FocusRequester, onControlsFocus: (Boolean) -> Unit, onChannels: () -> Unit, onReturnToVideo: () -> Unit) {
+private fun LiveBanner(c: Channel, now: Long, epgVersion: Int, favorite: Boolean, onFavorite: () -> Unit, playing: Boolean, onTogglePlayback: () -> Unit, controlsFocus: FocusRequester, onControlsFocus: (Boolean) -> Unit, onChannels: () -> Unit, onReturnToVideo: () -> Unit, onAudio: () -> Unit, onSubtitles: () -> Unit) {
     val (cur, next) = remember(c, now, epgVersion) { nowNext(c, now) }
     BoxWithConstraints(
         Modifier.fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.92f))))
@@ -467,6 +479,8 @@ private fun LiveBanner(c: Channel, now: Long, epgVersion: Int, favorite: Boolean
                 PillButton("Channels", onChannels, Modifier.focusRequester(controlsFocus), icon = { Icon(Icons.Rounded.List, null, tint = it, modifier = Modifier.size(18.dp)) })
                 PillButton(if (playing) "Pause" else "Play", onTogglePlayback, icon = { Icon(if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, null, tint = it, modifier = Modifier.size(18.dp)) })
                 PillButton(if (favorite) "Saved" else "Favorite", onFavorite, icon = { Icon(if (favorite) Icons.Rounded.Star else Icons.Rounded.StarBorder, null, tint = it, modifier = Modifier.size(18.dp)) })
+                PillButton("Subtitles", onSubtitles, icon = { Icon(Icons.Rounded.ClosedCaption, null, tint = it, modifier = Modifier.size(18.dp)) })
+                PillButton("Audio", onAudio, icon = { Icon(Icons.Rounded.GraphicEq, null, tint = it, modifier = Modifier.size(18.dp)) })
                 PictureInPictureButton()
             }
             Text(
@@ -615,7 +629,7 @@ private fun VodPlayer(req: PlayRequest.Vod, onExit: () -> Unit) {
         current = next
     }
 
-    LaunchedEffect(current.url) { PlayerHolder.play(current.url, live = false, startMs = current.startMs, backups = current.streamBackups) }
+    LaunchedEffect(current.url) { PlayerHolder.play(current.url, live = false, startMs = current.startMs, backups = current.streamBackups, subtitles = current.subtitles) }
     LaunchedEffect(Unit) { while (true) { delay(10_000); save() } }
     DisposableEffect(Unit) { onDispose { save() } }
     LaunchedEffect(ui.ended) { if (ui.ended > 0) playNext() }
@@ -763,11 +777,7 @@ private fun TrackDialog(type: Int, version: Int, onClose: () -> Unit) {
     val options = remember(type, version) {
         val out = mutableListOf<Option>()
         val params = player.trackSelectionParameters
-        if (type == C.TRACK_TYPE_TEXT) {
-            out += Option("Off", C.TRACK_TYPE_TEXT in params.disabledTrackTypes) {
-                player.trackSelectionParameters = params.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
-            }
-        }
+        val textDisabled = C.TRACK_TYPE_TEXT in params.disabledTrackTypes
         var n = 0
         player.currentTracks.groups.filter { it.type == type }.forEach { g ->
             for (i in 0 until g.length) {
@@ -776,15 +786,22 @@ private fun TrackDialog(type: Int, version: Int, onClose: () -> Unit) {
                 val f = g.getTrackFormat(i)
                 val lang = f.language?.takeIf { it != "und" }?.let { Locale(it).displayLanguage.ifBlank { it } }
                 val extra = if (type == C.TRACK_TYPE_AUDIO && f.channelCount > 0)
-                    when (f.channelCount) { 1 -> "Mono"; 2 -> "Stereo"; 6 -> "5.1"; 8 -> "7.1"; else -> "${f.channelCount}ch" } else null
-                val label = listOfNotNull(f.label ?: lang ?: "Track $n", extra).joinToString(" · ")
-                out += Option(label, g.isTrackSelected(i) && !(type == C.TRACK_TYPE_TEXT && C.TRACK_TYPE_TEXT in params.disabledTrackTypes)) {
+                    when (f.channelCount) { 1 -> "Mono"; 2 -> "Stereo"; 6 -> "5.1"; 8 -> "7.1"; else -> "${f.channelCount}ch" }
+                    else if (type == C.TRACK_TYPE_TEXT) captionKind(f) else null
+                val label = listOfNotNull(f.label ?: lang ?: if (extra != null) null else "Track $n", extra).joinToString(" · ")
+                out += Option(label, g.isTrackSelected(i) && !(type == C.TRACK_TYPE_TEXT && textDisabled)) {
                     player.trackSelectionParameters = params.buildUpon()
                         .setTrackTypeDisabled(type, false)
                         .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, i))
                         .build()
                 }
             }
+        }
+        // "Off" only makes sense when the stream has something to turn off.
+        if (type == C.TRACK_TYPE_TEXT && out.isNotEmpty()) {
+            out.add(0, Option("Off", textDisabled || out.none { it.selected }) {
+                player.trackSelectionParameters = params.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+            })
         }
         out
     }
@@ -802,10 +819,22 @@ private fun TrackDialog(type: Int, version: Int, onClose: () -> Unit) {
                 if (type == C.TRACK_TYPE_AUDIO) "Audio" else "Subtitles", color = Palette.text, fontSize = 22.sp,
                 fontWeight = FontWeight.Bold,
             )
-            Text(if (type == C.TRACK_TYPE_AUDIO) "Choose your preferred audio track" else "Choose a language or turn subtitles off",
+            Text(if (type == C.TRACK_TYPE_AUDIO) "Choose your preferred audio track" else "Choose a language or turn subtitles off. Settings > Subtitles turns them on for every stream.",
                 color = Palette.dim, fontSize = 12.sp, modifier = Modifier.padding(top = 5.dp, bottom = 20.dp))
             LazyColumn(state = list, modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(7.dp), contentPadding = PaddingValues(bottom = 12.dp)) {
-                if (options.isEmpty()) item { Text("No alternate tracks available for this stream.", color = Palette.dim, fontSize = 14.sp) }
+                if (options.isEmpty()) item {
+                    if (type == C.TRACK_TYPE_TEXT) Column {
+                        Text(
+                            if (player.currentTracks.isEmpty) "Still loading this stream" else "No subtitles in this stream",
+                            color = Palette.text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            if (player.currentTracks.isEmpty) "Subtitles and closed captions appear here once the stream starts."
+                            else "This channel or video doesn't include subtitles or closed captions.",
+                            color = Palette.dim, fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.padding(top = 6.dp),
+                        )
+                    } else Text("No alternate tracks available for this stream.", color = Palette.dim, fontSize = 14.sp)
+                }
                 itemsIndexed(options) { i, o ->
                 FocusBox(
                     onClick = { o.apply(); onClose() },
@@ -824,6 +853,17 @@ private fun TrackDialog(type: Int, version: Int, onClose: () -> Unit) {
             PillButton("Done", onClose, Modifier.focusRequester(closeFocus).padding(top = 12.dp))
         }
     }
+    }
+}
+
+/** Closed captions carried inside the video (CEA-608 / CEA-708) have no language tag; name them plainly. */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+private fun captionKind(f: androidx.media3.common.Format): String? {
+    val mime = listOfNotNull(f.sampleMimeType, f.codecs).joinToString(" ")
+    return when {
+        MimeTypes.APPLICATION_CEA608 in mime -> "Closed captions" + (if (f.accessibilityChannel > 1) " (CC${f.accessibilityChannel})" else "")
+        MimeTypes.APPLICATION_CEA708 in mime -> "Closed captions (CEA-708)"
+        else -> null
     }
 }
 

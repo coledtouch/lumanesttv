@@ -102,7 +102,8 @@ fun MovieDetailScreen(movie: Movie, state: AppState) {
     LaunchedEffect(movie.id) { requestAttachedFocus(first) }
 
     fun play(from: Long) = state.push(
-        Screen.Player(PlayRequest.Vod(movie.id, movie.name, info?.year, info?.poster ?: movie.poster, movie.url, from, streamBackups = movie.backups)),
+        Screen.Player(PlayRequest.Vod(movie.id, movie.name, info?.year, info?.poster ?: movie.poster, movie.url, from, streamBackups = movie.backups,
+            subtitles = info?.subtitles.orEmpty())),
     )
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -365,6 +366,7 @@ private fun Episode.toRequest(series: Series, from: Long) = PlayRequest.Vod(
     image = image ?: series.cover,
     url = url,
     startMs = from,
+    subtitles = subtitles,
 )
 
 @Composable

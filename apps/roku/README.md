@@ -7,7 +7,10 @@ This is the Roku app in the LumaNest TV monorepo. It is a SceneGraph app with th
 - **Settings:**
   - **Channels:** *All* shows every category on the line, as chosen in the customer hub. *USA only* keeps categories labelled US, USA or United States, or named after a US sports league.
   - **Category order:** Featured (Sports, Premium and News first), the customer hub's order, or A to Z.
+  - **Subtitles:** *Off* or *On*, saved on the TV. When on, the app turns on Roku captions for the video (`globalCaptionMode`) and picks the subtitle track in the language chosen last time, then English, then the first track. Live channels usually carry broadcast CEA-608 captions, which Roku draws itself.
+  - **Adult content:** *Locked* by default. Categories named XXX, Adult, Adults, 18+ or Porn (but not Adult Swim), and anything the Xtream server flags `is_adult`, are hidden in Live TV, Movies and Series. Unlocking asks for a 4-digit passcode; the first time, you create and confirm one. Five wrong tries mean a 60-second wait. Locking needs no passcode, and the app locks again each time it opens. **Change passcode** asks for the current one first. Only a salted SHA-256 hash of the passcode is stored. **Forgot the passcode?** Remove the app from the Roku and reinstall it. Roku deletes an app's saved data when it is removed, so the passcode is cleared and you pair again.
   - **Refresh library** and **Pair again.**
+- **Subtitles while watching:** press **\*** (Options) to choose *Off* or a subtitle track by language. When a stream has no subtitle tracks, the menu says so and still offers broadcast captions (CC). **Back** closes the menu.
 - **First load:** the app reads the whole catalogue once at start-up. A large line can take a minute or two, and the status line says so.
 
 ## Check and package

@@ -65,6 +65,57 @@ class Prefs(context: Context) {
         _categoryOrder.value = order
     }
 
+    /**
+     * Adult ("XXX") categories are hidden until unlocked with a 4-digit passcode (see [AdultFilter]). The passcode
+     * is kept only as a salted SHA-256 hash; clearing the app's data is the way to reset a forgotten one.
+     */
+    private val _adultUnlocked = MutableStateFlow(sp.getBoolean("adultUnlocked", false) && hasAdultPasscode)
+    val adultUnlocked: StateFlow<Boolean> = _adultUnlocked
+
+    val hasAdultPasscode: Boolean
+        get() = !sp.getString("adultPinHash", null).isNullOrBlank() && !sp.getString("adultPinSalt", null).isNullOrBlank()
+
+    /** Creates or replaces the passcode. Callers verify the current one first when replacing it. */
+    fun setAdultPasscode(code: String): Boolean {
+        if (!Passcode.isValid(code)) return false
+        val salt = Passcode.newSalt()
+        sp.edit().putString("adultPinSalt", salt).putString("adultPinHash", Passcode.hash(code, salt))
+            .remove("adultPinFailures").remove("adultPinLockedUntil").apply()
+        return true
+    }
+
+    private fun adultAttempts() = Passcode.Attempts(sp.getInt("adultPinFailures", 0), sp.getLong("adultPinLockedUntil", 0))
+
+    /** Remaining wait after five wrong tries, or 0. */
+    fun adultPasscodeWaitMs(now: Long = System.currentTimeMillis()): Long = adultAttempts().waitMs(now)
+
+    @Synchronized fun checkAdultPasscode(code: String, now: Long = System.currentTimeMillis()): Passcode.Check {
+        val (result, attempts) = Passcode.check(code, sp.getString("adultPinSalt", null), sp.getString("adultPinHash", null), adultAttempts(), now)
+        sp.edit().putInt("adultPinFailures", attempts.failures).putLong("adultPinLockedUntil", attempts.lockedUntil).apply()
+        return result
+    }
+
+    /** Unlocking needs a passcode check first (see Settings); locking never does. */
+    fun setAdultUnlocked(on: Boolean) {
+        val value = on && hasAdultPasscode
+        sp.edit().putBoolean("adultUnlocked", value).apply()
+        _adultUnlocked.value = value
+    }
+
+    /**
+     * Subtitles: off, or on with English preferred (falls back to the first text track, including CEA-608 captions).
+     * Until the viewer chooses, it follows the device's own Captions accessibility switch.
+     */
+    private val _subtitlesOn = MutableStateFlow(sp.getBoolean("subtitlesOn", runCatching {
+        (context.getSystemService(Context.CAPTIONING_SERVICE) as? android.view.accessibility.CaptioningManager)?.isEnabled == true
+    }.getOrDefault(false)))
+    val subtitlesOn: StateFlow<Boolean> = _subtitlesOn
+
+    fun setSubtitlesOn(on: Boolean) {
+        sp.edit().putBoolean("subtitlesOn", on).apply()
+        _subtitlesOn.value = on
+    }
+
     var liveFormat: String
         get() = sp.getString("liveFormat", "ts") ?: "ts"
         set(v) = sp.edit().putString("liveFormat", v).apply()

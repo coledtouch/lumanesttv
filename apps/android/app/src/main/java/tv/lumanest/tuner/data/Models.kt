@@ -16,7 +16,8 @@ data class Source(
     val hotUrl: String = "",
 )
 
-data class Category(val id: String, val name: String)
+/** [adult] is the provider's own `is_adult` flag; names are checked by [AdultFilter]. */
+data class Category(val id: String, val name: String, val adult: Boolean = false)
 
 data class Channel(
     val key: String,
@@ -33,6 +34,8 @@ data class Channel(
     val language: String? = null,
     /** Other copies of this channel from the provider, tried in order when [url] doesn't play. */
     val backups: List<String> = emptyList(),
+    /** Provider `is_adult` flag. Only read by [ContentPolicy] before the catalogue is published. */
+    val adult: Boolean = false,
 )
 
 data class Movie(
@@ -48,6 +51,8 @@ data class Movie(
     val language: String? = null,
     /** Other provider uploads of this film, tried if the primary upload cannot play. */
     val backups: List<String> = emptyList(),
+    /** Provider `is_adult` flag. Only read by [ContentPolicy] before the catalogue is published. */
+    val adult: Boolean = false,
 )
 
 data class Series(
@@ -64,6 +69,8 @@ data class Series(
     val categoryIds: List<String> = listOf(categoryId),
     val country: String? = null,
     val language: String? = null,
+    /** Provider `is_adult` flag. Only read by [ContentPolicy] before the catalogue is published. */
+    val adult: Boolean = false,
 )
 
 data class Episode(
@@ -75,7 +82,12 @@ data class Episode(
     val image: String?,
     val durationSecs: Int,
     val url: String,
+    /** External subtitle files the provider lists for this episode (Xtream `subtitles`). */
+    val subtitles: List<ExternalSubtitle> = emptyList(),
 )
+
+/** A sidecar subtitle file (SRT, WebVTT, SSA or TTML) offered next to a movie or episode. */
+data class ExternalSubtitle(val url: String, val language: String? = null, val label: String? = null)
 
 data class Program(
     val start: Long,
@@ -98,6 +110,7 @@ data class MovieInfo(
     val rating: String?,
     val backdrop: String?,
     val poster: String?,
+    val subtitles: List<ExternalSubtitle> = emptyList(),
 )
 
 data class SeriesInfo(
@@ -122,6 +135,7 @@ sealed interface PlayRequest {
         val queue: List<Vod> = emptyList(),
         val requireEnglishAudio: Boolean = false,
         val streamBackups: List<String> = emptyList(),
+        val subtitles: List<ExternalSubtitle> = emptyList(),
     ) : PlayRequest
 }
 
