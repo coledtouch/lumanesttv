@@ -185,6 +185,8 @@ object TwoChannelPlayer {
         val http = OkHttpDataSource.Factory(deadlines).setUserAgent(Repo.userAgent)
         val extractors = DefaultExtractorsFactory()
             .setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES)
+        // The same factory as full screen: each player's live TS connection is rejoined in the data source when it goes
+        // quiet or drops, one connection per player at a time (the old one is closed before the new one opens).
         val sources = DefaultMediaSourceFactory(
             LiveSlotDataSource.Factory(http, deadlines, guard = { target.progressive }, live = { true }), extractors,
         ).setLoadErrorHandlingPolicy(object : DefaultLoadErrorHandlingPolicy() {
