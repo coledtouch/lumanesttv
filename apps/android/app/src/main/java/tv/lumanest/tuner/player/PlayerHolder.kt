@@ -114,6 +114,9 @@ object PlayerHolder {
                 .setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES)
                 .setTsSubtitleFormats(listOf(Format.Builder().setSampleMimeType(MimeTypes.APPLICATION_CEA608).build()))
                 .setConstantBitrateSeekingEnabled(true)
+            // On progressive live TS, LiveSlotDataSource replaces a provider connection that goes quiet or drops while
+            // the buffer keeps playing (LiveRejoin + TsSplicer), so the extractor sees one continuous stream. Media3
+            // can't resume such a stream itself: it would play the buffer out, then start over from a new connection.
             val mediaSources = DefaultMediaSourceFactory(LiveSlotDataSource.Factory(http, deadlines, guard = { progressive }, live = { isLive }), extractors)
                 .setLoadErrorHandlingPolicy(RetryPolicy)
             // Start once half a second is buffered (IPTV servers burst the first few seconds), then keep
@@ -494,6 +497,7 @@ object PlayerHolder {
     /**
      * Live loads retry fast (300 ms, 600 ms, 900 ms) instead of ExoPlayer's 1 s, 2 s, 3 s ladder, and the
      * provider's "connection in use" answer is final, because [LiveSlotDataSource] already waited it out.
+     * A progressive live TS stream only gets here once [LiveRejoin] has given up rejoining in the data source.
      */
     private object RetryPolicy : DefaultLoadErrorHandlingPolicy() {
         override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {

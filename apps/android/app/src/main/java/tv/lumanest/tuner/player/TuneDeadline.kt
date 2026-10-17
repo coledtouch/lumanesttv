@@ -21,6 +21,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  * by which time the old connection is usually gone.
  *
  * The deadline only covers waiting for headers. Once the stream starts flowing it never applies.
+ *
+ * Each [Attempt] also keeps the [Call] it made. Media3's OkHttpDataSource is not thread-safe, so nothing may close it
+ * from another thread, but [Call.cancel] is: [LiveRejoin]'s watchdog uses [Attempt.cancel] to end a body read that is
+ * stuck on a provider connection which went quiet, and the loading thread then rejoins the stream.
  */
 class TuneDeadline(base: OkHttpClient) : Call.Factory {
     private val answered: MutableSet<Call> = Collections.synchronizedSet(Collections.newSetFromMap(WeakHashMap<Call, Boolean>()))
@@ -29,10 +33,20 @@ class TuneDeadline(base: OkHttpClient) : Call.Factory {
     /** Each open owns its cancellation marker; another request's timeout must not mask its failure. */
     class Attempt(val timeoutMs: Long) {
         val expired = AtomicBoolean(false)
+
+        /** The call this open made (set when OkHttp creates it on the opening thread). */
+        @Volatile
+        var call: Call? = null
+            internal set
+
+        /** Cancels this attempt's call from any thread; a read blocked on its socket fails at once. */
+        fun cancel() { call?.cancel() }
     }
 
     private val client: OkHttpClient = base.newBuilder()
-        // Live stalls should surface in seconds, not the minute a file download is allowed.
+        // Live stalls should surface in seconds, not the minute a file download is allowed. [LiveRejoin] replaces a
+        // quiet live TS connection a little sooner (QUIET_MS) when it can continue the stream on a new one; every other
+        // connection, and any connection waiting for its first byte, keeps this timeout as before.
         .readTimeout(10, TimeUnit.SECONDS)
         .eventListenerFactory {
             object : EventListener() {
@@ -48,6 +62,7 @@ class TuneDeadline(base: OkHttpClient) : Call.Factory {
     override fun newCall(request: Request): Call {
         val call = client.newCall(request)
         val attempt = nextAttempt.get()
+        attempt?.call = call
         val ms = attempt?.timeoutMs ?: 0L
         if (ms > 0) {
             scheduler.schedule({
