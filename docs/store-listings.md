@@ -107,7 +107,7 @@ Because the packages differ, Android treats the two editions as different apps. 
     - **Shared:** if the line's server isn't run by LumaNest TV, the login and viewing requests go to that company: declare it as shared.
     - **Encrypted in transit:** No, unless every line uses https. Provider servers often use plain http, and the app allows it.
     - **Not collected:** Favorites, settings and watch history stay on the TV.
-    - **Other services the app contacts:** iptv-org on GitHub for channel logos, the poster and logo addresses in the line's own data, and epgshare01 only if the customer turns on the free guide fallback.
+    - **Other services the app contacts:** lumanest.tv for the Movies & Series lists (`/api/catalog/rows`: no login or other customer data is sent, only the TV's IP address as with any request; fetched when the catalogue loads, when the app returns to the foreground with an old copy, and on retries after a failure), iptv-org on GitHub for channel logos, the poster and logo addresses in the line's own data, and epgshare01 only if the customer turns on the free guide fallback.
     - **Account deletion:** choose that the app doesn't let people create accounts. Accounts are made on lumanest.tv.
 - **Notes to reviewer** (paste in App access; the login goes only there):
   > Tuner by LumaNest TV is the Android TV app for LumaNest TV subscribers and contains no content of its own. To sign in, open the app. On the "Add a playlist" screen, select "Server login", enter the server URL, username and password below, then select "Save and connect". Alternatively, scan the QR code with a phone and approve it at lumanest.tv/pair with the same account. The line includes live channels, movies and series.
