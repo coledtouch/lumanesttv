@@ -1,7 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Tuner for Roku: pair with your phone, then Live TV, Movies, Series and Settings in three columns. -->
+<!-- Tuner for Roku: pair with your phone, then Home, Live TV, Discover, Library, Search and Settings
+     along the top (docs/browse.md). -->
 <component name="MainScene" extends="Scene">
   <script type="text/brightscript" uri="pkg:/components/MainScene.brs" />
+  <script type="text/brightscript" uri="pkg:/components/scene/Pairing.brs" />
+  <script type="text/brightscript" uri="pkg:/components/scene/Browse.brs" />
+  <script type="text/brightscript" uri="pkg:/components/scene/Details.brs" />
+  <script type="text/brightscript" uri="pkg:/components/scene/Live.brs" />
+  <script type="text/brightscript" uri="pkg:/components/scene/Player.brs" />
+  <script type="text/brightscript" uri="pkg:/components/scene/Settings.brs" />
+  <script type="text/brightscript" uri="pkg:/source/lib/BrowseLogic.brs" />
   <children>
     <Rectangle id="bg" width="1920" height="1080" color="0x0E0C1AFF" />
     <Rectangle id="glow" width="1920" height="6" color="0x7C3AEDFF" />
@@ -19,25 +27,102 @@
       <Label id="pairStatus" translation="[830,750]" width="860" wrap="true" text="Getting a code…" color="0xC4B5FDFF" font="font:SmallSystemFont" />
     </Group>
 
-    <Group id="home" visible="false">
-      <Label id="brand" translation="[80,48]" text="tuner" color="0xF6F3FBFF" font="font:LargeBoldSystemFont" />
-      <Label id="by" translation="[82,104]" text="by LumaNest TV" color="0xC4B5FDFF" font="font:SmallSystemFont" />
-      <Label id="status" translation="[420,70]" width="1420" wrap="true" color="0xC4B5FDFF" font="font:SmallSystemFont" />
-      <LabelList id="nav" translation="[80,190]" itemSize="[290,70]" itemSpacing="[0,8]" numRows="6"
-        color="0xBBB2CFFF" focusedColor="0x141224FF" focusBitmapBlendColor="0xB79CFBFF" font="font:MediumBoldSystemFont" focusedFont="font:MediumBoldSystemFont">
-        <ContentNode role="content">
-          <ContentNode title="Live TV" />
-          <ContentNode title="Movies" />
-          <ContentNode title="Series" />
-          <ContentNode title="Settings" />
-        </ContentNode>
-      </LabelList>
-      <LabelList id="cats" translation="[420,190]" itemSize="[460,62]" itemSpacing="[0,6]" numRows="12" vertFocusAnimationStyle="floatingFocus"
-        color="0xBBB2CFFF" focusedColor="0x141224FF" focusBitmapBlendColor="0xB79CFBFF" font="font:SmallSystemFont" focusedFont="font:SmallBoldSystemFont" />
-      <LabelList id="items" translation="[920,190]" itemSize="[920,62]" itemSpacing="[0,6]" numRows="12" vertFocusAnimationStyle="floatingFocus"
-        color="0xF6F3FBFF" focusedColor="0x141224FF" focusBitmapBlendColor="0xFFFFFFFF" font="font:SmallSystemFont" focusedFont="font:SmallBoldSystemFont" />
-      <Label id="hint" translation="[80,1010]" width="1760" color="0x857D9EFF" font="font:SmallestSystemFont"
-        text="Arrows browse · OK opens or plays · Back returns · * during playback for subtitles" />
+    <Group id="shell" visible="false">
+      <Label id="brand" translation="[80,40]" text="tuner" color="0xF6F3FBFF" font="font:LargeBoldSystemFont" />
+      <Label id="by" translation="[82,96]" text="by LumaNest TV" color="0xC4B5FDFF" font="font:SmallestSystemFont" />
+      <ChipBar id="nav" translation="[330,44]" />
+
+      <Group id="homeView" visible="false">
+        <Label id="homeTitle" translation="[80,140]" width="1760" color="0xF6F3FBFF" font="font:LargeBoldSystemFont" />
+        <Label id="homeMeta" translation="[80,206]" width="1760" color="0xC4B5FDFF" font="font:SmallSystemFont" />
+        <RowList id="homeRows" translation="[80,300]" itemComponentName="PosterItem" numRows="3"
+          itemSize="[1840,330]" itemSpacing="[0,76]" rowItemSize="[[220,330]]" rowItemSpacing="[[24,0]]"
+          showRowLabel="[true]" rowLabelOffset="[[0,12]]" rowLabelColor="0xDDD3F2FF" rowLabelFont="font:MediumBoldSystemFont"
+          rowFocusAnimationStyle="floatingFocus" vertFocusAnimationStyle="fixedFocus"
+          drawFocusFeedback="true" drawFocusFeedbackOnTop="true" focusBitmapBlendColor="0xF6F3FBFF" />
+      </Group>
+
+      <Group id="liveView" visible="false">
+        <LabelList id="cats" translation="[80,150]" itemSize="[520,62]" itemSpacing="[0,6]" numRows="12" vertFocusAnimationStyle="floatingFocus"
+          color="0xBBB2CFFF" focusedColor="0x141224FF" focusBitmapBlendColor="0xB79CFBFF" font="font:SmallSystemFont" focusedFont="font:SmallBoldSystemFont" />
+        <LabelList id="items" translation="[660,150]" itemSize="[1180,62]" itemSpacing="[0,6]" numRows="12" vertFocusAnimationStyle="floatingFocus"
+          color="0xF6F3FBFF" focusedColor="0x141224FF" focusBitmapBlendColor="0xFFFFFFFF" font="font:SmallSystemFont" focusedFont="font:SmallBoldSystemFont" />
+      </Group>
+
+      <Group id="discoverView" visible="false">
+        <ChipBar id="filters" translation="[80,140]" chipHeight="58" font="font:SmallBoldSystemFont" />
+        <Label id="discoverTitle" translation="[80,222]" width="1760" color="0xF6F3FBFF" font="font:MediumBoldSystemFont" />
+        <Label id="discoverMeta" translation="[80,270]" width="1760" color="0xC4B5FDFF" font="font:SmallSystemFont" />
+        <MarkupGrid id="discoverGrid" translation="[80,330]" itemComponentName="PosterItem" numColumns="7" numRows="2"
+          itemSize="[212,318]" itemSpacing="[26,40]" vertFocusAnimationStyle="floatingFocus"
+          drawFocusFeedback="true" drawFocusFeedbackOnTop="true" focusBitmapBlendColor="0xF6F3FBFF" />
+        <Label id="discoverEmpty" translation="[80,360]" width="1760" wrap="true" color="0xA79FC0FF" font="font:MediumSystemFont" visible="false" />
+      </Group>
+
+      <Group id="libraryView" visible="false">
+        <Label id="libraryTitle" translation="[80,140]" width="1760" color="0xF6F3FBFF" font="font:LargeBoldSystemFont" />
+        <Label id="libraryMeta" translation="[80,206]" width="1760" color="0xC4B5FDFF" font="font:SmallSystemFont" />
+        <RowList id="libraryRows" translation="[80,300]" itemComponentName="PosterItem" numRows="3"
+          itemSize="[1840,330]" itemSpacing="[0,76]" rowItemSize="[[220,330]]" rowItemSpacing="[[24,0]]"
+          showRowLabel="[true]" rowLabelOffset="[[0,12]]" rowLabelColor="0xDDD3F2FF" rowLabelFont="font:MediumBoldSystemFont"
+          rowFocusAnimationStyle="floatingFocus" vertFocusAnimationStyle="fixedFocus"
+          drawFocusFeedback="true" drawFocusFeedbackOnTop="true" focusBitmapBlendColor="0xF6F3FBFF" />
+        <Label id="libraryEmpty" translation="[80,300]" width="1400" wrap="true" color="0xA79FC0FF" font="font:MediumSystemFont" visible="false"
+          text="Your Library is empty. Press * on any movie or series to add it, and what you watch shows up here." />
+      </Group>
+
+      <Group id="searchView" visible="false">
+        <MiniKeyboard id="keyboard" translation="[80,150]" />
+        <Label id="searchTitle" translation="[780,150]" width="1060" color="0xF6F3FBFF" font="font:MediumBoldSystemFont" />
+        <Label id="searchMeta" translation="[780,198]" width="1060" color="0xC4B5FDFF" font="font:SmallSystemFont" />
+        <MarkupGrid id="searchGrid" translation="[780,260]" itemComponentName="PosterItem" numColumns="5" numRows="2"
+          itemSize="[190,285]" itemSpacing="[22,36]" vertFocusAnimationStyle="floatingFocus"
+          drawFocusFeedback="true" drawFocusFeedbackOnTop="true" focusBitmapBlendColor="0xF6F3FBFF" />
+        <Label id="searchEmpty" translation="[780,280]" width="1060" wrap="true" color="0xA79FC0FF" font="font:MediumSystemFont" />
+      </Group>
+
+      <Group id="settingsView" visible="false">
+        <LabelList id="settingsList" translation="[80,150]" itemSize="[760,64]" itemSpacing="[0,6]" numRows="12" vertFocusAnimationStyle="floatingFocus"
+          color="0xBBB2CFFF" focusedColor="0x141224FF" focusBitmapBlendColor="0xB79CFBFF" font="font:SmallSystemFont" focusedFont="font:SmallBoldSystemFont" />
+        <Rectangle id="settingsPanel" translation="[900,150]" width="940" height="820" color="0x171428FF" />
+        <Label id="settingsInfo" translation="[940,190]" width="860" wrap="true" color="0xDDD3F2FF" font="font:SmallSystemFont" />
+      </Group>
+
+      <Label id="status" translation="[80,150]" width="1760" wrap="true" color="0xC4B5FDFF" font="font:MediumSystemFont" />
+      <!-- The Discover grid ends at y=1006, above this bar. On Home and Library the second row is a peek of the
+           next row that runs off the bottom of the screen, so the bar covers only part of a row cut off anyway. -->
+      <Rectangle id="hintBar" translation="[0,1024]" width="1920" height="56" color="0x0E0C1AF2">
+        <Label id="hint" translation="[80,0]" width="1760" height="56" vertAlign="center" color="0x857D9EFF" font="font:SmallestSystemFont" />
+      </Rectangle>
+    </Group>
+
+    <!-- Details for one movie or series: Play / Resume, Library, and a series' episodes. -->
+    <Group id="details" visible="false">
+      <!-- Faint and scaled up, so a small decode is enough; a full-size poster would cost memory for nothing. -->
+      <Poster id="detailsBackdrop" width="1920" height="1080" loadWidth="480" loadHeight="720" loadDisplayMode="scaleToZoom" opacity="0.18" />
+      <Rectangle id="detailsShade" width="1920" height="1080" color="0x0E0C1AC0" />
+      <Rectangle id="detailsTile" translation="[80,120]" width="340" height="510" color="0x221C38FF" />
+      <Label id="detailsTileName" translation="[100,140]" width="300" height="470" wrap="true" horizAlign="center" vertAlign="center" color="0xDDD3F2FF" font="font:MediumBoldSystemFont" />
+      <Poster id="detailsPoster" translation="[80,120]" width="340" height="510" loadWidth="340" loadHeight="510" loadDisplayMode="scaleToZoom" />
+      <Label id="detailsTitle" translation="[480,112]" width="1360" color="0xF6F3FBFF" font="font:LargeBoldSystemFont" />
+      <Label id="detailsMeta" translation="[480,180]" width="1360" color="0xC4B5FDFF" font="font:SmallSystemFont" />
+      <Label id="detailsPlot" translation="[480,232]" width="1360" height="150" wrap="true" maxLines="4" color="0xDDD3F2FF" font="font:SmallSystemFont" />
+      <LabelList id="detailsActions" translation="[480,420]" itemSize="[560,66]" itemSpacing="[0,8]" numRows="5" vertFocusAnimationStyle="floatingFocus"
+        color="0xF6F3FBFF" focusedColor="0x141224FF" focusBitmapBlendColor="0xB79CFBFF" font="font:SmallBoldSystemFont" focusedFont="font:SmallBoldSystemFont" />
+      <Label id="episodesTitle" translation="[1100,380]" text="Episodes" color="0xC4B5FDFF" font="font:SmallBoldSystemFont" visible="false" />
+      <LabelList id="detailsEpisodes" translation="[1100,420]" itemSize="[740,60]" itemSpacing="[0,6]" numRows="8" vertFocusAnimationStyle="floatingFocus"
+        color="0xDDD3F2FF" focusedColor="0x141224FF" focusBitmapBlendColor="0xFFFFFFFF" font="font:SmallSystemFont" focusedFont="font:SmallBoldSystemFont" visible="false" />
+      <Label id="detailsHint" translation="[80,1010]" width="1760" color="0x857D9EFF" font="font:SmallestSystemFont" />
+    </Group>
+
+    <!-- Choice panel for the Discover filters. -->
+    <Group id="picker" visible="false">
+      <Rectangle id="pickerShade" width="1920" height="1080" color="0x0E0C1A99" />
+      <Rectangle id="pickerPanel" translation="[1240,0]" width="680" height="1080" color="0x171428FF" />
+      <Label id="pickerTitle" translation="[1300,120]" width="560" color="0xF6F3FBFF" font="font:LargeBoldSystemFont" />
+      <LabelList id="pickerList" translation="[1300,220]" itemSize="[560,62]" itemSpacing="[0,6]" numRows="11" vertFocusAnimationStyle="floatingFocus"
+        color="0xF6F3FBFF" focusedColor="0x141224FF" focusBitmapBlendColor="0xB79CFBFF" font="font:SmallSystemFont" focusedFont="font:SmallBoldSystemFont" />
+      <Label id="pickerHint" translation="[1300,1000]" width="560" text="OK chooses · Back closes" color="0x857D9EFF" font="font:SmallestSystemFont" />
     </Group>
 
     <Video id="video" width="1920" height="1080" visible="false" />
@@ -52,7 +137,7 @@
       <Label id="subsHint" translation="[1300,1000]" width="560" text="OK chooses · Back closes" color="0x857D9EFF" font="font:SmallestSystemFont" />
     </Group>
 
-    <Rectangle id="toastBg" translation="[460,940]" width="1000" height="80" color="0x2B2349F2" visible="false">
+    <Rectangle id="toastBg" translation="[460,920]" width="1000" height="80" color="0x2B2349F2" visible="false">
       <Label id="toast" width="1000" height="80" horizAlign="center" vertAlign="center" color="0xF6F3FBFF" font="font:MediumSystemFont" />
     </Rectangle>
   </children>

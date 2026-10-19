@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A 2:3 poster tile for RowList and MarkupGrid. The title shows on the tile until the poster loads
+     (or when there is none); a check badge marks Library favorites and a bar shows progress. -->
+<component name="PosterItem" extends="Group">
+  <interface>
+    <field id="itemContent" type="node" onChange="showContent" />
+    <field id="width" type="float" value="220" onChange="layout" />
+    <field id="height" type="float" value="330" onChange="layout" />
+  </interface>
+  <script type="text/brightscript" uri="pkg:/components/PosterItem.brs" />
+  <children>
+    <Rectangle id="tile" color="0x221C38FF" />
+    <Label id="name" color="0xDDD3F2FF" font="font:SmallBoldSystemFont" wrap="true" horizAlign="center" vertAlign="center" maxLines="5" />
+    <Poster id="poster" loadDisplayMode="scaleToZoom" />
+    <Rectangle id="captionBack" color="0x0E0C1AE6" visible="false" />
+    <Label id="caption" color="0xF6F3FBFF" font="font:SmallestSystemFont" horizAlign="center" vertAlign="center" visible="false" />
+    <Rectangle id="progressBack" color="0x0E0C1ACC" visible="false" />
+    <Rectangle id="progressBar" color="0xB79CFBFF" visible="false" />
+    <Poster id="badge" uri="pkg:/images/badge-check.png" width="44" height="44" visible="false" />
+  </children>
+</component>

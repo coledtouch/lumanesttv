@@ -4,5 +4,7 @@ declare namespace Cloudflare {
     BUCKET?: R2Bucket;
     /** Google Cast custom receiver app ID (public/cast/receiver.html); unset uses Google's Default Media Receiver. */
     CAST_RECEIVER_APP_ID?: string;
+    /** TMDB v3 API key or v4 read access token for /api/catalog/rows; unset answers source "none". Needs TMDB's commercial terms first (docs/deployment.md). */
+    TMDB_API_KEY?: string;
   }
 }

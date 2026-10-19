@@ -1,0 +1,14 @@
+{
+  "rootDir": ".",
+  "files": [
+    "manifest",
+    "images/**/*",
+    "source/**/*.brs",
+    "!source/main.brs",
+    { "src": "tests/**/*.brs", "dest": "source/tests" }
+  ],
+  "stagingDir": "../../output/roku/staging-tests",
+  "outFile": "../../output/roku/tuner-roku-tests.zip",
+  "retainStagingDir": false,
+  "diagnosticFilters": []
+}

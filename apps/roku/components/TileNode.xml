@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One poster tile in a row or grid. title and HDPosterUrl come from ContentNode.
+     tile: "title" (a movie or series), "seeall" (opens Discover or Library) or "live" (a channel in Search).
+     refType/refIdx point into the catalogue ("movies" or "series" and the title's index, or "live" and
+     the index into the current search results); list is the Discover list a See all tile opens. -->
+<component name="TileNode" extends="ContentNode">
+  <interface>
+    <field id="tile" type="string" value="title" />
+    <field id="refType" type="string" />
+    <field id="refIdx" type="integer" value="-1" />
+    <field id="list" type="string" />
+    <field id="fav" type="boolean" value="false" />
+    <field id="prog" type="float" value="0" />
+  </interface>
+</component>
