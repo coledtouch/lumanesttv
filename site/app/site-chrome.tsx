@@ -2,8 +2,7 @@
 
 // Shared public header and footer. The owner console (app/manage) keeps its own header.
 import {useEffect, useRef, useState, type ReactNode} from 'react';
-import {DEFAULT_PORTAL} from './site';
-import {footerLinks, headerLinks} from './site-links';
+import {footerLinks, headerHub, headerLinks} from './site-links';
 
 const legal = [['/terms', 'Terms'], ['/privacy', 'Privacy'], ['/refunds', 'Refunds']] as const;
 // eslint-disable-next-line @next/next/no-img-element -- static logo PNG with explicit width/height; vinext's next/image would route it through /_next/image and lazy-load the above-the-fold logo
@@ -11,11 +10,12 @@ const logo = (width: number) => <a className="chrome-home" href="/" aria-label="
 
 /**
  * Renders the skip link and header; every page using it must give its main element id="main-content".
- * `purchases={false}` leaves out the Plans and Renew links (see site-links.ts).
+ * `purchases={false}` leaves out the Plans, Renew and Customer hub links (see site-links.ts).
  */
 export function SiteHeader({portal, current, install = true, actions, purchases = true}: {portal?: string; current?: string; install?: boolean; actions?: ReactNode; purchases?: boolean}) {
   const [open, setOpen] = useState(false);
   const toggle = useRef<HTMLButtonElement>(null);
+  const hub = headerHub(portal, purchases);
 
   useEffect(() => {
     if (!open) return;
@@ -32,7 +32,7 @@ export function SiteHeader({portal, current, install = true, actions, purchases 
       <nav id="primary-navigation" className={open ? 'is-open' : ''} aria-label="Main navigation" onClick={event => {if (event.target instanceof Element && event.target.closest('a')) setOpen(false);}}>
         {headerLinks(purchases).map(([href, label]) => <a key={href} href={href} aria-current={href === current ? 'page' : undefined}>{label}</a>)}
         {install && <span className="chrome-install" data-pwa-install-slot=""/>}
-        <a className="chrome-hub" href={portal || DEFAULT_PORTAL}>Customer hub <span aria-hidden="true">↗</span></a>
+        {hub && <a className="chrome-hub" href={hub}>Customer hub <span aria-hidden="true">↗</span></a>}
       </nav>
       {actions && <div className="chrome-actions">{actions}</div>}
     </header>

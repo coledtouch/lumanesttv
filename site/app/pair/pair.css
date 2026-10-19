@@ -16,6 +16,5 @@
 .pair-code{font-family:'Manrope',sans-serif;letter-spacing:2px}
 .pair-warning{background:#ede5fb;color:#52446d;border-radius:8px;padding:14px 16px;font-size:13px;line-height:1.7;margin:0 0 22px}
 .pair-actions{display:flex;flex-direction:column;gap:10px}
-.pair-help{display:inline-block;margin-top:18px;font-size:13px;color:var(--violet)}
 .pair-error{margin:18px 0 0;background:#fee9e7;color:#8f2525;padding:14px 16px;border-radius:8px;font-size:14px;line-height:1.6}
 @media(max-width:520px){.pair-page{padding:28px 16px 60px}.pair-card{padding:28px 20px}}
