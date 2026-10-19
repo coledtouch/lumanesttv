@@ -377,8 +377,9 @@
 
     // Finished catalogues stay private to this widget. IndexedDB avoids the small settings quota.
     var catalogDatabase = null, catalogMemory = Object.create(null), catalogMemoryIdentity = '';
-    // Version 2 records carry the adult flags; older saved catalogues reload once.
-    var CATALOG_RECORD_SCHEMA = 2;
+    // Version 2 records carry the adult flags; version 3 records come from the aligned catalogue readers (one M3U
+    // name rule, CR line ends, provider TMDB ids, trimming). Older saved catalogues reload once.
+    var CATALOG_RECORD_SCHEMA = 3;
     function catalogStorageApi() { try { return root.indexedDB && typeof root.indexedDB.open === 'function' ? root.indexedDB : null; } catch (_) { return null; } }
     // SHA-256 (FIPS 180-4), synchronous so source changes cannot race catalogue selection.
     function catalogDigest(value) {

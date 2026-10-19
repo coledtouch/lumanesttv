@@ -231,6 +231,17 @@ test('schema corruption and duplicate IDs reject only the damaged snapshot secti
     }
 });
 
+test('catalogues saved by an older reader (record schema 2, Samsung 1.5.0 / LG 1.1.0) reload once instead of being restored', async () => {
+    // The aligned readers changed names, groups, ids and CR-only playlists, so a record they didn't write is never shown.
+    const saved = storage(), database = indexedDB(); await seed(saved, database);
+    for (const record of database.records.values()) { assert.equal(record.schema, 3); record.schema = 2; }
+    const h = fixture(saved, database), client = h.client(), loaded = client.value.load(); await flush();
+    assert.equal(client.published.length, 0); assert.equal(h.requests.length, 6);
+    h.finishCatalog(); await loaded;
+    assert.deepEqual(client.published.map(value => value.kind).sort(), ['live', 'movies', 'series']);
+    assert.ok([...database.records.values()].every(record => record.schema === 3));
+});
+
 test('cancelling a client during IndexedDB read cannot publish stale rows or start provider requests', async () => {
     const saved = storage(), database = indexedDB(); await seed(saved, database); database.options.holdReads = true;
     const h = fixture(saved, database), client = h.client(), loaded = client.value.load(); await flush();
