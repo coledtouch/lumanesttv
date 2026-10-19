@@ -81,3 +81,9 @@ test('IP stream origin aliases preserve paths and query only for an explicit tru
   assert.throws(()=>mapProviderOrigin(source,map,hosts,['38.190.178.54'],'lumanest.tv'));
   assert.throws(()=>mapProviderOrigin('http://tv.lumanest.tv/live',JSON.stringify({'http://tv.lumanest.tv':'http://media.lumanest.tv'}),hosts,[...httpHosts,'tv.lumanest.tv'],'lumanest.tv'));
 });
+
+test('movie and series entries keep their tvg-logo poster address; other entries are unchanged',()=>{
+  const channels=parseM3U('#EXTM3U\n#EXTINF:-1 tvg-logo="https://image.tmdb.org/t/p/w600/a.jpg" group-title="VOD",Heat (1995)\nhttps://tv.lumanest.tv/movie/u/p/7.mkv\n#EXTINF:-1 group-title="News",News\nhttps://tv.lumanest.tv/live/u/p/1.m3u8\n#EXTINF:-1 tvg-logo="'+'x'.repeat(1100)+'",Long\nhttps://tv.lumanest.tv/movie/u/p/8.mp4');
+  assert.equal(channels[0].logo,'https://image.tmdb.org/t/p/w600/a.jpg');assert.equal(channels[0].format,'mpegts');
+  assert.equal(channels[1].logo,undefined);assert.equal(channels[2].logo,undefined,'an overlong logo is dropped');
+});

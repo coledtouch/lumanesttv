@@ -1,4 +1,4 @@
-export type PlaylistChannel = {name: string; group: string; url: string; format: 'hls' | 'mpegts' | 'file'};
+export type PlaylistChannel = {name: string; group: string; url: string; format: 'hls' | 'mpegts' | 'file'; logo?: string};
 export type PlayerSession = {username: string; password: string; exp: number; sid: string};
 export type PlayerMedia = {url: string; bind: string; exp: number; root?: 1};
 
@@ -53,6 +53,8 @@ export function parseM3U(text: string, portal?: string): PlaylistChannel[] {
             url: url.href,
             format: /\.m3u8$/i.test(url.pathname) ? 'hls' : /\.(mp4|m4v|webm)$/i.test(url.pathname) ? 'file' : 'mpegts',
           });
+          const logo = attribute('tvg-logo')?.trim();
+          if (logo && logo.length <= 1024) result[result.length - 1].logo = logo;
         }
       } catch {}
       info = ''; group = 'Other';

@@ -89,3 +89,7 @@ The apps never call TMDB directly. The website serves the lists, so the TMDB key
 ## Attribution
 
 When TMDB data is used, Settings → About shows: "This product uses the TMDB API but is not endorsed or certified by TMDB."
+
+## Web player
+
+The web player at `lumanest.tv/watch` follows this design with the same rules as the apps (`site/lib/browse.ts` is a port of the Roku app's `BrowseLogic.brs`, with the same test cases). It works with a mouse, touch and a TV remote's arrow keys. Titles come from the line's Xtream catalogue when `TV_APP_XTREAM_SERVER` is set, otherwise from the movie and series entries of the line's M3U playlist (series entries named "Show S01E02" are grouped into one series per show and category). The Library and the "Movies & Series: USA only / All" switch are kept in the browser (the Library separately for each line). Movies in a format browsers can't play (MKV, AVI and similar) point to the Tuner app.

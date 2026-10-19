@@ -1,4 +1,5 @@
 import './watch.css';
+import './browse.css';
 import Player from './player';import {settings} from '../../lib/mybunny';import {DEFAULT_PORTAL} from '../site';
 export const dynamic='force-dynamic';
 export const metadata={title:'Watch | LumaNest TV',description:'Sign in with your LumaNest TV line login to watch live channels, movies and series in your browser.'};

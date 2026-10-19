@@ -1,7 +1,8 @@
 import * as workers from 'cloudflare:workers';
 import {settings, ServiceError} from './mybunny';
 import {parseM3U, trustedStreamURL, normalizeProviderURL, mapProviderOrigin, rewriteHLS, castSource, transportStreamSource, validSession, validMedia, type PlayerSession, type PlayerMedia} from './player-data';
-import {seal, open, digest} from './player-crypto';
+import {seal, open, digest, mac} from './player-crypto';
+import {createPosterBook, entryExt, entryKind} from './player-vod-data';
 import {sampleDiagnosticContainer} from './player-diagnostic-container';
 import {fetchPlayerRelay, providerRelaySource, relayConfigured} from './player-relay';
 import {db} from './paypal';
@@ -17,6 +18,22 @@ function approvedStreamURL(value: string) {
   return trustedStreamURL(value, hosts(), relay ? [...httpHosts(), relay.hostname] : httpHosts());
 }
 const streamURL = (value: string) => approvedStreamURL(normalizeProviderURL(value, portal()).href);
+/** An address on an approved provider host (the same rules as every stream), normalized; throws otherwise. */
+export const providerURL = streamURL;
+/** True for an address on an approved provider host, including hosts reached only through the stream relay. */
+export function isProviderAddress(url: URL) {
+  try {streamURL(url.href); return true;} catch {return false;}
+}
+/**
+ * True for an address on an approved provider host that this Worker fetches itself. The stream relay passes only
+ * video, audio and playlists (cloudflare/lumanest-stream-relay.mjs), so an Xtream server or a poster on a relay host
+ * could never be read through it; those get no catalogue and title cards instead (lib/player-vod.ts).
+ */
+export function isDirectProviderAddress(url: URL) {
+  let source: URL;
+  try {source = streamURL(url.href);} catch {return false;}
+  return !(relayEnabled() && providerRelaySource(source.href, settings().STREAM_RELAY_ALLOWED_HOSTS));
+}
 const relaySources = new WeakMap<Response, string>();
 type DiagnosticHop = {origin: string; status: number; contentType: string};
 type FetchTrace = {onResponse: (hop: DiagnosticHop, url: string) => void; onBlockedOrigin?: (origin: string) => void; normalizePortal?: boolean};
@@ -61,7 +78,7 @@ export async function revokeSession(req: Request) {
   await db().prepare('INSERT OR IGNORE INTO player_revoked_sessions (id,expires) VALUES (?,?)').bind(credentials.sid, credentials.exp + CAST_TTL_MS).run();
   return true;
 }
-async function limitedText(res: Response, max = 8 * 1024 * 1024) {
+export async function limitedText(res: Response, max = 8 * 1024 * 1024) {
   const reader = res.body?.getReader();
   if (!reader) return '';
   const chunks: Uint8Array[] = [];
@@ -139,17 +156,23 @@ export async function channelList(req: Request) {
   await assertNotRevoked(credentials);
   const entries = await playlist(credentials);
   const key = secret();
+  // Movie and series entries also carry their file type and poster, so the web player can list them as titles. Their
+  // posters never show a provider host (see createPosterBook); live channels' logos are not used.
+  const posters = createPosterBook(isDirectProviderAddress, [credentials.username, credentials.password]);
   const result = [];
   for (let start = 0; start < entries.length; start += 150) {
     const part = await Promise.all(entries.slice(start, start + 150).map(async entry => {
       let token: string | null = null, reason = '';
       try {const source = streamURL(entry.url); token = await seal({url: source.href, bind: binding, exp: credentials.exp, root: 1} satisfies PlayerMedia, key, 'player-media');}
       catch {reason = 'This channel is unavailable in the webplayer. Try the Tuner app or contact support.';}
-      return {id: await digest(entry.url), name: entry.name, group: entry.group, format: entry.format, token, reason};
+      const kind = entryKind(entry.url);
+      const logo = kind !== 'live' && entry.logo ? posters.add(entry.logo) : undefined;
+      return {id: await digest(entry.url), name: entry.name, group: entry.group, format: entry.format, token, reason, kind, ...(kind === 'live' ? {} : {ext: entryExt(entry.url), ...(logo ? {logo} : {})})};
     }));
     result.push(...part);
   }
-  return {channels: result, username: credentials.username, expiresAt: credentials.exp};
+  const posterBases = posters.size ? await posters.seal(await mac(credentials.username, key, 'player-line'), key) : undefined;
+  return {channels: result, username: credentials.username, expiresAt: credentials.exp, ...(posterBases ? {posterBases} : {})};
 }
 export async function diagnostics(req: Request) {
   const {credentials} = await session(req);
@@ -374,6 +397,10 @@ export async function createCast(req: Request, body: unknown) {
   try {item = await open<unknown>(raw, key, 'player-media');} catch {throw new ServiceError(403, 'stream_forbidden', 'This stream is no longer available. Refresh your channel list.');}
   if (!validMedia(item, binding) || item.root !== 1) throw new ServiceError(403, 'stream_forbidden', 'This stream belongs to another or expired player session.');
   const approved = streamURL(item.url).href;
+  // A movie or episode a TV can't play from a cast link (an MKV or AVI file, say) would otherwise be sent as a live
+  // HLS link the provider has no answer to.
+  const path = new URL(approved).pathname.toLowerCase();
+  if (/\/(?:movie|series)\//.test(path) && !/\.(?:mp4|m4v|mov|m3u8)$/.test(path)) throw new ServiceError(400, 'not_castable', 'This title can’t be cast from the browser. Watch it here, or use the Tuner app on your TV.');
   const exp = Date.now() + CAST_TTL_MS;
   // LumaNest's own Cast receiver plays the channel's original MPEG-TS with mpegts.js. Google's Default Media
   // Receiver and AirPlay need HLS, so without the receiver field the link asks the provider for HLS as before.
