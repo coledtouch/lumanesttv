@@ -1,1 +1,1 @@
-export const tuner={version:'1.6.3',bytes:2745797,sha256:'48bdcda28a5ac07f70a4e3e36543a276bbbcc68bbbf730f4ff440e3f587733a0',file:'Tuner-1.6.3.apk'};
+export const tuner={version:'1.7.1',bytes:2794966,sha256:'2b797f043d8cae1abe2ab68d87617e878f975fd5865b8c78fa29095dd69275f5',file:'Tuner-1.7.1.apk'};

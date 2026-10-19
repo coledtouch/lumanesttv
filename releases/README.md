@@ -22,6 +22,7 @@ Later releases:
 | `tv.lumanest.tuner_1.0.5_all.ipk` | 1.0.5 | LG development IPK served from the website's downloads: remote navigation overhaul (guide focus and placement, channel keys and number entry, Multi View, Search and Settings arrows, dialogs) |
 | `tuner-roku-1.0.3.zip` | 1.0.3 | Roku sideload ZIP served from the website's downloads: Home, Discover, Library and Search for movies and series, USA-only Movies & Series by default, popularity rows from lumanest.tv |
 | `tv.lumanest.tuner_1.1.0_all.ipk` | 1.1.0 | LG development IPK served from the website's downloads: Home, Discover and Library for movies and series, USA-only Movies & Series by default, popularity rows from lumanest.tv |
+| `Tuner-1.7.1.apk` | 1.7.1, Android version code 20 | Home, Discover and Library for movies and series with popularity rows from lumanest.tv, and Movies & Series USA only matching the other apps (docs/browse.md). 1.7.0 (version code 19) was never offered: it crashed at launch on devices |
 
 [`SHA256SUMS`](SHA256SUMS) records the installer checksums. GitHub also generates a source archive for each tagged release; it contains the website and all three app source trees.
 
