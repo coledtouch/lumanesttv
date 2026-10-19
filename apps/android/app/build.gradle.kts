@@ -16,6 +16,25 @@ val testJavaExecutable = providers.gradleProperty("tunerTestJavaExecutable").orN
 fun signingValue(name: String): String = releaseProperties.getProperty(name)?.takeIf { it.isNotBlank() }
     ?: error("Missing $name in the external release signing properties")
 
+// -Pstore=true builds the store edition for Google Play and the Amazon Appstore (see Edition.kt). Without it the
+// build is the lumanest.tv download, exactly as before. Both editions share the application ID, version and key.
+val storeBuild = when (val value = providers.gradleProperty("store").orNull?.trim()?.lowercase()) {
+    null, "", "false" -> false
+    "true" -> true
+    else -> error("Use -Pstore=true for the Google Play / Amazon Appstore build, or leave it out for the lumanest.tv APK (got \"$value\")")
+}
+// Google Play gets only the store edition: the lumanest.tv edition can unlock adult categories. Checked on the task
+// graph before anything is built. Every task that writes a release App Bundle (bundleRelease, bundle,
+// signReleaseBundle, abbreviations...) runs packageReleaseBundle; assembleRelease, tests and lint never do.
+if (!storeBuild) {
+    val releaseBundle = "$path:packageReleaseBundle"
+    gradle.taskGraph.whenReady {
+        if (hasTask(releaseBundle)) throw GradleException("Google Play needs the store edition. Run: .\\gradlew.bat bundleRelease -Pstore=true")
+    }
+}
+// Store files get their own names (app-store-release.aab / .apk), so they can't be mistaken for the lumanest.tv APK.
+if (storeBuild) base.archivesName.set("app-store")
+
 android {
     namespace = "tv.lumanest.tuner"
     compileSdk = 37
@@ -27,6 +46,11 @@ android {
         versionCode = 18
         versionName = "1.6.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("boolean", "STORE_BUILD", storeBuild.toString())
+        // Store edition: Android TV only on Google Play, and no picture-in-picture (Play's TV rules allow it only for
+        // calls and similar apps, never automatically for video). The lumanest.tv APK keeps both as before.
+        manifestPlaceholders["leanbackRequired"] = storeBuild.toString()
+        manifestPlaceholders["pictureInPicture"] = (!storeBuild).toString()
     }
 
     signingConfigs {

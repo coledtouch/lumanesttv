@@ -7,6 +7,7 @@ package tv.lumanest.tuner.data
 object FreeEpg {
     data class Region(val code: String, val name: String, val size: String)
 
+    /** Every guide; the lumanest.tv APK offers all of them. */
     val regions = listOf(
         Region("US2", "United States · national", "6 MB"),
         Region("US_SPORTS1", "United States · sports", "0.2 MB"),
@@ -31,6 +32,15 @@ object FreeEpg {
     )
 
     val defaults = listOf("US2", "US_SPORTS1")
+
+    /** Guides named after streaming services ("Plex free channels"...) stay out of the store edition's list. */
+    private val serviceGuides = setOf("PLEX1", "RAKUTEN1", "PEACOCK1", "DISTROTV1")
+
+    /** The guides Settings offers: the store edition lists country guides only. */
+    fun regions(storeBuild: Boolean): List<Region> = if (storeBuild) regions.filterNot { it.code in serviceGuides } else regions
+
+    /** The store edition starts with the fallback off and uses the provider's own guide. */
+    fun defaults(storeBuild: Boolean): List<String> = if (storeBuild) emptyList() else defaults
 
     fun url(code: String) = "https://epgshare01.online/epgshare01/epg_ripper_$code.xml.gz"
 }

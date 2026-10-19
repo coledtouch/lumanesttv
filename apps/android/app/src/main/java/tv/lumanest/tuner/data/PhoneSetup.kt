@@ -15,8 +15,9 @@ import kotlin.concurrent.thread
  * A tiny web page served by the TV while the add-playlist screen is open, so you can type the
  * server, username and password on your phone or computer instead of the remote.
  * Only listens on the local network and only while that screen is showing.
+ * [storeBuild] uses the store edition's neutral wording ("Server login", "Playlist link").
  */
-class PhoneSetup(private val onSubmit: (Map<String, String>) -> Unit) {
+class PhoneSetup(private val storeBuild: Boolean = false, private val onSubmit: (Map<String, String>) -> Unit) {
     private var server: ServerSocket? = null
     private val main = Handler(Looper.getMainLooper())
     var port = 0
@@ -104,11 +105,19 @@ input:focus{outline:2px solid #4c9bff;border-color:transparent}
 button{margin-top:22px;width:100%;padding:15px;border:0;border-radius:999px;background:#4c9bff;color:#0a0d13;font-size:17px;font-weight:700}
 .ok{background:#141a24;border-radius:14px;padding:22px;text-align:center}.ok b{display:block;font-size:20px;margin-bottom:6px}
 </style></head><body><main>
-${if (done) DONE_HTML else FORM_HTML}
+${if (done) DONE_HTML else form(storeBuild)}
 </main></body></html>"""
 
     companion object {
         private const val DONE_HTML = """<div class="ok"><b>Sent to your TV</b>Check the TV screen. It signs in and loads your channels.</div>"""
+        /** The setup form; [storeBuild] names the two kinds "Server login" and "Playlist link". */
+        internal fun form(storeBuild: Boolean): String = if (!storeBuild) FORM_HTML else FORM_HTML
+            .replace("<span>Xtream Codes</span>", "<span>Server login</span>")
+            .replace("<span>M3U URL</span>", "<span>Playlist link</span>")
+            .replace("placeholder=\"Living room IPTV\"", "placeholder=\"Living room\"")
+            .replace("placeholder=\"M3U of featured channels\"", "placeholder=\"Playlist link of featured channels\"")
+            .replace("placeholder=\"http://provider.example/get.php?username=…\"", "placeholder=\"The playlist link from your account\"")
+
         private const val FORM_HTML = """<h1>Tuner setup</h1><p>Fill this in and it appears on your TV. When editing, blank fields keep their current value.</p>
 <form method="post" action="/" autocomplete="off">
 <div class="tabs"><label><input type="radio" name="type" value="xtream" checked><span>Xtream Codes</span></label>

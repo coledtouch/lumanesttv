@@ -181,12 +181,15 @@ internal class CatalogSnapshots(private val root: File) {
         private const val MAX_AGE = 7 * 24 * 3600_000L
         private const val GUIDE_HORIZON = 8 * 3600_000L
 
-        fun identity(source: Source, liveFormat: String, localZip: String, usOnly: Boolean = false, adultUnlocked: Boolean = false): Identity {
+        fun identity(source: Source, liveFormat: String, localZip: String, usOnly: Boolean = false, adultUnlocked: Boolean = false,
+                     storeBuild: Boolean = false): Identity {
             val raw = digest(listOf(source.id, source.type.name, source.server, source.username, source.password,
                 source.m3uUrl, source.epgUrl, source.userAgent, source.hotUrl))
             // Locked and unlocked adult content are separate snapshots, so locking never restores adult titles.
             // Policy 2 (1.6.2) is the first to hide adult categories: older snapshots match neither key.
-            val catalogue = digest(listOf(raw, "policy:$POLICY_VERSION", if (adultUnlocked) "adult:unlocked" else "adult:locked"))
+            // The store edition filters more, so a lumanest.tv APK's snapshot never restores into it (same app data).
+            val adult = if (storeBuild) "adult:store" else if (adultUnlocked) "adult:unlocked" else "adult:locked"
+            val catalogue = digest(listOf(raw, "policy:$POLICY_VERSION", adult))
             // Full and USA-only lineups are separate live snapshots. Before 1.6.1 every saved lineup was USA-only,
             // so neither key matches those and the first launch reloads the lineup the customer hub chose.
             return Identity(raw, catalogue, digest(listOf(catalogue, liveFormat, localZip, if (usOnly) "live:us-only" else "live:all")))
