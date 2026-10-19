@@ -6,7 +6,7 @@ type ApiError = {error?: {code?: string; message?: string}};
 type Step = {kind: 'code'} | {kind: 'checking'} | {kind: 'login'} | {kind: 'confirm'; pending: Pending} | {kind: 'done'; device: string};
 const message = (cause: unknown, fallback: string) => cause instanceof Error && !(cause instanceof TypeError) ? cause.message : fallback;
 
-export default function PairFlow({initialCode, portal}: {initialCode: string; portal: string}) {
+export default function PairFlow({initialCode}: {initialCode: string}) {
   const [code, setCode] = useState(initialCode.toUpperCase());
   const [step, setStep] = useState<Step>(initialCode ? {kind: 'checking'} : {kind: 'code'});
   const [busy, setBusy] = useState(false);
@@ -68,7 +68,6 @@ export default function PairFlow({initialCode, portal}: {initialCode: string; po
         <label>Line password<input name="password" type="password" required maxLength={150} autoComplete="current-password"/></label>
         <button className="button primary" disabled={busy}>{busy ? 'Checking your line…' : 'Sign in and continue'} <span aria-hidden="true">→</span></button>
       </form>
-      <a className="pair-help" href={portal}>Find your line login in the customer hub ↗</a>
     </>}
     {step.kind === 'confirm' && <>
       <h1>Connect this<br/><em>TV?</em></h1>
