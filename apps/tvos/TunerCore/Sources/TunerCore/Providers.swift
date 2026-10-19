@@ -626,8 +626,9 @@ public enum M3UParser {
             return id
         }
 
-        for rawLine in text.split(omittingEmptySubsequences: true, whereSeparator: { $0 == "\n" || $0 == "\r" }) {
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
+        // Like Android's readLine, "\r\n", "\n" and "\r" each end a line. Split scalars: "\r\n" is one Character.
+        for rawLine in text.unicodeScalars.split(omittingEmptySubsequences: true, whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+            let line = Substring(rawLine).trimmingCharacters(in: .whitespaces)
             if line.isEmpty { continue }
             let upper = line.prefix(8).uppercased()
             if upper.hasPrefix("#EXTM3U") {

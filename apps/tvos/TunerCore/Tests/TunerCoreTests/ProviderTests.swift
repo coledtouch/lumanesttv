@@ -365,6 +365,17 @@ final class M3UParserTests: XCTestCase {
         XCTAssertEqual(playlist.movies.map(\.name), ["Dune Part Two (2024)"])
     }
 
+    func testWindowsAndClassicMacLineEndings() {
+        let text = String(decoding: Fixture.data("playlist.m3u"), as: UTF8.self)
+        XCTAssertFalse(text.unicodeScalars.contains("\r"), "the fixture is the LF baseline")
+        let lf = M3UParser.parse(Data(text.utf8))
+        XCTAssertFalse(lf.channels.isEmpty || lf.movies.isEmpty || lf.series.isEmpty || lf.guideURL == nil)
+        for ending in ["\r\n", "\r"] {
+            let playlist = M3UParser.parse(Data(text.replacingOccurrences(of: "\n", with: ending).utf8))
+            XCTAssertEqual(playlist, lf, "\(ending.unicodeScalars.map { $0.escaped(asASCII: true) }.joined()) ends lines like \\n")
+        }
+    }
+
     func testEmptyAndGarbageInput() {
         XCTAssertEqual(M3UParser.parse(Data()), M3UPlaylist())
         XCTAssertEqual(M3UParser.parse(Data("<html>nope</html>".utf8)).channels, [])
