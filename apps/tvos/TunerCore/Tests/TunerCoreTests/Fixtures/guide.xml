@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE tv SYSTEM "xmltv.dtd">
+<tv generator-info-name="test">
+  <channel id="CNN.us"><display-name lang="en">CNN</display-name><icon src="http://icons.example.com/cnn.png"/><icon src="http://icons.example.com/cnn-2.png"/></channel>
+  <channel id="SkyNews.uk"><display-name>Sky News</display-name></channel>
+  <channel id="HBOWest.us"><display-name>HBO (West)</display-name></channel>
+  <channel id="HBO.us"><display-name>HBO</display-name><icon src="https://icons.example.com/hbo.png"/></channel>
+  <channel id="ignored.us"><display-name>Not In Lineup</display-name></channel>
+  <programme start="20261012180000 -0400" stop="20261012190000 -0400" channel="CNN.us"><title lang="en">The Situation Room</title><sub-title>Ep 4</sub-title><desc>Politics &amp; more.</desc><desc>Second desc ignored</desc></programme>
+  <programme start="20261012190000 -0400" stop="20261012200000 -0400" channel="CNN.us"><title><![CDATA[Erin Burnett OutFront]]></title><desc></desc></programme>
+  <programme start="20261012193000 -0400" stop="20261012194500 -0400" channel="CNN.us"><title>Inside the previous one</title></programme>
+  <programme start="20261012195000 -0400" stop="20261012210000 -0400" channel="CNN.us"><title>Overlaps the end</title></programme>
+  <programme start="20261001000000 +0000" stop="20261001010000 +0000" channel="CNN.us"><title>Long ago</title></programme>
+  <programme start="20261020000000 +0000" stop="20261020010000 +0000" channel="CNN.us"><title>Too far ahead</title></programme>
+  <programme start="20261012220000 +0000" stop="20261012230000 +0000" channel="SkyNews.uk"><title>Sky Late</title></programme>
+  <programme start="20261012230000" stop="20261013000000" channel="skynews.uk"><title>Sky Midnight (no offset is UTC)</title></programme>
+  <programme start="20261012220000 +0000" stop="20261012230000 +0000" channel="HBO.us"><title>Main feed film</title></programme>
+  <programme start="20261012220000 +0000" stop="20261012230000 +0000" channel="HBOWest.us"><title>West feed film</title></programme>
+  <programme start="20261012220000 +0000" stop="20261012230000 +0000" channel="ignored.us"><title>Nope</title></programme>
+  <programme start="garbage" stop="20261012230000 +0000" channel="CNN.us"><title>Bad time</title></programme>
+</tv>

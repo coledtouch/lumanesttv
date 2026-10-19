@@ -1,0 +1,34 @@
+{
+ "big.gz": {
+  "length": 168447,
+  "sha256": "4b603ccc5cfb5e711a36b8da8e0495444a2a31860e5906a0242441e3ee5feddd"
+ },
+ "dynamic.gz": {
+  "length": 2800,
+  "sha256": "63f26e016d3e6cd160162639cc1a0fda792222dcd962281e579f0ca3490f2a2b"
+ },
+ "empty.gz": {
+  "length": 0,
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+ },
+ "fixed.gz": {
+  "length": 2800,
+  "sha256": "63f26e016d3e6cd160162639cc1a0fda792222dcd962281e579f0ca3490f2a2b"
+ },
+ "headers.gz": {
+  "length": 2800,
+  "sha256": "63f26e016d3e6cd160162639cc1a0fda792222dcd962281e579f0ca3490f2a2b"
+ },
+ "multi.gz": {
+  "length": 7800,
+  "sha256": "93c6cf85a5b2142a86bb8357c1a1daaae73e28b4140fe5149a5ca68f3052aae4"
+ },
+ "noise.gz": {
+  "length": 20000,
+  "sha256": "33562b160cd33d4c13dd567609b9dad0c35621e30c137d63a40c467bbb8a1c9a"
+ },
+ "stored.gz": {
+  "length": 2800,
+  "sha256": "63f26e016d3e6cd160162639cc1a0fda792222dcd962281e579f0ca3490f2a2b"
+ }
+}

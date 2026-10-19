@@ -1,0 +1,6 @@
+[{"channel":"CNN.us","feed":null,"tags":[],"width":512,"height":512,"format":"PNG","url":"https://logos.example.com/cnn-us.png","in_use":true},
+{"channel":"CNN.uk","url":"https://logos.example.com/cnn-uk.png"},
+{"channel":"FoxNews.us","url":"https://logos.example.com/foxnews.png"},
+{"channel":"Retired.us","url":"https://logos.example.com/retired.png","in_use":false},
+{"channel":"BadUrl.us","url":"ftp://logos.example.com/bad.png"},
+{"channel":"A","url":"https://logos.example.com/a.png"}]

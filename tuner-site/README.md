@@ -33,7 +33,7 @@ Use these after the [verify step](#5-verify) passes. `https://lumanest.tv/privac
 | Google Play | App content → Data safety → data deletion link (optional; Tuner creates no accounts) | `https://tunertv.app/delete` |
 | Apple App Store Connect | App Information → **Privacy Policy URL** | `https://tunertv.app/privacy` |
 | Apple App Store Connect | Version page → **Support URL** (required) | `https://tunertv.app/support` |
-| Apple App Store Connect | Version page → **Marketing URL** (optional) | `https://tunertv.app` |
+| Apple App Store Connect | Version page → **Marketing URL** (optional) | leave empty (the home page links to plans, guideline 3.1.1) |
 | Apple App Store Connect | App Privacy → **User Privacy Choices URL** (optional) | `https://tunertv.app/delete` |
 | Amazon Appstore | Privacy policy URL | `https://tunertv.app/privacy` |
 | Amazon Appstore | Contact: email / website | `support@tunertv.app` / `https://tunertv.app/support` |
@@ -185,5 +185,8 @@ The privacy policy describes what the apps actually do. Re-read these places whe
 | Pairing rate limits and their clean-up | `site/lib/pairing.ts` (`approvalLimit`), `site/lib/maintenance.ts` |
 | LumaNest TV video streams are plain-HTTP addresses | `site/cloudflare/lumanest-stream-relay.mjs` (`DEFAULT_ALLOWED_HOSTS`, http only) |
 | The line login the TV receives | `site/lib/player.ts` (`tvAccount`) |
+| Apple TV storage: password in the Keychain; server address, username, a paired playlist link, settings, favorites, history, resume points and hidden channels in UserDefaults; catalogues (stream addresses include the login), guide, Home rows and artwork in Caches | `apps/tvos/Tuner/Services/KeychainSecretStore.swift`, `apps/tvos/TunerCore/Sources/TunerCore/Library.swift` (`SourceStore`, `UserLibrary`), `apps/tvos/Tuner/App/AppModel.swift` and `TunerApp.swift` (cache folders, image cache) |
+| Apple TV network: pairing and the Home and Discover lists on lumanest.tv, the line's servers, the iptv-org logo list, artwork hosts; its playback server listens on 127.0.0.1 only; no free guide fallback | `apps/tvos/TunerCore/Sources/TunerCore/Support.swift` (`TunerLinks`), `Pairing.swift`, `Browse.swift` (`CatalogRowsService`), `Catalog.swift` (`GuideService`), `apps/tvos/Tuner/Services/LoopbackServer.swift` |
+| Apple TV: removing a login deletes its password, favorites, history and resume points; no permissions asked; failure notes only in the device's log | `Library.swift` (`SourceStore.delete`, `UserLibrary.removeAll`), `apps/tvos/project.yml` (Info.plist), `apps/tvos/Tuner/Services/PlaybackController.swift` (`NSLog`) |
 
-The Apple TV app (`apps/tvos`) isn't covered yet. Before it's submitted, add what it stores and sends, and remove "isn't released yet" from the privacy policy, the delete page and the home page.
+The home page still lists Apple TV as "Coming soon" (`public/index.html`); change it once the app is on the App Store. Leave the App Store listing's Marketing URL empty: the home page links to plans.

@@ -1,4 +1,4 @@
-# Store listings: Google Play, Fire TV, Samsung, LG and Roku
+# Store listings: Google Play, Fire TV, Samsung, LG, Roku and Apple TV
 
 Ready-to-paste listing text, the artwork in [`docs/store/`](store/), and a submission checklist for each store. The same app ("Tuner by LumaNest TV") ships in every store; only the package differs. On Android, Google Play and the Amazon Appstore get the **store edition** (built with `-Pstore=true`, see [Android store edition](#android-store-edition-google-play-and-amazon)); the lumanest.tv download stays the direct APK.
 
@@ -107,7 +107,7 @@ Because the packages differ, Android treats the two editions as different apps. 
     - **Shared:** if the line's server isn't run by LumaNest TV, the login and viewing requests go to that company: declare it as shared.
     - **Encrypted in transit:** No, unless every line uses https. Provider servers often use plain http, and the app allows it.
     - **Not collected:** Favorites, settings and watch history stay on the TV.
-    - **Other services the app contacts:** iptv-org on GitHub for channel logos, the poster and logo addresses in the line's own data, and epgshare01 only if the customer turns on the free guide fallback.
+    - **Other services the app contacts:** lumanest.tv for the Movies & Series lists (`/api/catalog/rows`: no login or other customer data is sent, only the TV's IP address as with any request; fetched when the catalogue loads, when the app returns to the foreground with an old copy, and on retries after a failure), iptv-org on GitHub for channel logos, the poster and logo addresses in the line's own data, and epgshare01 only if the customer turns on the free guide fallback.
     - **Account deletion:** choose that the app doesn't let people create accounts. Accounts are made on lumanest.tv.
 - **Notes to reviewer** (paste in App access; the login goes only there):
   > Tuner by LumaNest TV is the Android TV app for LumaNest TV subscribers and contains no content of its own. To sign in, open the app. On the "Add a playlist" screen, select "Server login", enter the server URL, username and password below, then select "Save and connect". Alternatively, scan the QR code with a phone and approve it at lumanest.tv/pair with the same account. The line includes live channels, movies and series.
@@ -215,6 +215,96 @@ Because the packages differ, Android treats the two editions as different apps. 
   2. Upload the package.
   3. Fill in the store info, artwork and reviewer notes.
   4. Run the static analysis, then submit.
+
+## Apple TV (App Store)
+
+The Apple TV app is in [`apps/tvos`](../apps/tvos/) ("Tuner by LumaNest TV", bundle ID **`app.tunertv`**, tvOS 17 and later). The owner builds, signs and uploads it from a Mac with Xcode; [`apps/tvos/README.md`](../apps/tvos/README.md) has every step. There is only one Apple TV edition, and it is made for App Review:
+
+- **Adult content:** never shown. Adult categories, channels and titles are filtered out before anything is stored, with the same strict rules as the Android store edition. There is no unlock, passcode or setting for it, and no server or hub setting can turn it on (guidelines 1.1.4 and 2.5.19).
+- **Streaming service names:** no Home rows or Discover lists named after Netflix, Disney+, Max, Prime Video, Apple TV+, Hulu, Paramount+ or Peacock, as in the Android store edition.
+- **Purchases:** none, and nothing in the app links to buying. Tuner is a "reader" app (guidelines 3.1.1 and 3.1.3(a)): customers sign in with a line they already have. The app shows only the privacy policy address (`tunertv.app/privacy`, also as a QR code, on the Welcome, Sign in, Pair and Settings screens) and help (`tunertv.app/support`), never lumanest.tv/apps, which sells plans. Those tunertv.app pages have no plan, renewal or buying links (keep it that way), but they do link to lumanest.tv/apps and lumanest.tv/pair, so the lumanest.tv/pair change below matters.
+- **Sign-in:** phone pairing, or a LumaNest TV line's server address, username and password typed with the Siri Remote. There is no "playlist link" field, so the app doesn't look like a player for any playlist (guidelines 4.2, 4.3 and 5.2.3); a playlist link can only arrive through pairing.
+- **Wording:** no other platforms are named anywhere in the app or the listing (guideline 2.3.10).
+
+**Listing text** (the shared text without "Plans" and without other platforms):
+
+- **Name:** Tuner by LumaNest TV (20 of 30 characters).
+- **Subtitle:** Live TV, movies and series (26 of 30).
+- **Promotional text (optional):** Your LumaNest TV channels, guide, movies and series on Apple TV.
+- **Description:**
+  > Tuner is the Apple TV app for LumaNest TV subscribers. Watch your live channels with a full TV guide, and browse movies and series, all from your sofa.
+  >
+  > Setup takes seconds. Open Tuner, scan the code on screen with your phone, sign in to your LumaNest TV account and approve your Apple TV. You can also sign in with your login using the Siri Remote.
+  >
+  > • Live TV with an on-screen guide, Favorites and Most Watched
+  > • Movies and series with episode lists, Continue watching and your Library
+  > • Search for channels, movies and series
+  > • Subtitles and closed captions that follow your Apple TV settings
+  > • Choose your channels and categories in your LumaNest TV customer hub; Tuner shows exactly your lineup
+  >
+  > A LumaNest TV subscription is required. Tuner does not include or sell any channels or content. Help: tunertv.app/support
+- **Keywords** (92 of 100 bytes): `live tv,tv guide,epg,channels,movies,series,streaming,favorites,lumanest,subscription,player`. No channel, network, league or other app names.
+- **Category:** Entertainment. **Price:** Free. **In-app purchases:** none.
+- **URLs:** Support `https://tunertv.app/support` (required), Privacy Policy `https://tunertv.app/privacy`, User Privacy Choices `https://tunertv.app/delete`. Leave Marketing URL empty: the tunertv.app home page has "See LumaNest TV plans" and "Plans and renewals" links (guideline 3.1.1 covers the app's metadata too).
+- **Copyright:** "2026 LumaNest TV" (the legal name on the developer account).
+
+**App Privacy** (App Store Connect → App Privacy; it must match `apps/tvos/Tuner/Resources/PrivacyInfo.xcprivacy`):
+
+- **Tracking:** No.
+- **Data Linked to You:** Identifiers → **User ID** (the line username, sent to the LumaNest TV service), and Usage Data → **Product Interaction** (the service's servers see which streams are requested). Purpose: **App Functionality** for both. Neither is used for tracking.
+- **Not collected:** Favorites, watch history, resume points and settings stay on the Apple TV. No analytics, ads, location or contacts.
+- **Apple TV Privacy Policy field:** tvOS apps need the policy's full text in this field as well as the URL. Paste the text of `https://tunertv.app/privacy`, which covers the Apple TV app (deploy `tuner-site/` first, see the tasks below).
+
+**Age rating:** answer the questionnaire for what the reviewer line actually shows, accurately. Answer **No** to Unrestricted Web Access, User-Generated Content, Messaging and Chat, Advertising and Parental Controls. Never select "Graphic Sexual Content and Nudity": the app can't show it, and that answer makes an app "Unrated", which can't be published. Live TV usually lands at 13+ to 18+, depending on how often the line's channels carry violence, language and mature themes.
+
+**Content rights:** App Information → Content Rights → "Yes, it contains, shows, or accesses third-party content" and "I have the necessary rights". Attach LumaNest TV's licence or distribution agreements in App Review Information → Attachment. Saying that the app contains no channels is not enough on its own: Apple asks for documents (guidelines 5.2.1 to 5.2.3), and falsified documents can end the developer account. See [Before you submit anywhere](#before-you-submit-anywhere).
+
+**Assets:**
+
+- **App icon and Top Shelf:** built into the app from `apps/tvos/Tuner/Resources/Assets.xcassets` (layered Home Screen icon 400×240 and 800×480, layered App Store icon 1280×768, Top Shelf 1920×720 and 3840×1440, Top Shelf Wide 2320×720 and 4640×1440, all opaque). `apps/tvos/tools/make_assets.py` redraws them. App Store Connect reads the App Store icon from the uploaded build.
+- **Screenshots:** 1 to 10 at 1920×1080 (or 3840×2160), PNG or JPEG without transparency, captured from the app on an Apple TV with the reviewer line (for example Xcode → Window → Devices and Simulators → select the Apple TV → Take Screenshot). Show Home, Live TV with the guide, a movie page and playback, on channels and films whose names and artwork you may show. The pairing screenshots in `docs/store/` show another app; don't use them.
+- **App preview (optional):** 15 to 30 seconds, 1920×1080.
+
+**App Review Information:**
+
+- **Sign-in required:** Yes. Username and password: the reviewer line. Use a line that allows at least 2 connections, is valid for 60 days or more, works from the US and over IPv6 (NAT64) networks, and has adult categories turned off.
+- **The reviewer line's lineup** (choose it in the hub, then check every channel and title on a real Apple TV with that line before submitting). Reviewers reject an app that lists things it can't play (guideline 2.1), and the line's category names become the guide's chips (guideline 2.3.10):
+  - live channels with H.264 video and AAC or AC-3 sound only: HEVC and MPEG-2 channels show an error on Apple TV, and MPEG Layer II channels play without sound;
+  - movies and episodes as MP4 (MKV and AVI uploads are left out or shown as "Not available on Apple TV");
+  - no category or channel names that name other platforms or services (such as Samsung TV Plus, Pluto TV, The Roku Channel, Netflix or Prime Video), and no adult categories;
+  - artwork and names you're allowed to show (they also end up in your screenshots).
+- **Notes** (adjust and paste; the server address and login go only in this private field):
+  > Tuner by LumaNest TV is the Apple TV app for LumaNest TV subscribers and contains no content of its own. To sign in with the Siri Remote: on the Welcome screen choose "Sign in with your login instead", enter the server address, username and password below and choose Sign In. Alternatively, scan the QR code with a phone and approve the Apple TV at lumanest.tv/pair with the same login. The line includes live channels (Live TV tab), movies and series (Home, Discover, Search). The privacy policy is on the Welcome and Sign in screens and in Settings → About.
+  >
+  > App Transport Security: NSAllowsArbitraryLoads is set because the app must connect to servers managed by another entity that don't support secure connections. The LumaNest TV streaming servers, run by our upstream provider, serve the account API, guide data, artwork and MPEG-TS/MP4 streams over HTTP only and redirect each stream to a per-session IP address, so the hosts can't be listed in advance. Our own service (lumanest.tv pairing) uses HTTPS only.
+  >
+  > Playback: the provider sends live channels as continuous MPEG-TS, which AVPlayer can't open directly. Tuner repackages the stream on the device into HLS and serves it to AVPlayer from a small HTTP server on 127.0.0.1 with a system-assigned port. It listens on the loopback interface only and can't be reached from other devices.
+  >
+  > Tuner never shows adult content and has no setting to enable it. There are no purchases in the app.
+- **Contact:** the owner's name, phone and email.
+
+**Export compliance:** `ITSAppUsesNonExemptEncryption` is `NO` in the app's Info.plist (Tuner only uses the encryption built into tvOS), so App Store Connect doesn't ask.
+
+**Availability:**
+
+- **EU:** declare the trader status under the Digital Services Act in App Store Connect; Apple requires it before the app can be offered in EU storefronts.
+- **Storefronts:** choose only the countries where LumaNest TV holds the rights to what it sells (start with the United States). The content-rights declaration applies in every storefront you pick.
+
+**Owner tasks before the first submission** (the first three block it):
+
+- Deploy the site with the `appletv` pairing device (`site/lib/pairing.ts`). Until then the Apple TV can't get a pairing code (it keeps showing "Can't reach LumaNest TV. Retrying…"), though signing in with a login works.
+- lumanest.tv/pair without purchase links: the QR code on the Apple TV's first screen leads there and reviewers scan it (guidelines 3.1.1 and 3.1.3(a)). Today the page's header and footer (`site/app/site-chrome.tsx`) link to Plans, Renew and the customer hub, and the sign-in step links to the hub (`site/app/pair/pair-flow.tsx`). Give `/pair` a plain header and footer without them, and say "Your line login is in your welcome email" instead of linking.
+- Deploy `tuner-site/` (tunertv.app): its privacy policy, support and data-deletion pages now cover the Apple TV app, and the privacy, support and data-deletion pages no longer have Plans, renewal or buying links.
+- Apple Developer Program membership as an organization (D-U-N-S number), the content-rights documents and the reviewer line (with the lineup described above).
+- Worth considering (lowers the "generic player" risk in review, guidelines 4.2 and 5.2.3): Sign in still accepts any server address. Limiting it to LumaNest TV's own server hosts needs those hosts in the app, or a lumanest.tv endpoint that names the server for a line.
+
+**Steps:**
+
+1. Enroll in the Apple Developer Program as LumaNest TV (US$99 a year).
+2. App Store Connect → Apps → + → New App: platform **tvOS**, name "Tuner by LumaNest TV", primary language English (U.S.), bundle ID `app.tunertv`, SKU `tuner-appletv`.
+3. Archive and upload from Xcode ([`apps/tvos/README.md`](../apps/tvos/README.md#release-to-testflight-and-the-app-store)), then test the build with TestFlight on an Apple TV.
+4. Fill in the listing, App Privacy, age rating, content rights, App Review Information and pricing (Free) above.
+5. Select the build and choose Add for Review, then Submit to App Review. Answer reviewer questions in App Store Connect → Messages.
 
 ## Keeping listings current
 

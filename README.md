@@ -10,6 +10,7 @@ Website, checkout, owner tools, web player, and TV applications for [LumaNest TV
 | [`apps/tizen/`](apps/tizen/) | Tuner 1.5.0 for Samsung TVs, source, tests and packaging tools |
 | [`apps/webos/`](apps/webos/) | Tuner 1.1.0 for LG webOS TVs |
 | [`apps/roku/`](apps/roku/) | Tuner 1.0.3 for Roku (sideload for testing; Roku Channel Store submission pending) |
+| [`apps/tvos/`](apps/tvos/) | Tuner for Apple TV (tvOS 17+, SwiftUI + TunerCore), App Store submission pending |
 | [`releases/`](releases/) | Installer versions, checksums and release information |
 | [`.github/workflows/`](.github/workflows/) | Website and TV app build checks, nightly Android emulator tests and tag-driven draft releases |
 
