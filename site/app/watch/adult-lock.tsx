@@ -122,7 +122,7 @@ export default function AdultLock({unlocked, onUnlock, onLock}: {unlocked: boole
     <dialog ref={dialog} className="watch-shortcuts watch-adult" aria-labelledby={titleId} onClose={() => {setError(''); setBusy(false);}}>
       <h2 id={titleId}>{mode === 'create' ? 'Create an adult passcode' : mode === 'change' ? 'Change passcode' : 'Adult content'}</h2>
       {mode === 'unlocked' ? <>
-        <p>Adult categories are showing in your lineup. Lock them again whenever you like; no passcode is needed to lock.</p>
+        <p>Adult categories are showing in your lineup and in Movies &amp; Series. Lock them again whenever you like; no passcode is needed to lock.</p>
         <div className="watch-adult-actions">
           <button type="button" className="button primary" onClick={() => {onLock(); close();}}>Lock adult content</button>
           <button type="button" className="small-button" onClick={() => {setError(''); setMode('change');}}>Change passcode</button>

@@ -264,6 +264,8 @@ test('encrypted playlist tokens deliver relay MPEG-TS and ranges without exposin
   for(const index of [2,5])assert.equal(channels[index].token,null);
   const publicPlaylist=JSON.stringify(channels);
   for(const secret of ['runtime-private-user','runtime-secret-password','runtime-private-token','136.148.65.42','38.190.178.54','/live/','streams.lumanest.tv','b'.repeat(64)])assert.ok(!publicPlaylist.includes(secret));
+  // Live channels are marked live and carry no file type or poster (only movie and series entries do).
+  for(const channel of channels){assert.equal(channel.kind,'live');assert.equal(channel.ext,undefined);assert.equal(channel.logo,undefined);}
   const streamURL=index=>'https://lumanest.tv/api/player/stream?token='+encodeURIComponent(channels[index].token);
   for(const [index,host] of [[4,'136.148.65.42'],[7,'136.148.65.254'],[8,'38.190.178.54']]){
     const response=await worker.fetch(streamURL(index)+'&url='+encodeURIComponent('http://169.254.169.254/private'),{headers:{'test-player-session':'valid'}});

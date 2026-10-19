@@ -62,6 +62,9 @@ export async function prepareCloudflare(options, root = new URL('../', import.me
     assets: {directory: '../client', binding: 'ASSETS'},
     d1_databases: [{binding: 'DB', database_name: options.databaseName, database_id: options.databaseId, migrations_dir: '../../drizzle'}],
     r2_buckets: [{binding: 'BUCKET', bucket_name: options.bucketName}],
+    // Web player poster requests per line across isolates (lib/player-vod.ts). Free; the Worker runs without it.
+    // namespace_id must differ from the stream relay's RELAY_LIMITER (1001), or the two would share counts.
+    ratelimits: [{name: 'PLAYER_LIMITER', namespace_id: '1002', simple: {limit: 1200, period: 60}}],
     // Preserve dashboard settings without writing their values into source or this artifact.
     keep_vars: true,
     workers_dev: !options.production,

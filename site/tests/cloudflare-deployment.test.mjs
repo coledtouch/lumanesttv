@@ -40,6 +40,7 @@ test('Cloudflare preparation starts without production routes, cron or copied va
   assert.equal(config.d1_databases[0].database_id, DATABASE_ID);
   assert.equal(config.d1_databases[0].migrations_dir, '../../drizzle');
   assert.equal(config.r2_buckets[0].bucket_name, 'lumanest-tv-downloads');
+  assert.deepEqual(config.ratelimits, [{name: 'PLAYER_LIMITER', namespace_id: '1002', simple: {limit: 1200, period: 60}}], 'its own namespace, not the relay’s 1001');
   assert.equal(config.compatibility_date, '2026-10-06');
   assert.equal(config.observability.logs.invocation_logs, false);
   assert.equal(config.observability.traces.enabled, false);

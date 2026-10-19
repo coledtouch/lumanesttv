@@ -66,6 +66,7 @@ const CAST_LINK_REUSE_MS = 3 * 60 * 1000;
 // A phone just back from sleep may not have its network yet, so a cast-link request that can't connect is retried once.
 const CAST_LINK_RETRY_MS = 1000;
 const NOT_CASTABLE = 'This live channel can’t be cast to a TV from the browser yet. Watch it here, or use the Tuner app on your TV.';
+const NOT_CASTABLE_TITLE = 'This title can’t be cast from the browser. Watch it here, or use the Tuner app on your TV.';
 const UNREACHABLE = 'LumaNest couldn’t be reached to send this channel. Check your connection and try again.';
 let castReady: Promise<boolean> | null = null;
 // The Cast SDK's context once useCastSession has configured it.
@@ -94,7 +95,7 @@ function loadCast(): Promise<boolean> {
  * plays, which takes seconds (longer while it waits for a busy line), and the Cast SDK waits up to 10 minutes for that.
  * A LOAD the TV rejects later goes to `failed`, unless a newer send started or the session ended meanwhile.
  */
-async function sendToCast(session: CastSession, pending: Promise<CastLink>, title: string, isCurrent: () => boolean, beforeLoad: () => void, failed: (error: Error) => void) {
+async function sendToCast(session: CastSession, pending: Promise<CastLink>, title: string, isCurrent: () => boolean, beforeLoad: () => void, failed: (error: Error) => void, startAt = 0) {
   const w = window as unknown as CastGlobals, media = w.chrome?.cast?.media;
   if (!media) return;
   const link = await pending;
@@ -110,6 +111,8 @@ async function sendToCast(session: CastSession, pending: Promise<CastLink>, titl
   info.metadata = metadata;
   const request = new media.LoadRequest(info);
   request.autoplay = true;
+  // A movie or episode carries on on the TV from where it was here.
+  if (!link.live && startAt > 0) request.currentTime = Math.floor(startAt);
   beforeLoad();
   void new Promise(resolve => resolve(session.loadMedia(request))).catch((error: unknown) => {
     if (!isCurrent()) return;
@@ -247,6 +250,12 @@ type CastControlsProps = {
   onSessionExpired: () => void;
   /** Ends the Cast session (useCastSession's stop). Only the Stop casting button calls it. */
   onCastStop: () => void;
+  /** False for a movie or episode a TV can't play from a cast link (MKV, AVI, raw MPEG-TS files). */
+  castable?: boolean;
+  /** A movie or episode rather than a live channel: its wording, and where it should start on the TV. */
+  vod?: boolean;
+  /** For a movie or episode: the position (seconds) the TV should start from. */
+  position?: () => number;
 };
 
 /**
@@ -256,7 +265,7 @@ type CastControlsProps = {
 type Sent = {channel: string; attempt: number; session: string | null; state: 'sending' | 'loaded' | 'failed'};
 const NOTHING_SENT: Sent = {channel: '', attempt: -1, session: '', state: 'failed'};
 
-export default function CastControls({channel, token, name, format, attempt, video, castAppId, castAvailable, castDevice, onCastPending, onCastStart, onCastFailed, onSessionExpired, onCastStop}: CastControlsProps) {
+export default function CastControls({channel, token, name, format, attempt, video, castAppId, castAvailable, castDevice, onCastPending, onCastStart, onCastFailed, onSessionExpired, onCastStop, castable: titleCastable = true, vod = false, position}: CastControlsProps) {
   const [airPlayAvailable, setAirPlayAvailable] = useState(false);
   const [remoteSupported, setRemoteSupported] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -274,10 +283,13 @@ export default function CastControls({channel, token, name, format, attempt, vid
   // video element's own source, so neither can play a raw MPEG-TS channel. Nor can Google Cast without LumaNest's
   // receiver: the Default Media Receiver gets the same HLS link as AirPlay.
   const rawTransportStream = format === 'mpegts';
-  const castable = !rawTransportStream || Boolean(castAppId);
+  const castable = titleCastable && (!rawTransportStream || (Boolean(castAppId) && !vod));
   const castAllowed = castAvailable && castable;
-  const remoteAllowed = remoteSupported && !rawTransportStream;
-  const airPlayAllowed = airPlayAvailable && !rawTransportStream;
+  const remoteAllowed = remoteSupported && !rawTransportStream && titleCastable;
+  const airPlayAllowed = airPlayAvailable && !rawTransportStream && titleCastable;
+  const positionRef = useRef(position);
+  useEffect(() => {positionRef.current = position;});
+  const startAt = useCallback(() => vod ? positionRef.current?.() || 0 : 0, [vod]);
 
   // Sends still in flight when the controls go away (Stop playback) must not stop this page's stream any more.
   useEffect(() => () => {sendGeneration.current++;}, []);
@@ -334,13 +346,13 @@ export default function CastControls({channel, token, name, format, attempt, vid
       const current = () => generation === sendGeneration.current;
       const record: Sent = {channel, attempt, session: session.getSessionId(), state: 'sending'};
       sent.current = record;
-      if (!link) {sendFailed(new Error(NOT_CASTABLE), false); return;}
-      void sendToCast(session, link, name, current, () => {sent.current = {...record, state: 'loaded'}; setMessage(''); onCastStart();}, sendFailed)
+      if (!link) {sendFailed(new Error(vod ? NOT_CASTABLE_TITLE : NOT_CASTABLE), false); return;}
+      void sendToCast(session, link, name, current, () => {sent.current = {...record, state: 'loaded'}; setMessage(''); onCastStart();}, sendFailed, startAt())
         .catch(error => {if (current()) sendFailed(error);});
     }, CAST_SWITCH_DELAY_MS);
     // A channel zapped past during the wait never reaches the TV, and its link request is dropped.
     return () => {clearTimeout(timer); if (!started) request.abort();};
-  }, [castDevice, channel, token, name, attempt, castAppId, castable, onCastStart, sendFailed]);
+  }, [castDevice, channel, token, name, attempt, castAppId, castable, onCastStart, sendFailed, vod, startAt]);
 
   // Without the Cast SDK (for example some Chrome builds on Android), the browser's own Remote Playback can cast.
   useEffect(() => {
@@ -408,7 +420,7 @@ export default function CastControls({channel, token, name, format, attempt, vid
       if (Date.now() - requested > CAST_LINK_REUSE_MS) link = castLink(token, customReceiver, request.signal);
       // The page shows the channel as on the TV once the LOAD goes out; onCastStart stops this page's stream in the same
       // update that ends castPending, so the phone never streams meanwhile. A LOAD the TV rejects later is reported then.
-      await sendToCast(session, link, name, current, () => {sent.current = {...record, state: 'loaded'}; onCastStart(); releasePending(generation);}, sendFailed);
+      await sendToCast(session, link, name, current, () => {sent.current = {...record, state: 'loaded'}; onCastStart(); releasePending(generation);}, sendFailed, startAt());
     } catch (error) {
       if (!current()) return;
       // Once the TV is connected, its session stays whatever failed.

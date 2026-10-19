@@ -6,29 +6,62 @@ import type mpegts from 'mpegts.js';
 import CastControls, {useCastSession} from './cast-controls';
 import SubtitleControls from './subtitle-controls';
 import AdultLock from './adult-lock';
+import NavRail from './nav-rail';
+import LiveLineup from './live-tv';
+import Home, {BrowseLoading} from './home';
+import Discover from './discover';
+import LibraryView from './library';
+import Search from './search';
+import SettingsView from './settings';
+import VodControls from './vod-controls';
+import {TitleDetails, PlayAside, clearDetails, seriesEpisodes, yearShown, type Episode, type PlayRequest} from './title-details';
+import {closeOpenMenu} from './filter-menu';
+import {findTitle} from './browse-cards';
+import {useCatalogue, type Channel} from './use-catalogue';
+import {useLibrary} from './use-library';
+import {usePreference, REGIONS, REGION_KEY, START_VIEWS, START_KEY} from './use-preferences';
+import {useWatchRoute} from './use-watch-route';
+import {focusElement, keysMode, typingTarget, useSpatialNavigation} from './use-spatial-navigation';
+import {normalizeRoute, routeHref, routeLabel, sameRoute, sectionOf, type Route} from './watch-route';
+import {keyTargetOf, stageKey} from './player-keys';
+import {MAYBE_MESSAGE, TUNER_MESSAGE, playFormat, resumable, vodPlan} from './vod-format';
 import {isAdultGroup} from '../../lib/player-data';
+import {foldText, libraryKeys, libraryProgress, libraryRefs, type IndexedTitle, type PickOptions} from '../../lib/browse';
 import {createPlayerStreamLoader} from '../../lib/player-stream-loader';
 import {createPlaybackSession} from '../../lib/player-playback-session';
 import {playerStreamError} from '../../lib/player-error';
 import {SiteFooter, SiteHeader} from '../site-chrome';
 
-type Channel = {id: string; name: string; group: string; format: 'hls' | 'mpegts' | 'file'; token: string | null; reason: string};
-type ChannelResponse = {channels?: Channel[]; username?: string; expiresAt?: number; error?: {code?: string; message: string}};
+type ChannelResponse = {channels?: Channel[]; username?: string; expiresAt?: number; posterBases?: string[]; error?: {code?: string; message: string}};
+/** What is playing: a live channel, or a movie or episode (with its Library key, episode and where to resume). */
+type Playable = {
+  id: string; name: string; group: string; format: 'hls' | 'mpegts' | 'file'; token: string | null; reason: string;
+  kind: 'live' | 'movie' | 'episode';
+  libraryKey?: string;
+  episode?: {id: string; label: string; index: number};
+  resumeAt?: number;
+  castable?: boolean;
+  ext?: string;
+};
 
 const LAST_CHANNEL_KEY = 'lumanest_last_channel';
 const CHANNEL_ID = /^[A-Za-z0-9_-]{30,50}$/;
 const SESSION_EXPIRED = 'Your player session expired. Please sign in again.';
-const SHORTCUTS: [string, string][] = [['↑ / ↓', 'Previous or next channel in this lineup'], ['F', 'Toggle fullscreen'], ['M', 'Mute or unmute'], ['/', 'Search channels'], ['?', 'Show these shortcuts']];
+const SHORTCUTS: [string, string][] = [
+  ['← ↑ → ↓', 'Move between items'], ['Enter', 'Open or play'], ['Esc / Backspace', 'Go back'],
+  ['PageUp / PageDown', 'Previous or next channel (also ↑ / ↓ on the video)'], ['Space / K', 'Play or pause a movie'], ['J / L', 'Back or forward 10 seconds'],
+  ['F', 'Toggle fullscreen'], ['M', 'Mute or unmute'], ['/', 'Search'], ['?', 'Show these shortcuts'],
+];
 
-/** True when a key press belongs to a text field or picker rather than to the player shortcuts. */
-function typingTarget(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) return false;
-  return target.isContentEditable || target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ||
-    target instanceof HTMLSelectElement;
-}
+const live = (channel: Channel): Playable => ({id: channel.id, name: channel.name, group: channel.group, format: channel.format, token: channel.token, reason: channel.reason, kind: 'live'});
+const isLiveChannel = (channel: Channel) => !channel.kind || channel.kind === 'live';
+const canPlay = (type: string) => {
+  try {return document.createElement('video').canPlayType(type);} catch {return '';}
+};
 
 export default function Player({portal, support, castAppId}: {portal: string; support: string; castAppId: string}) {
   const [channels, setChannels] = useState<Channel[]>([]);
+  const [channelBases, setChannelBases] = useState<string[]>([]);
   const [username, setUsername] = useState('');
   const [checking, setChecking] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -38,7 +71,7 @@ export default function Player({portal, support, castAppId}: {portal: string; su
   const [group, setGroup] = useState('All channels');
   const [favorites, setFavorites] = useState<string[]>([]);
   const [favoriteOnly, setFavoriteOnly] = useState(false);
-  const [selected, setSelected] = useState<Channel | null>(null);
+  const [selected, setSelected] = useState<Playable | null>(null);
   const [detectedStream, setDetectedStream] = useState<{token: string; format: 'hls' | 'file'} | null>(null);
   const [limit, setLimit] = useState(60);
   const [playError, setPlayError] = useState('');
@@ -63,6 +96,11 @@ export default function Player({portal, support, castAppId}: {portal: string; su
   const [castPending, setCastPending] = useState(false);
   // After a channel didn't reach the TV: false when sending it again can't help (the TV can't play this channel).
   const [castRetryable, setCastRetryable] = useState(true);
+  // Movies and series: starting a title, its error, and the episode that comes next once one finishes.
+  const [titleBusy, setTitleBusy] = useState(false);
+  // A title's failure to start, shown with that title only (its details or its player screen) until the screen changes.
+  const [titleError, setTitleError] = useState<{key: string; message: string; change: number} | null>(null);
+  const [nextEpisode, setNextEpisode] = useState<Episode | null>(null);
   const castEnded = useCallback(() => setCasting(false), []);
   // The Cast session is followed for the whole signed-in page: while one is live, nothing plays here.
   const {available: castAvailable, device: castDevice, checked: castChecked, stop: stopCast} = useCastSession(Boolean(username), castAppId, castEnded);
@@ -72,16 +110,28 @@ export default function Player({portal, support, castAppId}: {portal: string; su
   const searchInput = useRef<HTMLInputElement>(null);
   const shortcutsDialog = useRef<HTMLDialogElement>(null);
   const channelList = useRef<HTMLDivElement>(null);
+  const shell = useRef<HTMLDivElement>(null);
   const hls = useRef<Hls | null>(null);
   const startPlayback = useRef<(() => void) | null>(null);
   const stopLocal = useRef<(() => void) | null>(null);
   const channelRequest = useRef<AbortController | null>(null);
+  // Where the playing movie or episode is (seconds), kept after its stream stops, so a TV can carry on from there.
+  const vodPosition = useRef(0);
+  const saveProgress = useRef<(() => void) | null>(null);
+
+  const router = useWatchRoute();
+  const [region, setRegion] = usePreference(REGION_KEY, REGIONS, 'us');
+  const [startView, setStartView] = usePreference(START_KEY, START_VIEWS, 'home');
+  const library = useLibrary(username);
 
   const clearSession = useCallback((message = '') => {
-    setUsername(''); setChannels([]); setSelected(null); setDetectedStream(null); setExpiresAt(null); setCastHold(false);
+    setUsername(''); setChannels([]); setChannelBases([]); setSelected(null); setDetectedStream(null); setExpiresAt(null); setCastHold(false);
     setQuery(''); setGroup('All channels'); setFavoriteOnly(false); setAdultUnlocked(false);
-    setPlayError(''); setStatus('Choose a channel'); setError(message);
+    setPlayError(''); setStatus('Choose a channel'); setError(message); setTitleError(null); setNextEpisode(null);
+    clearDetails();
   }, []);
+  const catalogue = useCatalogue({username, channels, channelBases, onSignedOut: message => clearSession(message || SESSION_EXPIRED)});
+  const catalog = catalogue.state.catalog;
 
   const loadChannels = useCallback(async () => {
     channelRequest.current?.abort();
@@ -98,8 +148,13 @@ export default function Player({portal, support, castAppId}: {portal: string; su
         return;
       }
       const next = data.channels || [];
-      setChannels(next); setUsername(data.username || ''); setExpiresAt(data.expiresAt || null);
-      setSelected(current => current ? next.find(channel => channel.id === current.id && channel.token) || null : null);
+      setChannels(next); setChannelBases(data.posterBases || []); setUsername(data.username || ''); setExpiresAt(data.expiresAt || null);
+      setSelected(current => {
+        if (!current) return null;
+        if (current.kind !== 'live') return current;
+        const found = next.find(channel => channel.id === current.id && channel.token);
+        return found ? live(found) : null;
+      });
       setGroup(current => current === 'All channels' || next.some(channel => channel.group === current) ? current : 'All channels');
     } catch {
       if (!controller.signal.aborted) setError('Could not reach the player. Please try again.');
@@ -140,6 +195,7 @@ export default function Player({portal, support, castAppId}: {portal: string; su
       const data = await response.json().catch(() => null) as ChannelResponse | null;
       if (!response.ok) throw new Error(data?.error?.message || 'Your line login could not be verified.');
       form.reset(); setShowPassword(false); await loadChannels();
+      window.scrollTo(0, 0);
     } catch (cause) {setError(cause instanceof Error && !(cause instanceof TypeError) ? cause.message : 'Sign-in failed. Please check your connection and try again.');}
     finally {setBusy(false);}
   }
@@ -147,6 +203,7 @@ export default function Player({portal, support, castAppId}: {portal: string; su
   async function logout() {
     setSigningOut(true); setError('');
     channelRequest.current?.abort(); setChecking(false);
+    saveProgress.current?.();
     setSelected(null);
     try {
       const response = await fetch('/api/player/logout', {method: 'POST'});
@@ -164,37 +221,61 @@ export default function Player({portal, support, castAppId}: {portal: string; su
     });
   }
 
-  const hasAdult = useMemo(() => channels.some(channel => isAdultGroup(channel.group)), [channels]);
+  // ---------------------------------------------------------------- the lineup (Live TV)
+  // Movie and series entries of the playlist are titles (Home, Discover…), not channels.
+  const liveChannels = useMemo(() => channels.filter(isLiveChannel), [channels]);
+  const catalogueAdult = useMemo(() => Boolean(catalog && (catalog.movies.items.some(item => item.adult) || catalog.series.items.some(item => item.adult))), [catalog]);
+  const hasAdult = useMemo(() => catalogueAdult || liveChannels.some(channel => isAdultGroup(channel.group)), [liveChannels, catalogueAdult]);
   // Everything below (categories, search, favorites, resume) only ever sees the channels the lock allows.
-  const visible = useMemo(() => adultUnlocked || !hasAdult ? channels : channels.filter(channel => !isAdultGroup(channel.group)), [channels, adultUnlocked, hasAdult]);
+  const visible = useMemo(() => adultUnlocked || !hasAdult ? liveChannels : liveChannels.filter(channel => !isAdultGroup(channel.group)), [liveChannels, adultUnlocked, hasAdult]);
   const groups = useMemo(() => Array.from(new Set(visible.map(channel => channel.group))).sort((a, b) => a.localeCompare(b)), [visible]);
-  const search = query.trim().toLowerCase();
+  // Ignoring case and accents, as Search does.
+  const search = foldText(query.trim());
   const filtered = useMemo(() => visible.filter(channel =>
     (group === 'All channels' || channel.group === group) && (!favoriteOnly || favorites.includes(channel.id)) &&
-    (!search || (channel.name + ' ' + channel.group).toLowerCase().includes(search))), [visible, group, search, favoriteOnly, favorites]);
+    (!search || foldText(channel.name + ' ' + channel.group).includes(search))), [visible, group, search, favoriteOnly, favorites]);
   const playable = useMemo(() => filtered.filter(channel => channel.token), [filtered]);
-  const selectedIndex = playable.findIndex(channel => channel.id === selected?.id);
+  const selectedIndex = selected?.kind === 'live' ? playable.findIndex(channel => channel.id === selected.id) : -1;
   const streamFormat = selected?.token === detectedStream?.token ? detectedStream?.format : selected?.format;
 
   // The last channel is offered as a one-tap resume rather than started on load,
   // so opening the page never starts a stream (or uses a screen) without a gesture.
   const resume = useMemo(() => !selected && lastChannel ? visible.find(channel => channel.id === lastChannel && channel.token) || null : null, [visible, lastChannel, selected]);
 
-  function choose(channel: Channel) {
+  // ---------------------------------------------------------------- screens
+  // A catalogue that failed to load keeps the browse screens, so Home can say so and offer Try again.
+  const caps = useMemo(() => ({titles: catalogue.state.status !== 'ready' || catalogue.state.count > 0 || Boolean(catalogue.state.error), tmdb: catalogue.state.withTmdb}), [catalogue.state.status, catalogue.state.count, catalogue.state.error, catalogue.state.withTmdb]);
+  const route: Route | null = router.route === undefined ? null : normalizeRoute(router.route, caps, startView);
+  const view = route?.view || 'live';
+  const stageView = view === 'live' || view === 'play';
+  const opts = useMemo<PickOptions>(() => ({usOnly: region === 'us', adultOk: adultUnlocked}), [region, adultUnlocked]);
+  const continueRefs = useMemo(() => catalog ? libraryRefs(libraryKeys(library.library.prog), catalog, opts) : [], [catalog, library.library.prog, opts]);
+  const playingTitle = selected?.libraryKey ? findTitle(catalog, selected.libraryKey) : null;
+
+  const go = useCallback((next: Route, focusKey?: string, replace?: boolean) => {
+    router.navigate(next, {replace, focusKey: focusKey ?? (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-focus-key]')?.dataset.focusKey ?? ''});
+  }, [router]);
+  // The poster's own focus key (row and title), so Back focuses the poster that was chosen, in the row it was in.
+  const openTitle = useCallback((key: string, focusKey?: string) => go({view: 'title', key}, focusKey), [go]);
+
+  function choose(item: Playable) {
     // While a Cast session is live, the cast controls send the new channel to the TV; otherwise it plays here again.
     setCastHold(castLive);
     if (castLive) setCasting(true);
-    if (channel.id === selected?.id) setRetry(current => current + 1);
-    else {setDetectedStream(null); setSelected(channel);}
-    setLastChannel(channel.id);
-    try {localStorage.setItem(LAST_CHANNEL_KEY, channel.id);} catch {}
-    if (window.matchMedia('(max-width: 760px)').matches) viewingArea.current?.scrollIntoView({block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
+    if (item.id === selected?.id && item.token === selected.token) setRetry(current => current + 1);
+    else {setDetectedStream(null); setSelected(item);}
+    if (item.kind === 'live') {
+      setLastChannel(item.id);
+      try {localStorage.setItem(LAST_CHANNEL_KEY, item.id);} catch {}
+    }
+    if (item.kind === 'live' && window.matchMedia('(max-width: 760px)').matches) viewingArea.current?.scrollIntoView({block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
   }
+  function chooseChannel(channel: Channel) {choose(live(channel));}
   function resetFilters() {setQuery(''); setGroup('All channels'); setFavoriteOnly(false); setLimit(60);}
   function stopPlayback() {
     // Stopping stops the TV too: without a selected channel the page has no cast controls left to stop it with.
     if (castLive) stopCast();
-    setSelected(null); setDetectedStream(null); setPlayError(''); setCastHold(false);
+    setSelected(null); setDetectedStream(null); setPlayError(''); setCastHold(false); setNextEpisode(null);
     setStatus('Choose a channel'); setQualities([]); setQuality(-1);
   }
   /** Before a channel goes to a TV: tear down this page's stream now, so mpegts.js/hls.js stop downloading at once. */
@@ -214,29 +295,168 @@ export default function Player({portal, support, castAppId}: {portal: string; su
    */
   function playHere() {
     if (castLive) stopCast();
+    if (selected && selected.kind !== 'live') setSelected({...selected, resumeAt: vodPosition.current});
     setCastHold(false);
   }
   /** Sending a channel found the player session expired: sign in again. The TV keeps playing what it has. */
   const castSignedOut = useCallback(() => clearSession(SESSION_EXPIRED), [clearSession]);
-  /** Locking hides adult categories at once, stopping an adult channel that is playing. */
+  /** Locking hides adult categories at once, stopping an adult channel or title that is playing. */
   function lockAdult() {
     setAdultUnlocked(false);
-    if (selected && isAdultGroup(selected.group)) stopPlayback();
+    if (selected && (selected.kind === 'live' ? isAdultGroup(selected.group) : playingTitle?.adult)) stopPlayback();
     if (isAdultGroup(group)) setGroup('All channels');
     setAnnouncement('Adult content locked');
   }
 
+  // Leaving the player for another screen stops what plays here (a movie's place is saved first); casting goes on.
+  useEffect(() => {
+    if (!selected || castHold || castLive || castPending || router.route === undefined) return;
+    const keep = selected.kind === 'live' ? view === 'live' : view === 'play';
+    if (keep) return;
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+      saveProgress.current?.();
+      setSelected(null); setDetectedStream(null); setPlayError(''); setNextEpisode(null);
+      setStatus('Choose a channel'); setQualities([]); setQuality(-1);
+    });
+    return () => {cancelled = true;};
+  }, [view, selected, castHold, castLive, castPending, router.route]);
+
+  // The player screen with nothing to play (a reload, Forward, or playback stopped) shows the title's details instead.
+  const playRouteKey = route?.view === 'play' ? route.key : '';
+  useEffect(() => {
+    if (!playRouteKey || (selected && selected.libraryKey === playRouteKey)) return;
+    let cancelled = false;
+    void Promise.resolve().then(() => {if (!cancelled) router.navigate({view: 'title', key: playRouteKey}, {replace: true});});
+    return () => {cancelled = true;};
+  }, [playRouteKey, selected, router]);
+
+  // After a screen change: Back puts focus back where it was; a change made with keys focuses the new screen's first
+  // item; a change made with a pointer is announced and focus stays put.
+  const routeRef = useRef(route);
+  useEffect(() => {routeRef.current = route;});
+
+  // An address the line can't show as it is (Popular without TMDB, say) is corrected in place once the catalogue is
+  // known, so a reload or a shared link shows what the screen shows.
+  const correctedHref = route && router.route && catalogue.state.status === 'ready' && !sameRoute(router.route, route) ? routeHref(route) : '';
+  useEffect(() => {
+    if (!correctedHref) return;
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      const next = routeRef.current;
+      if (!cancelled && next && routeHref(next) === correctedHref) router.navigate(next, {replace: true, silent: true});
+    });
+    return () => {cancelled = true;};
+  }, [correctedHref, router]);
+  useEffect(() => {
+    if (!router.changes) return;
+    const keys = shell.current?.dataset.input === 'keys';
+    const frame = requestAnimationFrame(() => {
+      const route = routeRef.current;
+      if (!route) return;
+      const restore = router.restoreKey ? document.querySelector<HTMLElement>('[data-focus-key="' + CSS.escape(router.restoreKey) + '"]') : null;
+      if (restore) {focusElement(restore); return;}
+      // A new screen starts at the top (Back instead brings the poster or button it left from into view).
+      window.scrollTo(0, 0);
+      // Focus that is still on something in the new screen (a filter just used, say) stays there.
+      const active = document.activeElement as HTMLElement | null;
+      const kept = active && active !== document.body && active.isConnected && !active.closest('[data-nav-rail]') && active.getBoundingClientRect().height > 0;
+      if (keys && !kept) {
+        const shown = (element: HTMLElement) => element.getBoundingClientRect().height > 0 && !element.closest('[hidden], [tabindex="-1"], [aria-hidden="true"]');
+        const start = Array.from(document.querySelectorAll<HTMLElement>('#main-content [data-nav-start]:not([disabled])')).find(shown) ||
+          Array.from(document.querySelectorAll<HTMLElement>('#main-content button:not([disabled]), #main-content a[href], #main-content input, #main-content [tabindex="0"]')).find(shown);
+        if (start) focusElement(start);
+      }
+      setAnnouncement(routeLabel(route));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [router.changes, router.restoreKey]);
+
+  // ---------------------------------------------------------------- movies and episodes
+  type ProgressActions = {save: (item: Playable, time: number, duration: number) => void; watched: (item: Playable) => void; finished: (item: Playable, duration: number) => void};
+  const progressActions = useRef<ProgressActions>({save: () => {}, watched: () => {}, finished: () => {}});
+  useEffect(() => {
+    progressActions.current = {
+      save(item, time, duration) {
+        if (!item.libraryKey) return;
+        library.recordProgress({k: item.libraryKey, p: time, d: duration, ...(item.episode ? {e: item.episode.id, l: item.episode.label, n: item.episode.index} : {})});
+      },
+      watched(item) {if (item.libraryKey) library.recordWatched(item.libraryKey);},
+      finished(item, duration) {
+        if (!item.libraryKey) return;
+        const episodes = item.episode ? seriesEpisodes(item.libraryKey) : null;
+        const next = item.episode && episodes ? episodes.find(episode => episode.index === item.episode!.index + 1) : undefined;
+        if (next) {
+          library.recordProgress({k: item.libraryKey, e: next.id, l: next.label, n: next.index, p: 0, d: 0, nx: true});
+          setNextEpisode(next);
+        } else library.recordProgress({k: item.libraryKey, p: duration, d: duration});
+      },
+    };
+  });
+
+  async function playTitle(title: IndexedTitle, request: PlayRequest) {
+    const failed = (message: string) => setTitleError({key: title.key, message, change: router.changes});
+    setTitleError(null);
+    const episode = request.episode;
+    const ext = episode ? episode.ext : title.ext;
+    const plan = vodPlan(ext, canPlay);
+    if (plan.mode === 'tuner') {failed(TUNER_MESSAGE); return;}
+    let token: string | null = null;
+    // A playlist title (or a playlist episode of a series made from the playlist) plays its channel's token.
+    const channelId = episode?.channel || title.channel;
+    if (channelId) token = channels.find(channel => channel.id === channelId)?.token || null;
+    else {
+      setTitleBusy(true);
+      try {
+        const response = await fetch('/api/player/vod/play', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({type: episode ? 'episode' : 'movie', id: episode ? episode.id : title.id, ext})});
+        const data = await response.json().catch(() => null) as {token?: string; error?: {code?: string; message?: string}} | null;
+        if (!response.ok || !data?.token) {
+          if (response.status === 401 && data?.error?.code?.startsWith('player_')) {clearSession(SESSION_EXPIRED); return;}
+          failed(data?.error?.message || 'This title could not be started. Please try again.');
+          return;
+        }
+        token = data.token;
+      } catch {failed('Could not reach the player. Check your connection and try again.'); return;}
+      finally {setTitleBusy(false);}
+    }
+    if (!token) {failed('This title is unavailable in the web player. Try the Tuner app.'); return;}
+    const progress = libraryProgress(library.library, title.key);
+    const resumeAt = request.startOver || !progress || progress.nx || (episode && progress.e !== episode.id) ? 0 : progress.p;
+    vodPosition.current = resumeAt;
+    setNextEpisode(null);
+    choose({
+      id: 'vod:' + title.key + (episode ? ':' + episode.id : ''), name: title.name,
+      group: episode ? episode.label + (episode.title ? ' · ' + episode.title : '') : yearShown(title.name, title.year) || (title.kind === 'episode' ? 'Episode' : 'Movie'),
+      format: playFormat(plan.mode), token, reason: '', kind: title.kind === 'movie' ? 'movie' : 'episode', libraryKey: title.key,
+      episode: episode ? {id: episode.id, label: episode.label, index: episode.index} : undefined, resumeAt, castable: plan.castable, ext,
+    });
+    go({view: 'play', key: title.key, ...(episode ? {ep: episode.id} : {})}, request.episode ? 'episode:' + request.episode.id : 'action:play');
+  }
+
+  // A tab put away or closed keeps the movie's place.
+  useEffect(() => {
+    const save = () => saveProgress.current?.();
+    const hidden = () => {if (document.visibilityState === 'hidden') save();};
+    window.addEventListener('pagehide', save);
+    document.addEventListener('visibilitychange', hidden);
+    return () => {window.removeEventListener('pagehide', save); document.removeEventListener('visibilitychange', hidden);};
+  }, []);
+
+  // ---------------------------------------------------------------- playback
   useEffect(() => {
     let transport: ReturnType<typeof mpegts.createPlayer> | null = null;
     let engine: Hls | null = null;
     let recoveredMedia = false;
     const element = video.current;
     if (!element || !selected?.token || castHold || castLive || castPending || !castChecked) return;
+    const item = selected;
+    const vod = item.kind !== 'live';
     const playbackController = new AbortController();
     const playback = createPlaybackSession(element, {
       status: setStatus, error: setPlayError,
       current: () => video.current === element && !playbackController.signal.aborted,
-      finished: selected.format === 'file' ? 'Finished' : 'Stream ended',
+      finished: vod || item.format === 'file' ? 'Finished' : 'Stream ended',
       stop: () => {
         playbackController.abort();
         try {engine?.stopLoad();} catch {}
@@ -247,8 +467,40 @@ export default function Player({portal, support, castAppId}: {portal: string; su
     const play = playback.play;
     startPlayback.current = play;
     setPlayError(''); setStatus('Connecting…'); setQualities([]); setQuality(-1);
-    const source = '/api/player/stream?token=' + encodeURIComponent(selected.token);
+    const source = '/api/player/stream?token=' + encodeURIComponent(item.token!);
     const probe = new AbortController();
+    // Movies and episodes: resume where they were, and keep the place in the Library while they play.
+    let finished = false, watched = false, lastSaved = 0;
+    const save = () => {
+      if (!vod || finished) return;
+      const time = element.currentTime, duration = element.duration;
+      if (!Number.isFinite(time) || !Number.isFinite(duration) || duration <= 0 || time <= 0) return;
+      vodPosition.current = time;
+      progressActions.current.save(item, time, duration);
+    };
+    // The same rule as the Library's (libraryRecordProgress): a place from 15 seconds up to 95% through is resumed.
+    const onMetadata = () => {
+      const at = item.resumeAt || 0;
+      if (resumable(at, element.duration)) element.currentTime = at;
+    };
+    const onTime = () => {
+      if (element.currentTime > 0) vodPosition.current = element.currentTime;
+      if (!watched && element.currentTime >= 15) {watched = true; progressActions.current.watched(item);}
+      if (Date.now() - lastSaved >= 10000) {lastSaved = Date.now(); save();}
+    };
+    const onPause = () => {if (!element.ended) save();};
+    const onEnded = () => {
+      if (finished) return;
+      finished = true;
+      progressActions.current.finished(item, Number.isFinite(element.duration) ? element.duration : 0);
+    };
+    if (vod) {
+      element.addEventListener('loadedmetadata', onMetadata, {once: true, signal: probe.signal});
+      element.addEventListener('timeupdate', onTime, {signal: probe.signal});
+      element.addEventListener('pause', onPause, {signal: probe.signal});
+      element.addEventListener('ended', onEnded, {signal: probe.signal});
+      saveProgress.current = save;
+    }
     // Native playback (Safari HLS, direct files) reports failures without an HTTP status. On error, ask the
     // stream endpoint whether the session itself was rejected and, if so, sign in again as the hls.js path does.
     function playNatively() {
@@ -283,7 +535,7 @@ export default function Player({portal, support, castAppId}: {portal: string; su
               if (data.type === Hls.ErrorTypes.MEDIA_ERROR && !recoveredMedia) {
                 recoveredMedia = true; setStatus('Reconnecting…'); engine.recoverMediaError(); return;
               }
-              fail('This stream could not be played. Choose another channel or try again.');
+              fail(vod ? 'This title could not be played. Try again, or use the Tuner app.' : 'This stream could not be played. Choose another channel or try again.');
             });
             engine.loadSource(source); engine.attachMedia(element!);
           }
@@ -291,10 +543,11 @@ export default function Player({portal, support, castAppId}: {portal: string; su
           const {default: mpegts} = await import('mpegts.js');
           if (!playback.isCurrent()) return;
           if (!mpegts.isSupported()) throw new Error('This browser cannot play this live stream format. Try another browser or the Tuner app.');
-          transport = mpegts.createPlayer({type: 'mpegts', isLive: true, url: source, withCredentials: true}, {
-            enableWorker: false, enableStashBuffer: false,
+          // A movie or episode in MPEG-TS is a file: not live, so it can be paused and (as far as the file allows) sought.
+          transport = mpegts.createPlayer({type: 'mpegts', isLive: !vod, url: source, withCredentials: true}, {
+            enableWorker: false, enableStashBuffer: vod,
             customLoader: createPlayerStreamLoader(window.location.origin, playbackController.signal, undefined, format => {
-              if (playback.isCurrent()) setDetectedStream({token: selected!.token!, format});
+              if (playback.isCurrent()) setDetectedStream({token: item.token!, format});
             }),
           });
           transport.attachMediaElement(element!);
@@ -309,6 +562,8 @@ export default function Player({portal, support, castAppId}: {portal: string; su
     }
     void start();
     const teardown = () => playback.dispose([
+      () => save(),
+      () => {if (saveProgress.current === save) saveProgress.current = null;},
       () => playbackController.abort(),
       () => probe.abort(),
       () => {if (startPlayback.current === play) startPlayback.current = null;},
@@ -341,7 +596,7 @@ export default function Player({portal, support, castAppId}: {portal: string; su
   }
   function toggleFullscreen() {
     if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
-    else if (selected) void fullscreen();
+    else if (selected && stageView) void fullscreen();
   }
   function toggleMute() {
     const element = video.current;
@@ -349,12 +604,24 @@ export default function Player({portal, support, castAppId}: {portal: string; su
     element.muted = !element.muted;
     setAnnouncement(element.muted ? 'Sound muted' : 'Sound on');
   }
+  function togglePlay() {
+    const element = video.current;
+    if (!element || !selected) return;
+    if (!element.paused) element.pause();
+    else if (startPlayback.current) startPlayback.current();
+    else void element.play().catch(() => {});
+  }
+  function seekBy(seconds: number) {
+    const element = video.current;
+    if (!element || !Number.isFinite(element.duration)) return;
+    element.currentTime = Math.max(0, Math.min(element.duration - 1, element.currentTime + seconds));
+  }
   /** Moves through the filtered lineup like the Previous/Next buttons; returns false when there is nowhere to go. */
   function step(offset: 1 | -1) {
     const target = selectedIndex >= 0 ? playable[selectedIndex + offset]
       : resume && playable.includes(resume) ? resume : playable[offset > 0 ? 0 : playable.length - 1];
     if (!target) return false;
-    choose(target);
+    chooseChannel(target);
     setLimit(current => Math.max(current, filtered.indexOf(target) + 1));
     requestAnimationFrame(() => {
       const list = channelList.current;
@@ -367,40 +634,106 @@ export default function Player({portal, support, castAppId}: {portal: string; su
     return true;
   }
 
-  // Player shortcuts. Re-subscribed each render so the handler always sees the current lineup.
-  useEffect(() => {
-    if (!username) return;
-    function shortcut(event: KeyboardEvent) {
-      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || typingTarget(event.target) || document.querySelector('.watch-shell dialog[open]')) return;
-      const key = event.key;
-      if (key === 'ArrowDown' || key === 'ArrowUp') {
-        // A focused video keeps its own arrow-key behaviour (seeking and volume in some browsers).
-        if (event.target instanceof HTMLMediaElement || !step(key === 'ArrowDown' ? 1 : -1)) return;
-      } else if (key === 'f' || key === 'F') {if (!event.repeat) toggleFullscreen();}
-      else if (key === 'm' || key === 'M') {if (!event.repeat) toggleMute();}
-      else if (key === '/') searchInput.current?.focus();
-      else if (key === '?') shortcutsDialog.current?.showModal();
-      else return;
-      event.preventDefault();
+  // Player shortcuts; arrow keys otherwise move focus (use-spatial-navigation). Back keys go back a screen.
+  function shortcut(event: KeyboardEvent) {
+    if (!username || typingTarget(event.target) || document.querySelector('.watch-shell dialog[open]')) return false;
+    const key = event.key;
+    const vodPlaying = Boolean(selected && selected.kind !== 'live' && view === 'play');
+    if (document.fullscreenElement && selected) {
+      if (vodPlaying && (key === 'ArrowLeft' || key === 'ArrowRight')) {seekBy(key === 'ArrowLeft' ? -10 : 10); return true;}
+      if (!vodPlaying && view === 'live' && (key === 'ArrowUp' || key === 'ArrowDown')) {step(key === 'ArrowDown' ? 1 : -1); return true;}
     }
-    window.addEventListener('keydown', shortcut);
-    return () => window.removeEventListener('keydown', shortcut);
-  });
+    // Only the video box itself (focused) changes channel with ↑/↓ or plays and pauses with Enter/Space; a button over
+    // the video (Next episode, Send to your TV) does what it says, and with nothing focused, arrows move focus.
+    const action = stageKey(key, keyTargetOf(event.target), view, vodPlaying);
+    if (action === 'next' || action === 'previous') return step(action === 'next' ? 1 : -1);
+    if (action === 'toggle') {togglePlay(); return true;}
+    if (view === 'live') {
+      if (key === 'PageDown' || key === 'ChannelDown') {step(1); return true;}
+      if (key === 'PageUp' || key === 'ChannelUp') {step(-1); return true;}
+    }
+    if (vodPlaying) {
+      if (key === 'k' || key === 'K' || key === 'MediaPlayPause') {togglePlay(); return true;}
+      if (key === 'j' || key === 'J' || key === 'MediaRewind') {seekBy(-10); return true;}
+      if (key === 'l' || key === 'L' || key === 'MediaFastForward') {seekBy(10); return true;}
+    }
+    if (key === 'f' || key === 'F') {if (!event.repeat) toggleFullscreen(); return true;}
+    if (key === 'm' || key === 'M') {if (!event.repeat) toggleMute(); return true;}
+    if (key === '/') {
+      if (view === 'live') searchInput.current?.focus();
+      else if (view !== 'search') go({view: 'search', q: ''});
+      return true;
+    }
+    if (key === '?') {shortcutsDialog.current?.showModal(); return true;}
+    return false;
+  }
+  // Signed out too, so the sign-in form can be filled in with a remote.
+  useSpatialNavigation({enabled: true, onKey: shortcut, onBack: () => {if (username) router.back();}, closeOverlay: closeOpenMenu});
 
+  // When a movie or episode ends and Next episode appears, a remote's focus (on the video, or nowhere) moves to it.
+  const nextButton = useRef<HTMLButtonElement>(null);
+  const nextShown = Boolean(selected && selected.kind !== 'live' && !castHold && status === 'Finished' && nextEpisode && playingTitle);
+  useEffect(() => {
+    if (!nextShown || !keysMode()) return;
+    const active = document.activeElement;
+    if (nextButton.current && (!active || active === document.body || active.closest('[data-stage]'))) focusElement(nextButton.current);
+  }, [nextShown]);
+
+  // ---------------------------------------------------------------- rendering
   // Local playback also waits while a Cast session is live or starting (the channel is on its way to the TV) and,
   // right after the page loads, until Chrome has had its chance to rejoin a session that is still running.
   const castWaiting = !castHold && (castLive || castPending || !castChecked);
   const connecting = selected && !castHold && !playError && (castWaiting || ['Connecting…', 'Reconnecting…', 'Buffering…'].includes(status));
   const shownStatus = castHold ? (casting ? 'Playing on your TV' : castLive ? 'Not on your TV' : 'Casting ended') : castPending ? 'Connecting to your TV…' : castWaiting ? 'Connecting…' : status;
+  const vodSelected = Boolean(selected && selected.kind !== 'live');
+  // The player stays mounted (hidden) while a channel or title plays on a TV and the viewer browses, so the cast
+  // controls keep track of what is on the TV.
+  const stageMounted = stageView || Boolean(selected && (castHold || castLive));
+  const section = route ? sectionOf(route, router.from) : 'live';
+  const adultLock = (hasAdult || adultUnlocked) ? <AdultLock unlocked={adultUnlocked} onUnlock={() => {setAdultUnlocked(true); setAnnouncement('Adult content unlocked');}} onLock={lockAdult}/> : null;
+  const bases = catalogue.state.posterBases;
+  const browseBase = catalog ? {catalog, library: library.library, bases, opts, withTmdb: catalogue.state.withTmdb, onOpen: openTitle, onNavigate: go, error: catalogue.state.error, onRetry: catalogue.retry} : null;
 
-  return <div className="watch-shell">
+  const shownError = (key: string) => titleError && titleError.key === key && titleError.change === router.changes ? titleError.message : '';
+  const browseView = route && !stageView ? route : null;
+  const browseTitle = browseView?.view === 'title' ? findTitle(catalog, browseView.key) : null;
+  const catalogueReady = Boolean(browseBase) && catalogue.state.status === 'ready';
+  const onSearchChannel = (channel: Channel) => {chooseChannel(channel); go({view: 'live'}, 'channel:' + channel.id);};
+  const onTitlePlay = (request: PlayRequest) => {if (browseTitle) void playTitle(browseTitle, request);};
+  const onTitleFavorite = () => {
+    if (!browseTitle) return;
+    const added = library.toggleFavorite(browseTitle.key);
+    setAnnouncement(added ? 'Added to your Library' : 'Removed from your Library');
+  };
+
+  const castBar = !stageView && selected && (castHold || castLive) ? <div className="watch-cast-bar" role="status">
+    <span>📺 {casting && castDevice ? 'Playing on ' + castDevice : 'Cast'}: {selected.name}</span>
+    <button type="button" className="small-button" onClick={() => go(selected.kind === 'live' ? {view: 'live'} : {view: 'play', key: selected.libraryKey || '', ...(selected.episode ? {ep: selected.episode.id} : {})})}>Open</button>
+    {castLive && <button type="button" className="small-button" onClick={stopCast}>Stop casting</button>}
+  </div> : null;
+
+  // The header's "Skip to content" link focuses the content's first item without a #fragment history entry (which
+  // Back would otherwise step through as a screen).
+  const skipToContent = (event: React.MouseEvent) => {
+    const link = (event.target as Element).closest?.('a[href="#main-content"]');
+    const main = document.getElementById('main-content');
+    if (!link || !main) return;
+    event.preventDefault();
+    const shown = (element: HTMLElement) => element.getBoundingClientRect().height > 0 && !element.closest('[hidden], [tabindex="-1"], [aria-hidden="true"]');
+    const first = Array.from(main.querySelectorAll<HTMLElement>('[data-nav-start]:not([disabled])')).find(shown) ||
+      Array.from(main.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), [tabindex="0"]')).find(shown);
+    if (first) focusElement(first);
+    else main.scrollIntoView({block: 'start'});
+  };
+
+  return <div className="watch-shell" ref={shell} data-input="pointer" onClickCapture={skipToContent} onPointerDown={() => {if (shell.current) shell.current.dataset.input = 'pointer';}} onKeyDown={() => {if (shell.current) shell.current.dataset.input = 'keys';}}>
     <SiteHeader portal={portal} current="/watch" actions={username ? <button type="button" onClick={logout} disabled={signingOut}>{signingOut ? 'Signing out…' : 'Sign out'}</button> : undefined}/>
     {checking && !username ? <main id="main-content" className="watch-login watch-opening"><span className="watch-spinner" aria-hidden="true"/><p role="status">Opening your nest…</p></main> : !username ?
-      <main id="main-content" className="watch-login">
-        <section className="watch-intro"><p className="eyebrow"><i className="status-dot"/> LUMANEST WEB PLAYER</p><h1><span className="watch-headline">Your front row.</span><br/><em>Anywhere.</em></h1><p>Pick a channel. Settle in. Watch in your browser.</p><div className="watch-orbit" aria-hidden="true"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><path d="M15.5 4.5a8 8 0 1 0 4 12.2 6.5 6.5 0 0 1-4-12.2Z"/><path d="M19 3v3M17.5 4.5h3"/></svg></div><div className="watch-format"><span>Live channels</span><span>Search & favorites</span><span>Fullscreen playback</span></div></section>
+      <main id="main-content" className="watch-login" data-nav-root="">
+        <section className="watch-intro"><p className="eyebrow"><i className="status-dot"/> LUMANEST WEB PLAYER</p><h1><span className="watch-headline">Your front row.</span><br/><em>Anywhere.</em></h1><p>Live channels, movies and series. Settle in. Watch in your browser.</p><div className="watch-orbit" aria-hidden="true"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"><path d="M15.5 4.5a8 8 0 1 0 4 12.2 6.5 6.5 0 0 1-4-12.2Z"/><path d="M19 3v3M17.5 4.5h3"/></svg></div><div className="watch-format"><span>Live channels</span><span>Movies & series</span><span>Search & favorites</span></div></section>
         <section className="watch-login-card"><p className="eyebrow">WELCOME TO YOUR NEST</p><h2>Let’s get you<br/>watching.</h2><p>Use the line username and password shown in your customer hub’s app setup details. <a className="watch-which-login" href="/#logins">Which login is this?</a></p>
           <form onSubmit={signIn} aria-busy={busy}>
-            <label>Line username<input name="username" required maxLength={100} autoComplete="username" autoCapitalize="none" spellCheck={false}/></label>
+            <label>Line username<input name="username" required maxLength={100} autoComplete="username" autoCapitalize="none" spellCheck={false} data-nav-start=""/></label>
             <div className="watch-password-field"><label htmlFor="line-password">Line password</label><div className="watch-password"><input id="line-password" name="password" type={showPassword ? 'text' : 'password'} required maxLength={150} autoComplete="current-password"/><button type="button" aria-controls="line-password" aria-pressed={showPassword} aria-label={showPassword ? 'Hide line password' : 'Show line password'} onClick={() => setShowPassword(current => !current)}>{showPassword ? 'Hide' : 'Show'}</button></div></div>
             <button className="button primary" disabled={busy}>{busy ? 'Checking your line…' : 'Open my channels ↗'}</button>
           </form>
@@ -408,45 +741,67 @@ export default function Player({portal, support, castAppId}: {portal: string; su
           <a href={portal} className="watch-help">Find your line login in the customer hub ↗</a><p className="watch-privacy">An active subscription is required. <a href="/renew">Renew an expired line online ↗</a> Keep your line login private.</p>
         </section>
       </main> :
-      <main id="main-content" className="watch-dashboard">
-        <section className="watch-main">
-          <div className="watch-title"><div><p className="eyebrow">YOUR CHANNEL. YOUR EVENING.</p><h1>Welcome home.</h1></div><span className="watch-user" title={username}>{username}</span></div>
-          <div className="video-wrap" ref={viewingArea}>
-            <video key={(selected?.token || 'empty') + ':' + streamFormat + ':' + retry} ref={video} aria-label={selected ? 'Watching ' + selected.name : 'LumaNest TV video player'} controls={!connecting} playsInline x-webkit-airplay="allow" preload="none"/>
-            {!selected && <div className="video-empty"><span aria-hidden="true">▶</span><h2>The night is yours.</h2>{resume ? <button type="button" className="button primary watch-resume" onClick={() => choose(resume)}>Continue with {resume.name} ▶</button> : <p>Choose a channel from your lineup to start watching.</p>}</div>}
-            {selected && castHold && <div className="video-empty watch-cast-hold"><span aria-hidden="true">📺</span><h2>{shownStatus}</h2>{casting ? <p>{selected.name} is on your TV. This screen stays off so your line streams only once.</p> : castLive && castRetryable ? <button type="button" className="button primary watch-resume" onClick={() => choose(selected)}>Send {selected.name} to your TV ▶</button> : <button type="button" className="button primary watch-resume" onClick={playHere}>Play {selected.name} here ▶</button>}</div>}
-            {connecting && <div className="watch-loading"><span className="watch-spinner" aria-hidden="true"/><span>{shownStatus}</span></div>}
-            {selected && !castHold && !castWaiting && !playError && status === 'Press play to start' && <div className="watch-start"><button className="button primary" onClick={() => startPlayback.current?.()}>Play {selected.name} ▶</button></div>}
-          </div>
-          <div className="now-playing"><div><small>NOW PLAYING</small><h2>{selected?.name || 'Make yourself at home.'}</h2><p>{selected?.group || 'Your channels are waiting.'}</p></div><div><span className="playback-status" role="status" aria-live="polite">{selected ? shownStatus : 'Choose a channel'}</span>{selected && <><button className="small-button" onClick={stopPlayback}>Stop playback ■</button><button className="small-button" aria-keyshortcuts="F" onClick={fullscreen}>Fullscreen ⛶</button></>}</div></div>
-          {selected && <div className="watch-player-tools"><div className="watch-channel-navigation"><button className="small-button" aria-label="Previous channel in this lineup" disabled={selectedIndex <= 0} onClick={() => choose(playable[selectedIndex - 1])}>← Previous</button><button className="small-button" aria-label="Next channel in this lineup" disabled={selectedIndex < 0 || selectedIndex >= playable.length - 1} onClick={() => choose(playable[selectedIndex + 1])}>Next →</button></div>{qualities.length > 1 && <label className="quality-select">Picture quality<select value={quality} onChange={event => {const next = Number(event.target.value); setQuality(next); if (hls.current) hls.current.currentLevel = next;}}><option value={-1}>Automatic</option>{qualities.map(item => <option key={item.index} value={item.index}>{item.height ? item.height + 'p' : 'Quality ' + (item.index + 1)}</option>)}</select></label>}<SubtitleControls key={(selected.token || '') + ':' + streamFormat + ':' + retry} video={video} engine={engine} supported={streamFormat !== 'mpegts'}/>{selected.token && <CastControls channel={selected.id} token={selected.token} name={selected.name} format={streamFormat} attempt={retry} video={video} castAppId={castAppId} castAvailable={castAvailable} castDevice={castDevice} onCastPending={setCastPending} onCastStart={castStarted} onCastFailed={castFailed} onSessionExpired={castSignedOut} onCastStop={stopCast}/>}</div>}
-          {playError && <div className="watch-error" role="alert"><p>{playError}</p><button className="small-button" onClick={() => setRetry(current => current + 1)}>Try this channel again</button></div>}
-          <div className="watch-bottom"><p>Playback uses one of your plan’s simultaneous screens. Available channels and formats depend on your line.</p><div className="watch-bottom-links"><button type="button" className="watch-shortcuts-open" aria-keyshortcuts="Shift+?" onClick={() => shortcutsDialog.current?.showModal()}>Keyboard shortcuts</button>{(hasAdult || adultUnlocked) && <AdultLock unlocked={adultUnlocked} onUnlock={() => {setAdultUnlocked(true); setAnnouncement('Adult content unlocked');}} onLock={lockAdult}/>}<a href={'mailto:' + support}>Need a hand? Contact support ↗</a></div></div>
-          <span className="sr-only" role="status">{announcement}</span>
-          <dialog ref={shortcutsDialog} className="watch-shortcuts" aria-labelledby="watch-shortcuts-title">
-            <h2 id="watch-shortcuts-title">Keyboard shortcuts</h2>
-            <dl>{SHORTCUTS.map(([keys, action]) => <div key={keys}><dt><kbd>{keys}</kbd></dt><dd>{action}</dd></div>)}</dl>
-            <p>Shortcuts work while you are not typing in a field.</p>
-            <form method="dialog"><button className="small-button">Close</button></form>
-          </dialog>
-        </section>
-        <aside className="channel-panel" aria-label="Channel lineup" aria-busy={checking}>
-          <div className="channel-panel-title"><h2>Your lineup</h2><button aria-label="Refresh channel list" disabled={checking || signingOut} onClick={() => {void loadChannels();}}>↻</button></div>
-          <label className="search-label">Search channels<input ref={searchInput} aria-keyshortcuts="/" value={query} onChange={event => {setQuery(event.target.value); setLimit(60);}} placeholder="A channel, a category…" type="search"/></label>
-          <div className="channel-filters"><button aria-pressed={!favoriteOnly} onClick={() => {setFavoriteOnly(false); setLimit(60);}}>All channels</button><button aria-pressed={favoriteOnly} onClick={() => {setFavoriteOnly(true); setLimit(60);}}>★ Favorites</button></div>
-          <label className="search-label">Category<select value={group} onChange={event => {setGroup(event.target.value); setLimit(60);}}><option>All channels</option>{groups.map(item => <option key={item}>{item}</option>)}</select></label>
-          <p className="channel-count">{filtered.length.toLocaleString()} {filtered.length === 1 ? 'channel' : 'channels'} {checking && '· refreshing…'}</p>
-          {error && <p className="watch-error" role="alert">{error}</p>}
-          <div className="channel-list" ref={channelList}>
-            {filtered.slice(0, limit).map(channel => <div key={channel.id} data-channel={channel.id} className={'channel-row ' + (selected?.id === channel.id ? 'selected' : '')}>
-              <button className="channel-choice" disabled={!channel.token} aria-pressed={selected?.id === channel.id} title={channel.reason || channel.name} onClick={() => choose(channel)}><span className="channel-icon" aria-hidden="true">{channel.name.slice(0, 2).toUpperCase()}</span><span><strong>{channel.name}</strong><small>{channel.token ? channel.group : 'Stream unavailable'}</small></span>{selected?.id === channel.id && <i className="status-dot" aria-hidden="true"/>}</button>
-              <button className="favorite-button" aria-label={(favorites.includes(channel.id) ? 'Remove ' : 'Add ') + channel.name + (favorites.includes(channel.id) ? ' from favorites' : ' to favorites')} aria-pressed={favorites.includes(channel.id)} onClick={() => favorite(channel.id)}>{favorites.includes(channel.id) ? '★' : '☆'}</button>
-            </div>)}
-            {filtered.length === 0 && <div className="no-channels"><p>{channels.length === 0 ? 'Your channel list could not be loaded.' : favoriteOnly && !query && group === 'All channels' ? 'Star a channel to add it here.' : 'No channels match these filters.'}</p>{channels.length ? <button className="small-button" onClick={resetFilters}>Show all channels</button> : <button className="small-button" disabled={checking} onClick={() => {void loadChannels();}}>Try again</button>}</div>}
-            {filtered.length > limit && <button className="load-more" onClick={() => setLimit(current => current + 60)}>Show more channels ({Math.min(60, filtered.length - limit)})</button>}
-          </div>
-        </aside>
-      </main>}
+      <div className="watch-app" data-nav-root="">
+        <NavRail current={section} titles={caps.titles} onNavigate={(next, focusKey) => go(next, focusKey)}/>
+        <main id="main-content" className="watch-view">
+          {castBar}
+          {stageMounted && <div className="watch-dashboard" hidden={!stageView}>
+            <section className="watch-main">
+              {view === 'play' && selected && vodSelected ? <div className="watch-title watch-title-play">
+                <button type="button" className="small-button watch-back" onClick={router.back}>← Back</button>
+                <div><p className="eyebrow">NOW PLAYING</p><h1>{selected.name}</h1>{selected.group && selected.group !== selected.name && <p className="watch-title-sub">{selected.group}</p>}</div>
+              </div> : <div className="watch-title"><div><p className="eyebrow">YOUR CHANNEL. YOUR EVENING.</p><h1>Welcome home.</h1></div><span className="watch-user" title={username}>{username}</span></div>}
+              <div className="video-wrap" ref={viewingArea} data-stage="" tabIndex={0} role="group" aria-label={selected ? (vodSelected ? 'Video: ' : 'Live TV: ') + selected.name : 'Video player'} data-nav-start={selected && !castHold ? '' : undefined}>
+                <video key={(selected?.token || 'empty') + ':' + streamFormat + ':' + retry} ref={video} aria-label={selected ? 'Watching ' + selected.name : 'LumaNest TV video player'} controls={!connecting} playsInline x-webkit-airplay="allow" preload="none"/>
+                {!selected && <div className="video-empty"><span aria-hidden="true">▶</span><h2>The night is yours.</h2>{resume ? <button type="button" className="button primary watch-resume" data-nav-start="" onClick={() => chooseChannel(resume)}>Continue with {resume.name} ▶</button> : <p>Choose a channel from your lineup to start watching.</p>}</div>}
+                {selected && castHold && <div className="video-empty watch-cast-hold"><span aria-hidden="true">📺</span><h2>{shownStatus}</h2>{casting ? <p>{selected.name} is on your TV. This screen stays off so your line streams only once.</p> : castLive && castRetryable ? <button type="button" className="button primary watch-resume" onClick={() => choose(selected)}>Send {selected.name} to your TV ▶</button> : <button type="button" className="button primary watch-resume" onClick={playHere}>Play {selected.name} here ▶</button>}</div>}
+                {connecting && <div className="watch-loading"><span className="watch-spinner" aria-hidden="true"/><span>{shownStatus}</span></div>}
+                {selected && !castHold && !castWaiting && !playError && status === 'Press play to start' && <div className="watch-start"><button className="button primary" onClick={() => startPlayback.current?.()}>Play {selected.name} ▶</button></div>}
+                {nextShown && nextEpisode && playingTitle && <div className="watch-start"><button ref={nextButton} type="button" className="button primary" data-nav-start="" aria-disabled={titleBusy || undefined} onClick={() => {if (!titleBusy) void playTitle(playingTitle, {episode: nextEpisode, tryAnyway: vodPlan(nextEpisode.ext, canPlay).mode === 'maybe'});}}>Next episode: {nextEpisode.label} ▶</button></div>}
+              </div>
+              <div className="now-playing">{vodSelected ? <div/> : <div><small>NOW PLAYING</small><h2>{selected?.name || 'Make yourself at home.'}</h2><p>{selected?.group || 'Your channels are waiting.'}</p></div>}<div><span className="playback-status" role="status" aria-live="polite">{selected ? shownStatus : 'Choose a channel'}</span>{selected && <><button className="small-button" onClick={stopPlayback}>Stop playback ■</button><button className="small-button" aria-keyshortcuts="F" onClick={fullscreen}>Fullscreen ⛶</button></>}</div></div>
+              {selected && vodSelected && !castHold && <VodControls video={video} mediaKey={(selected.token || '') + ':' + retry}/>}
+              {selected && <div className="watch-player-tools">
+                {!vodSelected && <div className="watch-channel-navigation"><button className="small-button" aria-label="Previous channel in this lineup" aria-keyshortcuts="PageUp" disabled={selectedIndex <= 0} onClick={() => chooseChannel(playable[selectedIndex - 1])}>← Previous</button><button className="small-button" aria-label="Next channel in this lineup" aria-keyshortcuts="PageDown" disabled={selectedIndex < 0 || selectedIndex >= playable.length - 1} onClick={() => chooseChannel(playable[selectedIndex + 1])}>Next →</button></div>}
+                {qualities.length > 1 && <label className="quality-select">Picture quality<select value={quality} onChange={event => {const next = Number(event.target.value); setQuality(next); if (hls.current) hls.current.currentLevel = next;}}><option value={-1}>Automatic</option>{qualities.map(item => <option key={item.index} value={item.index}>{item.height ? item.height + 'p' : 'Quality ' + (item.index + 1)}</option>)}</select></label>}
+                <SubtitleControls key={(selected.token || '') + ':' + streamFormat + ':' + retry} video={video} engine={engine} supported={streamFormat !== 'mpegts'}/>
+                {selected.token && <CastControls channel={selected.id} token={selected.token} name={selected.name} format={streamFormat} attempt={retry} video={video} castAppId={castAppId} castAvailable={castAvailable} castDevice={castDevice} onCastPending={setCastPending} onCastStart={castStarted} onCastFailed={castFailed} onSessionExpired={castSignedOut} onCastStop={stopCast}
+                  castable={selected.kind === 'live' || selected.castable !== false} vod={vodSelected} position={() => vodPosition.current}/>}
+              </div>}
+              {view === 'play' && playingTitle && shownError(playingTitle.key) && <p className="watch-error" role="alert">{shownError(playingTitle.key)}</p>}
+              {playError && <div className="watch-error" role="alert"><p>{playError}</p>{vodSelected && selected?.ext === 'mkv' && <p>{MAYBE_MESSAGE} <a href="/apps">Get the Tuner app ↗</a></p>}<button className="small-button" onClick={() => setRetry(current => current + 1)}>{vodSelected ? 'Try again' : 'Try this channel again'}</button></div>}
+              <div className="watch-bottom"><p>Playback uses one of your plan’s simultaneous screens. Available channels and formats depend on your line.</p><div className="watch-bottom-links"><button type="button" className="watch-shortcuts-open" aria-keyshortcuts="Shift+?" onClick={() => shortcutsDialog.current?.showModal()}>Keyboard shortcuts</button>{adultLock}<a href={'mailto:' + support}>Need a hand? Contact support ↗</a></div></div>
+            </section>
+            {view === 'play' && playingTitle ? <PlayAside title={playingTitle} episodeId={selected?.episode?.id} library={library.library} bases={bases}
+              onPlay={request => void playTitle(playingTitle, request)} onToggleFavorite={() => library.toggleFavorite(playingTitle.key)} onDetails={() => go({view: 'title', key: playingTitle.key})}/> :
+              <LiveLineup channels={liveChannels} filtered={filtered} groups={groups} checking={checking} signingOut={signingOut} error={error} query={query} group={group} favoriteOnly={favoriteOnly} favorites={favorites} limit={limit}
+                selectedId={selected?.kind === 'live' ? selected.id : undefined} searchInput={searchInput} channelList={channelList} onRefresh={() => {void loadChannels();}}
+                onQuery={value => {setQuery(value); setLimit(60);}} onGroup={value => {setGroup(value); setLimit(60);}} onFavoriteOnly={value => {setFavoriteOnly(value); setLimit(60);}}
+                onMore={() => setLimit(current => current + 60)} onReset={resetFilters} onChoose={chooseChannel} onFavorite={favorite}/>}
+          </div>}
+          {browseView?.view === 'settings' && <SettingsView username={username} expiresAt={expiresAt} region={region} onRegion={value => {setRegion(value); setAnnouncement(value === 'us' ? 'Movies and series: USA only' : 'Movies and series: all');}}
+            start={startView} onStart={value => setStartView(value)} titles={caps.titles && catalogue.state.status === 'ready'} source={catalogue.state.source} withTmdb={catalogue.state.withTmdb}
+            onRefresh={catalogue.refresh} adultLock={adultLock || <p className="settings-muted">Your line has no adult categories.</p>} onShortcuts={() => shortcutsDialog.current?.showModal()}
+            onSignOut={() => void logout()} signingOut={signingOut} saveError={library.error}/>}
+          {browseView?.view === 'search' && <Search key="search" query={browseView.q} catalog={catalog} library={library.library} bases={bases} opts={opts} channels={visible}
+            error={catalogue.state.error} onRetry={catalogue.retry} onQuery={q => router.navigate({view: 'search', q}, {replace: true, silent: true})} onOpen={openTitle} onChannel={onSearchChannel}/>}
+          {browseView && browseView.view !== 'settings' && browseView.view !== 'search' && !catalogueReady && <BrowseLoading label="Loading movies and series…"/>}
+          {catalogueReady && browseBase && browseView?.view === 'home' && <Home {...browseBase} continueRefs={continueRefs}/>}
+          {catalogueReady && browseBase && browseView?.view === 'discover' && <Discover {...browseBase} type={browseView.type} list={browseView.list} genre={browseView.genre}
+            initialLimit={router.value('discover-limit')} onLimit={limit => router.setValue('discover-limit', limit)}/>}
+          {catalogueReady && browseBase && browseView?.view === 'library' && <LibraryView {...browseBase} saveError={library.error}/>}
+          {catalogueReady && browseView?.view === 'title' && !browseTitle && <div className="watch-browse browse-empty"><h1 className="browse-title">Not available</h1><p>This title is no longer on your line.</p><button type="button" className="small-button" data-nav-start="" onClick={() => go({view: 'home'})}>Back to Home</button></div>}
+          {catalogueReady && browseTitle && browseTitle.adult && !adultUnlocked && <div className="watch-browse browse-empty"><h1 className="browse-title">Locked</h1><p>This title is in an adult category. Unlock adult content in Settings to see it.</p><button type="button" className="small-button" data-nav-start="" onClick={() => go({view: 'settings'})}>Open Settings</button></div>}
+          {catalogueReady && browseTitle && (!browseTitle.adult || adultUnlocked) && <TitleDetails key={browseTitle.key} title={browseTitle} library={library.library} bases={bases} busy={titleBusy} error={shownError(browseTitle.key)} onPlay={onTitlePlay} onToggleFavorite={onTitleFavorite}/>}
+        </main>
+      </div>}
+    {username && <dialog ref={shortcutsDialog} className="watch-shortcuts" aria-labelledby="watch-shortcuts-title">
+      <h2 id="watch-shortcuts-title">Keyboard &amp; remote</h2>
+      <dl>{SHORTCUTS.map(([keys, action]) => <div key={keys}><dt><kbd>{keys}</kbd></dt><dd>{action}</dd></div>)}</dl>
+      <p>Shortcuts work while you are not typing in a field. On a TV, the remote’s Back button goes back.</p>
+      <form method="dialog"><button className="small-button">Close</button></form>
+    </dialog>}
+    <span className="sr-only" role="status">{announcement}</span>
     <SiteFooter portal={portal} support={support}/>
   </div>;
 }
