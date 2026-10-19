@@ -1,16 +1,27 @@
 (function (window, document) {
   "use strict";
   var D = window.TunerData,
+    B = D.browse,
     store = D.createStore(),
     client = null;
+  // Sections. The numbers are stable ids (tab-N, saved focus, origins); the tab bar shows them in tabOrder.
+  var LIVE = 0,
+    DISCOVER = 1,
+    LIBRARY = 2,
+    SEARCH = 3,
+    SETTINGS = 4,
+    MULTI = 5,
+    HOME = 6;
   var tabs = [
     "Live TV",
-    "Movies",
-    "Series",
+    "Discover",
+    "Library",
     "Search",
     "Settings",
     "Multi View",
+    "Home",
   ];
+  var tabOrder = [HOME, LIVE, DISCOVER, LIBRARY, SEARCH, SETTINGS, MULTI];
   var S = {
     tab: 0,
     zone: "nav",
@@ -30,8 +41,12 @@
     watched: null,
     fullscreen: false,
     controls: true,
-    browseCategory: { movies: "__all", series: "__all" },
-    cards: { movies: 0, series: 0 },
+    // Home and Library: the focused row (by id) and, per row, the focused tile, its title and the first tile
+    // in view. fromHome: Library was opened by Continue watching's See all, so Back returns to Home.
+    shelf: { home: { rowId: null, rows: {} }, library: { rowId: null, rows: {}, fromHome: false } },
+    // Discover: its filters, the focused poster, the first grid row in view, the last focused filter, and
+    // whether a See all tile on Home opened it.
+    discover: { type: "movies", list: null, genre: "", focus: 0, top: 0, filter: "discover-list", fromHome: false },
     query: "",
     detail: null,
     detailInfo: null,
@@ -39,12 +54,15 @@
     dialog: false,
     sourceGeneration: 0,
     focusId: null,
-    // Last focused control per page (3 Search, 4 Settings), restored when the page is entered again.
+    // Last focused control per page (Search, Settings), restored when the page is entered again.
     pageFocus: {},
     // Where full-screen live playback was opened from when that was not the guide (Search).
     playOrigin: null,
     guidePlaced: false,
     guideWaiting: false,
+    // Home or Library had nothing to focus (titles loading or being prepared): focus waits on the section's
+    // tab and moves to the rows once they arrive, unless a key moved it meanwhile.
+    shelfWaiting: false,
   };
   var topbar = document.getElementById("topbar"),
     main = document.getElementById("main");
@@ -143,7 +161,7 @@
       !/^(tab-|dialog-|pin-|play-|dual-result-|dual-channel-query)/.test(id)
     ) {
       // Pointer or script focus that lands on a page control leaves the tab bar.
-      if (S.zone === "nav" && S.tab >= 3 && !(dualActive && S.tab === 5))
+      if (S.zone === "nav" && S.tab >= SEARCH && S.tab <= MULTI && !(dualActive && S.tab === 5))
         S.zone = "form";
       if (S.zone !== "nav") {
         if (S.tab === 5) dualFocusId = id;
@@ -314,8 +332,22 @@
   }
   function enterPage() {
     S.focusId = null;
-    S.zone = S.tab === 0 ? "grid" : S.tab === 1 || S.tab === 2 ? "cards" : "form";
+    S.zone = pageZone(S.tab);
     render();
+  }
+  // The zone a section starts in: the guide list, a shelf's rows, Discover's posters, or a form.
+  function pageZone(tab) {
+    return tab === LIVE
+      ? "grid"
+      : tab === HOME || tab === LIBRARY
+        ? "rows"
+        : tab === DISCOVER
+          ? "posters"
+          : "form";
+  }
+  // The section Tuner opens on, and the one Back from another section's tab returns to.
+  function startTab() {
+    return store.settings.startOn === "live" ? LIVE : HOME;
   }
   function enterGrid() {
     S.zone = "grid";
@@ -349,12 +381,17 @@
     render();
   }
   function backLabel() {
-    if (S.detail)
-      return S.detail.origin && S.detail.origin.tab === 3 ? "Search" : "Titles";
+    if (S.detail) return sectionName(S.detail.origin ? S.detail.origin.tab : HOME);
     if (S.tab === 0 && S.zone === "grid")
       return S.focusAt !== null ? "Now" : "Categories";
     if (S.tab === 0 && S.zone === "empty") return "Categories";
+    if (S.zone !== "nav" && S.tab === DISCOVER)
+      return S.discover.fromHome ? "Home" : S.zone === "posters" ? "Filters" : "Tabs";
+    if (S.zone !== "nav" && S.tab === LIBRARY && S.shelf.library.fromHome) return "Home";
     return "Tabs";
+  }
+  function sectionName(tab) {
+    return tab === SEARCH ? "Search" : tabs[tab] || "Home";
   }
   function refreshBrandHint() {
     var n = document.getElementById("brand-hint");
@@ -616,9 +653,9 @@
     topbar.appendChild(brand);
     var nav = el("nav");
     nav.setAttribute("aria-label", "Main navigation");
-    tabs.forEach(function (name, i) {
+    tabOrder.forEach(function (i) {
       var b = button(
-        name,
+        tabs[i],
         "tab-" + i,
         function () {
           openTab(i);
@@ -636,8 +673,14 @@
     topbar.appendChild(el("div", "clock", clock(Date.now())));
     refreshBrandHint();
   }
-  // onNav: stay on the tab bar (Back from another tab's bar lands on Live TV's tab).
+  // onNav: stay on the tab bar (Back from another tab's bar lands on the start section's tab).
   function openTab(i, onNav) {
+    S.discover.fromHome = false;
+    S.shelf.library.fromHome = false;
+    showSection(i, onNav);
+  }
+  // openTab without forgetting that Discover or Library was opened from Home.
+  function showSection(i, onNav) {
     if (S.tab === 5 && i !== 5) stopDual();
     if (S.fullscreen) leaveFullscreen();
     closeDialog(false);
@@ -646,13 +689,7 @@
     S.tab = i;
     S.nav = i;
     S.focusId = null;
-    S.zone = onNav
-      ? "nav"
-      : i === 0
-        ? "grid"
-        : i === 1 || i === 2
-          ? "cards"
-          : "form";
+    S.zone = onNav ? "nav" : pageZone(i);
     if (i !== 0) hidePreview();
     render();
     if (i === 0) resumeGuidePreview();
@@ -689,10 +726,12 @@
     applyTheme();
     renderNav();
     if (S.detail) renderDetail();
-    else if (S.tab === 0) renderGuide();
-    else if (S.tab === 1 || S.tab === 2) renderBrowse();
-    else if (S.tab === 3) renderSearch();
-    else if (S.tab === 5) renderMultiView();
+    else if (S.tab === LIVE) renderGuide();
+    else if (S.tab === HOME) renderShelfPage("home");
+    else if (S.tab === LIBRARY) renderShelfPage("library");
+    else if (S.tab === DISCOVER) renderDiscover();
+    else if (S.tab === SEARCH) renderSearch();
+    else if (S.tab === MULTI) renderMultiView();
     else renderSettings();
   }
   function guideLoading() {
@@ -1340,157 +1379,932 @@
     player.setRect({ left: 0, top: 0, width: 0, height: 0 });
     applyTheme();
   }
-  function browseKind() {
-    return S.tab === 1 ? "movies" : "series";
+  // Movies & Series (docs/browse.md). Home and Library are shelves of horizontal poster rows; Discover is a
+  // filtered poster grid. Each catalogue is indexed once by js/data.js (in steps on a large catalogue, so keys
+  // stay responsive); rows and grids are cut from the index when shown. Only the focused shelf row and the one
+  // below it, or three grid rows, are in the DOM, and posters load as they come into view.
+  var POSTER = 210, // a shelf tile's pitch in stage pixels (188 px poster + gap)
+    SHELF_SLOTS = 8, // shelf tiles fully in view
+    SHELF_ROWS = 2, // shelf rows in the DOM: the focused one and the one below (the screen shows 1.7 rows)
+    GRID_COLS = 8,
+    GRID_ROWS = 2, // grid rows fully in view
+    GRID_PAGE = 96, // titles the grid computes at a time as it scrolls
+    SYNC_INDEX = 3000, // catalogues up to this size are indexed at once; larger ones in slices of about
+    INDEX_SLICE = 30, // this many milliseconds, between key presses
+    TMDB_NOTICE = "This product uses the TMDB API but is not endorsed or certified by TMDB.";
+  var browse = {
+    index: { movies: null, series: null },
+    pending: { movies: null, series: null },
+    stale: { movies: false, series: false }, // the catalogue changed since its index was built
+    rows: null, // the catalog rows (TMDB lists) in use, or null
+    rowsClient: null,
+    home: null, // Home's rows after Continue watching, until the index or the USA setting changes
+    results: null, // Discover's titles for its current filters
+  };
+  // The shelf on screen ({ name, rows, nodes, marks, box }) and every poster's title by id (Hold OK).
+  var shelfView = null,
+    tileTitles = {};
+  function vodUsOnly() {
+    return store.settings.vodUsOnly !== false;
   }
-  function browseItems(kind) {
-    var category = S.browseCategory[kind],
-      items = S.catalogs[kind];
-    if (category === "__recent" && kind === "movies") {
-      var recents = store.recents();
-      return recents
-        .map(function (r) {
-          return items.filter(function (i) {
-            return i.id === r.id;
-          })[0];
-        })
-        .filter(Boolean);
-    }
-    if (category !== "__all")
-      items = items.filter(function (i) {
-        return i.categoryIds.indexOf(category) >= 0;
+  function isBrowseTab(tab) {
+    return tab === HOME || tab === DISCOVER || tab === LIBRARY;
+  }
+  function withTmdb() {
+    return !!browse.rows && B.hasTmdb(browse.rows);
+  }
+  // Rows come from the saved copy at once; a stale or missing copy is refreshed in the background.
+  function refreshRows() {
+    if (!browse.rowsClient) {
+      var storage = null;
+      try {
+        storage = window.localStorage || null;
+      } catch (e) {}
+      browse.rowsClient = B.createRowsClient({
+        storage: storage,
+        XMLHttpRequest: window.XMLHttpRequest,
       });
-    return items;
-  }
-  function renderBrowse() {
-    main.textContent = "";
-    var kind = browseKind(),
-      items = browseItems(kind);
-    S.cards[kind] = Math.max(
-      0,
-      Math.min(S.cards[kind], Math.max(0, items.length - 1))
-    );
-    var hero = el("section", "browse-hero");
-    hero.id = "browse-hero";
-    main.appendChild(hero);
-    var chips = el("div", "chip-row"),
-      cats = [
-        { id: "__all", name: kind === "movies" ? "All Movies" : "All Series" },
-      ];
-    if (kind === "movies" && store.recents().length)
-      cats.push({ id: "__recent", name: "Continue Watching" });
-    cats = cats.concat(S.cats[kind]);
-    cats.forEach(function (cat, i) {
-      var b = button(
-        cat.name,
-        "browse-cat-" + i,
-        function () {
-          S.browseCategory[kind] = cat.id;
-          S.cards[kind] = 0;
-          S.zone = "cards";
-          renderBrowse();
-        },
-        S.browseCategory[kind] === cat.id ? "active" : ""
-      );
-      b.onfocus = function () {
-        S.zone = "categories";
-        remember(b.id);
-      };
-      chips.appendChild(b);
+      browse.rows = browse.rowsClient.peek();
+    }
+    if (!store.settings.source) return;
+    browse.rowsClient.refresh(function (rows) {
+      browse.rows = rows;
+      // Indexes match the new rows (a running job restarts its matching); the screen keeps the old
+      // matches until the new ones are complete.
+      ["movies", "series"].forEach(function (kind) {
+        var job = browse.pending[kind];
+        if (job && !job.builder) {
+          job.matcher = B.createMatcher(job.index, rows);
+          job.warm = null;
+        } else if (!job && browse.index[kind] && !browse.stale[kind] && startIndexJob(kind, browse.index[kind])) {
+          browse.home = null;
+          browse.results = null;
+        }
+      });
+      browseChanged();
     });
-    main.appendChild(chips);
-    if (!items.length)
-      main.appendChild(
-        statusEmpty(kind, kind === "movies" ? "Movies" : "Series")
-      );
-    else {
-      var cards = el("div", "cards");
-      var start = Math.max(0, S.cards[kind] - 3),
-        visible = items.slice(start, start + 10);
-      visible.forEach(function (item, index) {
-        var i = start + index,
-          card = button(
-            "",
-            "card-" + i,
-            function () {
-              openDetail(item, kind);
-            },
-            "card"
-          );
-        if (item.image) card.appendChild(image(item.image));
-        else
-          card.appendChild(
-            el("div", "no-poster", item.name.slice(0, 2).toUpperCase())
-          );
-        if (item.rating)
-          card.appendChild(el("span", "rating", "★ " + item.rating));
-        card.appendChild(el("span", "card-title", item.name));
-        card.onfocus = function () {
-          S.zone = "cards";
-          S.cards[kind] = i;
-          remember(card.id);
-          updateBrowseHero(item, kind);
-          scrollToElement(card);
-        };
-        cards.appendChild(card);
+  }
+  // Whether both catalogues are indexed. Starts what is missing; a large catalogue is indexed in steps
+  // between key presses and the page redraws when it is ready.
+  function browseReady() {
+    refreshRows();
+    var movies = indexReady("movies"),
+      series = indexReady("series");
+    return movies && series;
+  }
+  // Ready when indexed (a re-match after new rows keeps the old matches meanwhile); otherwise starts indexing.
+  function indexReady(kind) {
+    if (browse.index[kind]) {
+      // A catalogue delivered again: the old index stays on screen while the new one is built.
+      if (browse.stale[kind] && !browse.pending[kind]) startIndexJob(kind, null);
+      return true;
+    }
+    return !browse.pending[kind] && startIndexJob(kind, null);
+  }
+  // Indexes one catalogue (index null) or matches an index to new rows. A small catalogue is done at once
+  // (returns true); a large one in slices of INDEX_SLICE ms with the page redrawn when it is done.
+  function startIndexJob(kind, index) {
+    if (!index) browse.stale[kind] = false;
+    var job = {
+      builder: index ? null : B.createIndexBuilder(kind, S.catalogs[kind], S.cats[kind]),
+      index: index,
+      matcher: index ? B.createMatcher(index, browse.rows) : null,
+      warm: null,
+      timer: null,
+    };
+    browse.pending[kind] = job;
+    if (S.catalogs[kind].length <= SYNC_INDEX) {
+      runIndexJob(job, true);
+      finishIndexJob(kind, job);
+      return true;
+    }
+    // The first slice too waits for the current key or render to finish, so it never redraws the page
+    // while that render is still building it.
+    function next() {
+      if (browse.pending[kind] !== job) return;
+      if (!runIndexJob(job, false)) {
+        job.timer = setTimeout(next, 0);
+        return;
+      }
+      finishIndexJob(kind, job);
+      browseChanged();
+    }
+    job.timer = setTimeout(next, 0);
+    return false;
+  }
+  // One slice: titles first, then matching, then the lists Home sorts (one list per round). Returns true when done.
+  function runIndexJob(job, whole) {
+    var until = Date.now() + INDEX_SLICE,
+      rounds = 0;
+    while (whole || (rounds++ < 40 && Date.now() <= until)) {
+      if (job.builder) {
+        if (job.builder.step(whole ? 0 : 150)) {
+          job.index = job.builder.index;
+          job.builder = null;
+          job.matcher = B.createMatcher(job.index, browse.rows);
+        }
+      } else if (job.matcher) {
+        if (job.matcher.step(whole ? 0 : 800)) {
+          job.matcher.apply();
+          job.matcher = null;
+          job.warm = whole
+            ? []
+            : ["recent", "rated", "popular", "featured", "az"].concat(
+                B.SERVICES.map(function (service) {
+                  return service.key;
+                })
+              );
+        }
+      } else if (job.warm && job.warm.length) B.listOf(job.index, job.warm.shift());
+      else return true;
+    }
+    return false;
+  }
+  function finishIndexJob(kind, job) {
+    browse.pending[kind] = null;
+    browse.index[kind] = job.index;
+    browse.home = null;
+    browse.results = null;
+  }
+  // The titles shown changed at once (adult lock, another playlist): the index is dropped and rebuilt when
+  // next shown.
+  function invalidateBrowse(kind) {
+    if (browse.pending[kind]) clearTimeout(browse.pending[kind].timer);
+    browse.pending[kind] = null;
+    browse.index[kind] = null;
+    browse.stale[kind] = false;
+    browse.home = null;
+    browse.results = null;
+  }
+  // The provider delivered a catalogue again (the saved copy, then the network; Refresh): the index on
+  // screen stays, with focus, until the new one is ready (a large catalogue is indexed in slices).
+  function catalogueRedelivered(kind) {
+    // An index of no titles (built while the catalogue was still loading) is not worth keeping.
+    if (!browse.index[kind] || !browse.index[kind].titles.length) return invalidateBrowse(kind);
+    if (browse.pending[kind]) clearTimeout(browse.pending[kind].timer);
+    browse.pending[kind] = null;
+    browse.stale[kind] = true;
+  }
+  function browseChanged() {
+    if (S.detail || S.fullscreen || S.dialog) return;
+    if (isBrowseTab(S.tab)) render();
+    // Search applies Movies & Series: USA only from the index.
+    else if (S.tab === SEARCH) renderSearchResults();
+  }
+  function findTitle(kind, id) {
+    var index = browse.index[kind],
+      at = index ? index.byId[id] : undefined;
+    return at === undefined ? null : index.titles[at].item;
+  }
+  // Favorites (check badge) and how far each movie or series is watched (progress bar).
+  function libraryMarks() {
+    var marks = { fav: {}, progress: {} };
+    store.favourites().forEach(function (id) {
+      marks.fav[id] = true;
+    });
+    store.recents().forEach(function (r) {
+      var key = r.seriesId || r.id;
+      if (r.duration > 0 && marks.progress[key] === undefined)
+        marks.progress[key] = Math.max(0, Math.min(1, r.position / r.duration));
+    });
+    return marks;
+  }
+  function continueTiles() {
+    return B.continueWatching(store.recents(), store.upNext(), findTitle);
+  }
+  // Home: Continue watching, then the rows of docs/browse.md that have at least 5 titles. Each ends in See all.
+  function homeRows() {
+    var usOnly = vodUsOnly(),
+      rows = [],
+      resume = continueTiles();
+    if (!browse.home || browse.home.usOnly !== usOnly)
+      browse.home = {
+        usOnly: usOnly,
+        rows: B.homeRows(browse.index, { usOnly: usOnly, withTmdb: withTmdb() }),
+      };
+    if (resume.length >= 5)
+      rows.push({ id: "continue", title: "Continue watching", tiles: resume.slice(0, 20), more: { library: true } });
+    browse.home.rows.forEach(function (row) {
+      var index = browse.index[row.kind];
+      rows.push({
+        id: row.id,
+        title: row.title,
+        tiles: row.positions.map(function (p) {
+          return { kind: row.kind, item: index.titles[p].item };
+        }),
+        more: { kind: row.kind, list: row.list },
       });
-      main.appendChild(cards);
-      var footer = el("div", "browse-footer");
-      footer.appendChild(
-        el("span", "", "OK Details  ·  ↑ Categories  ·  Back Tabs")
-      );
-      footer.appendChild(
-        el("span", "", S.cards[kind] + 1 + " / " + items.length + " titles")
-      );
-      main.appendChild(footer);
+    });
+    return rows;
+  }
+  // Library: Continue watching, Favorite movies, Favorite series and Recently watched (rows with titles only).
+  function libraryRows() {
+    var rows = [],
+      movies = [],
+      series = [],
+      seen = [];
+    function add(id, title, tiles) {
+      if (tiles.length) rows.push({ id: id, title: title, tiles: tiles.slice(0, 60) });
     }
-    updateBrowseHero(items[S.cards[kind]], kind);
+    function title(id) {
+      var movie = findTitle("movies", id),
+        show = movie ? null : findTitle("series", id);
+      return movie ? { kind: "movies", item: movie } : show ? { kind: "series", item: show } : null;
+    }
+    store.favourites().slice().reverse().forEach(function (id) {
+      var t = title(id);
+      if (t) (t.kind === "movies" ? movies : series).push(t);
+    });
+    store.seen().forEach(function (r) {
+      var t = title(r.id);
+      if (t) seen.push(t);
+    });
+    add("continue", "Continue watching", continueTiles());
+    add("fav-movies", "Favorite movies", movies);
+    add("fav-series", "Favorite series", series);
+    add("seen", "Recently watched", seen);
+    return rows;
+  }
+  function shelfPrefix(name) {
+    return name === "home" ? "home-" : "lib-";
+  }
+  function tileCount(row) {
+    return row.tiles.length + (row.more ? 1 : 0);
+  }
+  function shelfSpot(state, row) {
+    return state.rows[row.id] || (state.rows[row.id] = { focus: 0, scroll: 0, itemId: null });
+  }
+  function shelfRowIndex(state, rows) {
+    for (var i = 0; i < rows.length; i++) if (rows[i].id === state.rowId) return i;
+    return 0;
+  }
+  // Keeps the focused tile in view with at least one more tile showing after it.
+  function keepInView(spot, count) {
+    spot.focus = Math.max(0, Math.min(spot.focus, count - 1));
+    if (spot.focus < spot.scroll) spot.scroll = spot.focus;
+    if (spot.focus > spot.scroll + SHELF_SLOTS - 2) spot.scroll = spot.focus - SHELF_SLOTS + 2;
+    spot.scroll = Math.max(0, Math.min(spot.scroll, count - SHELF_SLOTS));
+  }
+  // Posters get their image only once in or near view.
+  function loadPosters(nodes, from, to) {
+    for (var i = Math.max(0, from); i < Math.min(nodes.length, to); i++) {
+      var img = nodes[i].querySelector("img"),
+        src = img && img.getAttribute("data-src");
+      if (src) {
+        img.setAttribute("data-src", "");
+        img.src = src;
+      }
+    }
+  }
+  function posterTile(id, tile, marks, onFocus) {
+    var item = tile.item,
+      b = button(
+        "",
+        id,
+        function () {
+          openTile(tile);
+        },
+        "poster"
+      ),
+      art = el("div", "poster-art"),
+      progress = tile.next ? 0 : tile.progress !== undefined ? tile.progress : marks.progress[item.id] || 0,
+      img,
+      bar,
+      fill;
+    art.appendChild(el("span", "poster-name", item.name));
+    if (item.image) {
+      img = el("img", "poster-img");
+      img.alt = "";
+      img.setAttribute("data-src", item.image);
+      img.onerror = function () {
+        img.onerror = null;
+        img.className = "poster-img hidden";
+      };
+      art.appendChild(img);
+    }
+    if (marks.fav[item.id]) art.appendChild(el("span", "poster-check", "✓"));
+    if (progress > 0) {
+      bar = el("div", "poster-progress");
+      fill = el("span");
+      fill.style.width = Math.max(4, Math.round(progress * 100)) + "%";
+      bar.appendChild(fill);
+      art.appendChild(bar);
+    }
+    if (tile.next) art.appendChild(el("span", "poster-next", "Next episode"));
+    b.appendChild(art);
+    b.appendChild(el("span", "poster-title", item.name));
+    b.onfocus = onFocus;
+    tileTitles[id] = tile;
+    return b;
+  }
+  function openTile(tile) {
+    if (S.tab === HOME) S.shelf.home.touched = true;
+    else if (S.tab === LIBRARY) S.shelf.library.touched = true;
+    openDetail(tile.item, tile.kind, tile.resume || tile.next ? { resume: tile.resume, next: tile.next } : null);
+  }
+  // See all: Discover with the row's type and list (Continue watching: the Library). Back returns here.
+  function seeAll(row) {
+    if (row.more.library) {
+      S.shelf.home.touched = true;
+      S.shelf.library.rowId = "continue";
+      S.shelf.library.touched = true;
+      S.shelf.library.rows.continue = { focus: 0, scroll: 0, itemId: null };
+      S.shelf.library.fromHome = true;
+      showSection(LIBRARY);
+    } else {
+      var d = S.discover;
+      S.shelf.home.touched = true;
+      d.type = row.more.kind;
+      d.list = row.more.list;
+      d.genre = "";
+      resetDiscoverGrid();
+      d.fromHome = true;
+      showSection(DISCOVER);
+    }
+  }
+  function backHome() {
+    S.discover.fromHome = false;
+    S.shelf.library.fromHome = false;
+    showSection(HOME);
+  }
+  function shelfRowNode(r) {
+    var view = shelfView,
+      row = view.rows[r],
+      node = el("section", "shelf"),
+      strip = el("div", "shelf-strip"),
+      prefix = shelfPrefix(view.name) + r + "-",
+      all;
+    node.appendChild(el("h2", "shelf-title", row.title));
+    row.tiles.forEach(function (tile, t) {
+      strip.appendChild(
+        posterTile(prefix + t, tile, view.marks, function () {
+          shelfFocused(view, r, t);
+        })
+      );
+    });
+    if (row.more) {
+      all = button(
+        "",
+        prefix + row.tiles.length,
+        function () {
+          seeAll(row);
+        },
+        "poster see-all"
+      );
+      all.appendChild(el("div", "poster-art", "See all"));
+      all.appendChild(el("span", "poster-title", row.title));
+      all.onfocus = function () {
+        shelfFocused(view, r, row.tiles.length);
+      };
+      strip.appendChild(all);
+    }
+    node.appendChild(strip);
+    return { node: node, strip: strip };
+  }
+  function placeStrip(strip, spot) {
+    var x = "translateX(" + -spot.scroll * POSTER + "px)";
+    strip.style.transform = x;
+    strip.style.webkitTransform = x;
+    loadPosters(strip.children, spot.scroll - 1, spot.scroll + SHELF_SLOTS + 2);
+  }
+  // Draws the focused row and the one below it (rows already built are reused).
+  function drawShelfRows() {
+    var view = shelfView,
+      state = S.shelf[view.name],
+      r = shelfRowIndex(state, view.rows),
+      i;
+    view.box.textContent = "";
+    for (i = r; i < Math.min(view.rows.length, r + SHELF_ROWS); i++) {
+      if (!view.nodes[i]) view.nodes[i] = shelfRowNode(i);
+      view.box.appendChild(view.nodes[i].node);
+      placeStrip(view.nodes[i].strip, shelfSpot(state, view.rows[i]));
+    }
+  }
+  function focusShelf() {
+    var view = shelfView,
+      state = S.shelf[view.name],
+      r = shelfRowIndex(state, view.rows),
+      spot = shelfSpot(state, view.rows[r]);
+    return focus(shelfPrefix(view.name) + r + "-" + spot.focus);
+  }
+  function shelfFocused(view, r, t) {
+    var state = S.shelf[view.name],
+      row = view.rows[r],
+      spot = shelfSpot(state, row);
+    S.zone = "rows";
+    state.rowId = row.id;
+    spot.focus = t;
+    spot.itemId = t < row.tiles.length ? row.tiles[t].item.id : null;
+    remember(shelfPrefix(view.name) + r + "-" + t);
+    showTileInfo(row, t);
+  }
+  // The title line above the rows describes the focused poster.
+  function showTileInfo(row, t) {
+    var tile = row.tiles[t],
+      item = tile && tile.item,
+      marks = shelfView ? shelfView.marks : { fav: {}, progress: {} },
+      meta = [];
+    if (!document.getElementById("shelf-name")) return;
+    document.getElementById("shelf-eyebrow").textContent = row.title;
+    if (!item) {
+      document.getElementById("shelf-name").textContent = "See all";
+      document.getElementById("shelf-meta").textContent = row.more && row.more.library ? "Open your Library" : "Open Discover with this list";
+      document.getElementById("shelf-plot").textContent = "";
+      return;
+    }
+    meta.push(tile.kind === "series" ? "Series" : "Movie");
+    if (item.year) meta.push(item.year);
+    if (item.rating) meta.push("★ " + item.rating);
+    if (marks.fav[item.id]) meta.push("✓ In your Library");
+    if (tile.next) meta.push("Next episode ready");
+    else if ((tile.progress || marks.progress[item.id]) > 0) meta.push("In progress");
+    document.getElementById("shelf-name").textContent = item.name;
+    document.getElementById("shelf-meta").textContent = meta.join("  ·  ");
+    document.getElementById("shelf-plot").textContent = item.plot || "";
+  }
+  function shelfHero() {
+    var hero = el("section", "shelf-hero"),
+      parts = [
+        ["div", "eyebrow", "shelf-eyebrow"],
+        ["h1", "", "shelf-name"],
+        ["div", "metadata", "shelf-meta"],
+        ["p", "description", "shelf-plot"],
+      ];
+    parts.forEach(function (part) {
+      var n = el(part[0], part[1], "");
+      n.id = part[2];
+      hero.appendChild(n);
+    });
+    return hero;
+  }
+  // Loading, empty and failure states shared by Home, Library and Discover. Returns the box.
+  function browseStatus(page, ready) {
+    var box = el("div", "guide-status browse-status"),
+      movies = S.status.movies || {},
+      series = S.status.series || {},
+      hasTitles = S.catalogs.movies.length || S.catalogs.series.length,
+      title,
+      text,
+      action = null;
+    if (!store.settings.source) {
+      title = "Movies & Series";
+      text = "Add your playlist to start watching.";
+      action = ["Add playlist", function () { openTab(SETTINGS); }];
+    } else if (!hasTitles && (movies.state === "loading" || series.state === "loading" || !movies.state || !series.state)) {
+      title = "Loading your movies and series";
+      text = "This takes a few seconds.";
+    } else if (!ready) {
+      title = "Preparing your movies and series";
+      text = "Sorting your titles. This happens once after each playlist update.";
+    } else if (!hasTitles) {
+      title = "Movies & Series";
+      text = movies.state === "error" ? movies.message : series.state === "error" ? series.message : "The playlist has no movies or series.";
+      // A live-only playlist: the way on is Live TV, not another download of the same playlist.
+      action =
+        movies.state !== "error" && series.state !== "error" && S.catalogs.live.length
+          ? ["Open Live TV", function () { openTab(LIVE); }]
+          : ["Refresh playlist", function () { connect(true); }];
+    } else if (page === "library") {
+      title = "Your Library is empty";
+      text = "Titles you watch appear here. To save one, choose + Add to Library on its details, or hold OK on its poster.";
+      action = ["Browse Discover", function () { openTab(DISCOVER); }];
+    } else if (page === "home") {
+      title = "Browse your movies and series";
+      text = vodUsOnly()
+        ? "No list has enough titles that pass Movies & Series: USA only. Open Discover, or show all titles with Settings › Movies & Series."
+        : "Discover lists every title by type, list and genre.";
+      action = ["Open Discover", function () { openTab(DISCOVER); }];
+    } else {
+      title = "No titles here";
+      text = vodUsOnly()
+        ? "Nothing in this list matches. Choose another list or genre, or show all titles with Settings › Movies & Series."
+        : "Nothing in this list matches. Choose another list or genre.";
+    }
+    box.appendChild(el("h2", "", title));
+    box.appendChild(el("p", "muted", text));
+    if (action) box.appendChild(button(action[0], "empty-action", action[1]));
+    return box;
+  }
+  function footerText() {
+    var back = "Back " + backLabel();
+    if (S.tab === DISCOVER)
+      return S.zone === "filters"
+        ? "← → Filters  ·  OK Choose  ·  ↓ Titles  ·  " + back
+        : "OK Details  ·  Hold OK Library  ·  ↑ Filters  ·  CH +/− Page  ·  " + back;
+    return "OK Open  ·  Hold OK Library  ·  ↑ ↓ Rows  ·  CH +/− Page  ·  " + back;
+  }
+  function browseFooter() {
+    var footer = el("div", "browse-footer"),
+      hint = el("span", "", "");
+    hint.id = "browse-hint";
+    footer.appendChild(hint);
+    return footer;
+  }
+  function refreshFooter() {
+    var n = document.getElementById("browse-hint");
+    if (n) n.textContent = footerText();
+  }
+  // Home and Library.
+  function renderShelfPage(name) {
+    main.textContent = "";
+    tileTitles = {};
+    var ready = browseReady(),
+      rows = ready && store.settings.source ? (name === "home" ? homeRows() : libraryRows()) : [],
+      state = S.shelf[name],
+      r;
+    shelfView = { name: name, rows: rows, nodes: [], marks: libraryMarks(), box: null };
+    if (!rows.length) {
+      main.appendChild(browseStatus(name, ready));
+      // Loading ended with nothing to show: focus moves from the tab to the status action.
+      if (S.shelfWaiting && S.zone === "nav" && S.nav === S.tab && document.getElementById("empty-action")) {
+        S.shelfWaiting = false;
+        S.zone = "rows";
+      }
+      if (S.zone === "nav") focus("tab-" + S.nav);
+      else if (!focus("empty-action")) {
+        S.shelfWaiting = true;
+        focus("tab-" + S.tab);
+      }
+      refreshBrandHint();
+      return;
+    }
+    if (S.shelfWaiting && S.zone === "nav" && S.nav === S.tab) S.zone = "rows";
+    S.shelfWaiting = false;
+    // The remembered row and tile, found again by title when the rows changed. Until the customer moves
+    // on the shelf it stays at the top, also when rows arrive above (Continue watching, a late catalogue).
+    if (!state.touched) state.rowId = rows[0].id;
+    r = shelfRowIndex(state, rows);
+    state.rowId = rows[r].id;
+    rows.forEach(function (row) {
+      var spot = state.rows[row.id],
+        i;
+      if (!spot) return;
+      if (spot.itemId && (!row.tiles[spot.focus] || row.tiles[spot.focus].item.id !== spot.itemId))
+        for (i = 0; i < row.tiles.length; i++)
+          if (row.tiles[i].item.id === spot.itemId) spot.focus = i;
+      keepInView(spot, tileCount(row));
+    });
+    main.appendChild(shelfHero());
+    shelfView.box = el("div", "shelf-rows");
+    shelfView.box.id = "shelf-rows";
+    main.appendChild(shelfView.box);
+    main.appendChild(browseFooter());
+    drawShelfRows();
+    showTileInfo(rows[r], shelfSpot(state, rows[r]).focus);
     if (S.zone === "nav") focus("tab-" + S.nav);
-    else if (S.zone === "categories")
-      focus(
-        S.focusId && document.getElementById(S.focusId)
-          ? S.focusId
-          : "browse-cat-0"
-      );
-    else focus(items.length ? "card-" + S.cards[kind] : "empty-action");
-  }
-  function updateBrowseHero(item, kind) {
-    var hero = document.getElementById("browse-hero");
-    if (!hero) return;
-    hero.textContent = "";
-    hero.appendChild(
-      el("div", "eyebrow", kind === "movies" ? "Movies" : "Series")
-    );
-    hero.appendChild(
-      el("h1", "", item ? item.name : "Your next favorite is here")
-    );
-    if (item) {
-      hero.appendChild(
-        el(
-          "div",
-          "metadata muted",
-          [item.year, item.rating ? "★ " + item.rating : ""]
-            .filter(Boolean)
-            .join("  ·  ")
-        )
-      );
-      if (item.image) hero.appendChild(image(item.image, "backdrop"));
+    else {
+      S.zone = "rows";
+      focusShelf();
     }
-    hero.appendChild(
-      el(
-        "p",
-        "description",
-        (item && item.plot) ||
-          "Choose a title for details and playback. Your place is saved when you return."
-      )
+    refreshFooter();
+    refreshBrandHint();
+  }
+  // Arrows on a shelf: Left/Right along the row, Up/Down to the tile in the same screen column of the next
+  // row (Up from the first row reaches the tabs). No wrapping.
+  function shelfArrow(code) {
+    var view = shelfView,
+      state,
+      r,
+      row,
+      spot,
+      target,
+      next;
+    if (!view || !view.rows.length || !view.box) {
+      if (code === 38) toNav();
+      return;
+    }
+    state = S.shelf[view.name];
+    state.touched = true;
+    r = shelfRowIndex(state, view.rows);
+    row = view.rows[r];
+    spot = shelfSpot(state, row);
+    if (code === 37 || code === 39) {
+      target = spot.focus + (code === 37 ? -1 : 1);
+      if (target < 0 || target >= tileCount(row)) return;
+      spot.focus = target;
+      keepInView(spot, tileCount(row));
+      if (view.nodes[r]) placeStrip(view.nodes[r].strip, spot);
+      focusShelf();
+      return;
+    }
+    target = r + (code === 38 ? -1 : 1);
+    if (target < 0) return toNav();
+    if (target >= view.rows.length) return;
+    moveShelfRow(view, spot.focus - spot.scroll, target);
+  }
+  function moveShelfRow(view, slot, target) {
+    var state = S.shelf[view.name],
+      row = view.rows[target],
+      spot = shelfSpot(state, row);
+    spot.focus = spot.scroll + slot;
+    keepInView(spot, tileCount(row));
+    state.rowId = row.id;
+    drawShelfRows();
+    focusShelf();
+  }
+  // CH+/CH- on a shelf: two rows up or down, stopping at the first and last row.
+  function pageShelf(d) {
+    var view = shelfView,
+      state,
+      r,
+      spot;
+    if (!view || !view.rows.length || !view.box) return;
+    state = S.shelf[view.name];
+    state.touched = true;
+    r = shelfRowIndex(state, view.rows);
+    spot = shelfSpot(state, view.rows[r]);
+    moveShelfRow(view, spot.focus - spot.scroll, Math.max(0, Math.min(view.rows.length - 1, r + 2 * d)));
+  }
+  // Discover.
+  function resetDiscoverGrid() {
+    S.discover.focus = 0;
+    S.discover.top = 0;
+    browse.results = null;
+  }
+  function discoverIndex() {
+    return browse.index[S.discover.type === "series" ? "series" : "movies"];
+  }
+  // Genres some visible title has (USA only hides genres whose titles are all hidden).
+  function discoverGenres(index) {
+    return vodUsOnly() ? index.usGenres : index.genres;
+  }
+  function discoverListName(key) {
+    var found = B.discoverLists(withTmdb()).filter(function (list) {
+      return list.key === key;
+    })[0];
+    return found ? found.name : "";
+  }
+  // Puts the filters back on choices that exist: a list this catalogue offers, a genre it has.
+  function fixDiscoverFilters(index) {
+    var d = S.discover,
+      lists = B.discoverLists(withTmdb()),
+      opts = { usOnly: vodUsOnly(), genre: "" };
+    if (!lists.some(function (list) { return list.key === d.list; })) {
+      d.list = "az";
+      ["popular", "recent"].some(function (key) {
+        if (key === "popular" && !withTmdb()) return false;
+        if (B.pick(index, key, opts, 0, 1).picked.length) {
+          d.list = key;
+          return true;
+        }
+        return false;
+      });
+      resetDiscoverGrid();
+    }
+    if (d.genre && !discoverGenres(index).some(function (genre) { return genre.key === d.genre; })) {
+      d.genre = "";
+      resetDiscoverGrid();
+    }
+  }
+  // The grid's titles for the current filters, computed GRID_PAGE at a time until need titles are known.
+  function discoverResults(need) {
+    var d = S.discover,
+      index = discoverIndex(),
+      usOnly = vodUsOnly(),
+      key = [d.type, d.list, d.genre, usOnly].join("|"),
+      res = browse.results,
+      picked;
+    if (!res || res.key !== key || res.index !== index)
+      res = browse.results = { key: key, index: index, positions: [], cursor: 0, done: false, opts: { usOnly: usOnly, genre: d.genre, seen: {} } };
+    while (!res.done && res.positions.length < need) {
+      picked = B.pick(index, d.list, res.opts, res.cursor, GRID_PAGE);
+      res.positions = res.positions.concat(picked.picked);
+      res.cursor = picked.cursor;
+      res.done = picked.done;
+    }
+    return res;
+  }
+  function filterButton(id, label, value, run) {
+    var b = button("", id, run);
+    b.appendChild(el("span", "filter-label", label + ": "));
+    b.appendChild(el("strong", "", value));
+    b.onfocus = function () {
+      S.zone = "filters";
+      S.discover.filter = id;
+      remember(id);
+      refreshFooter();
+      refreshBrandHint();
+    };
+    return b;
+  }
+  function discoverCount() {
+    var res = browse.results,
+      n = document.getElementById("discover-count");
+    if (!n || !res) return;
+    n.textContent = res.positions.length
+      ? Math.min(S.discover.focus + 1, res.positions.length) + " / " + res.positions.length + (res.done ? "" : "+") + " titles"
+      : "";
+  }
+  function renderDiscover() {
+    main.textContent = "";
+    tileTitles = {};
+    var d = S.discover,
+      ready = browseReady(),
+      index = discoverIndex(),
+      head = el("div", "discover-head"),
+      filters = el("div", "filter-row"),
+      genre = null,
+      count = el("div", "discover-count", ""),
+      res = null,
+      grid,
+      marks,
+      row,
+      line,
+      c,
+      n;
+    if (ready && store.settings.source) {
+      fixDiscoverFilters(index);
+      genre = discoverGenres(index).filter(function (g) { return g.key === d.genre; })[0];
+      res = discoverResults((d.top + GRID_ROWS + 3) * GRID_COLS);
+    }
+    filters.appendChild(filterButton("discover-type", "Type", d.type === "series" ? "Series" : "Movies", chooseType));
+    filters.appendChild(filterButton("discover-list", "List", res ? discoverListName(d.list) : "…", chooseList));
+    filters.appendChild(filterButton("discover-genre", "Genre", genre ? genre.name : "All", chooseGenre));
+    head.appendChild(filters);
+    count.id = "discover-count";
+    head.appendChild(count);
+    main.appendChild(head);
+    if (!res || !res.positions.length) {
+      main.appendChild(browseStatus("discover", ready));
+      if (S.zone === "posters") S.zone = "filters";
+    } else {
+      d.focus = Math.max(0, Math.min(d.focus, res.positions.length - 1));
+      row = Math.floor(d.focus / GRID_COLS);
+      if (row < d.top) d.top = row;
+      if (row > d.top + GRID_ROWS - 1) d.top = row - GRID_ROWS + 1;
+      res = discoverResults((d.top + GRID_ROWS + 3) * GRID_COLS);
+      marks = libraryMarks();
+      grid = el("div", "poster-grid");
+      grid.id = "discover-grid";
+      for (row = d.top; row < d.top + GRID_ROWS + 1; row++) {
+        line = el("div", "grid-row");
+        for (c = 0; c < GRID_COLS; c++) {
+          n = row * GRID_COLS + c;
+          if (n >= res.positions.length) break;
+          line.appendChild(discoverTile(n, { kind: d.type, item: index.titles[res.positions[n]].item }, marks));
+        }
+        if (!line.children.length) break;
+        // The third row only peeks in; its posters load when it scrolls into view.
+        if (row < d.top + GRID_ROWS) loadPosters(line.children, 0, GRID_COLS);
+        grid.appendChild(line);
+      }
+      main.appendChild(grid);
+    }
+    main.appendChild(browseFooter());
+    discoverCount();
+    if (S.zone === "nav") focus("tab-" + S.nav);
+    else if (S.zone === "posters") focus("card-" + d.focus);
+    else {
+      S.zone = "filters";
+      focus(d.filter) || focus("discover-list");
+    }
+    refreshFooter();
+    refreshBrandHint();
+  }
+  function discoverTile(n, tile, marks) {
+    var id = "card-" + n;
+    return posterTile(id, tile, marks, function () {
+      S.zone = "posters";
+      S.discover.focus = n;
+      remember(id);
+      discoverCount();
+      refreshFooter();
+      refreshBrandHint();
+    });
+  }
+  // Arrows in Discover: the filters are one row (Up: tabs, Down: the grid); the grid moves by poster without
+  // wrapping, Up from its first row reaches the last focused filter, Down from a column past a short last row
+  // lands on its last poster. More titles are computed as the grid scrolls.
+  function discoverArrow(code) {
+    var d = S.discover,
+      res = browse.results,
+      n = d.focus,
+      col = n % GRID_COLS;
+    if (S.zone === "filters") {
+      if (code === 37 || code === 39) moveInRows([["discover-type", "discover-list", "discover-genre"]], code);
+      else if (code === 38) toNav();
+      else if (res && res.positions.length) {
+        S.zone = "posters";
+        renderDiscover();
+      }
+      return;
+    }
+    if (!res || !res.positions.length) {
+      if (code === 38) {
+        S.zone = "filters";
+        renderDiscover();
+      }
+      return;
+    }
+    if (code === 37) {
+      if (col > 0) moveDiscover(n - 1);
+    } else if (code === 39) {
+      if (col < GRID_COLS - 1 && n + 1 < res.positions.length) moveDiscover(n + 1);
+    } else if (code === 38) {
+      if (n < GRID_COLS) {
+        S.zone = "filters";
+        renderDiscover();
+      } else moveDiscover(n - GRID_COLS);
+    } else {
+      res = discoverResults(n + GRID_COLS * (GRID_ROWS + 3));
+      if (n + GRID_COLS < res.positions.length) moveDiscover(n + GRID_COLS);
+      else if (Math.floor((res.positions.length - 1) / GRID_COLS) > Math.floor(n / GRID_COLS))
+        moveDiscover(res.positions.length - 1);
+    }
+  }
+  function moveDiscover(n) {
+    var d = S.discover,
+      row = Math.floor(n / GRID_COLS);
+    d.focus = n;
+    if (row < d.top || row > d.top + GRID_ROWS - 1) {
+      d.top = row < d.top ? row : row - GRID_ROWS + 1;
+      renderDiscover();
+    } else focus("card-" + n);
+  }
+  // CH+/CH- in the grid: two rows up or down, keeping the column where it can.
+  function pageDiscover(d) {
+    var res = browse.results,
+      n = S.discover.focus,
+      target;
+    if (!res || !res.positions.length) return;
+    if (d > 0) res = discoverResults(n + GRID_COLS * (GRID_ROWS * 2 + 3));
+    target = Math.max(0, Math.min(res.positions.length - 1, n + d * GRID_ROWS * GRID_COLS));
+    if (target < n && n - target < GRID_COLS * GRID_ROWS) target = n % GRID_COLS;
+    if (target !== n) moveDiscover(target);
+  }
+  // The filter choosers: list dialogs on the current choice; choosing one returns focus to its filter.
+  function chooser(title, text, choices, current, apply) {
+    var focusAt = 0;
+    showDialog(
+      title,
+      text,
+      choices.map(function (choice, i) {
+        if (choice.key === current) focusAt = i;
+        return {
+          text: (choice.key === current ? "✓ " : "") + choice.name,
+          run: function () {
+            if (choice.key !== current) {
+              apply(choice.key);
+              resetDiscoverGrid();
+            }
+            closeDialog();
+          },
+        };
+      }),
+      { list: true, focus: focusAt }
     );
   }
-  function openDetail(item, kind) {
+  function chooseType() {
+    chooser("Type", "Show movies or series.", [{ key: "movies", name: "Movies" }, { key: "series", name: "Series" }], S.discover.type, function (key) {
+      S.discover.type = key;
+      S.discover.genre = "";
+    });
+  }
+  function chooseList() {
+    if (!discoverIndex()) return;
+    chooser("List", "Choose which titles to show and their order.", B.discoverLists(withTmdb()), S.discover.list, function (key) {
+      S.discover.list = key;
+    });
+  }
+  function chooseGenre() {
+    var index = discoverIndex();
+    if (!index) return;
+    chooser("Genre", "Show one genre, or all of them.", [{ key: "", name: "All" }].concat(discoverGenres(index)), S.discover.genre, function (key) {
+      S.discover.genre = key;
+    });
+  }
+  // Adds a movie or series to the Library or removes it (the check badge on its posters).
+  function toggleTitleFavorite(item) {
+    store.toggleFavourite(item.id);
+    toast(
+      store.isFavourite(item.id)
+        ? item.name + " added to your Library"
+        : item.name + " removed from your Library"
+    );
+    if (S.detail) {
+      S.detail.keepFocus = "detail-fav";
+      renderDetail();
+    } else render();
+  }
+  // The title a held OK saves to or removes from the Library: a focused poster on Home, Discover or Library.
+  function heldTitle() {
+    var a = document.activeElement;
+    if (S.dialog || S.fullscreen || S.detail || !a || !isBrowseTab(S.tab)) return null;
+    return (a.id && tileTitles[a.id]) || null;
+  }
+  // hint (series): { resume: episode id } or { next: { season, episode } } picks the episode focused first.
+  function openDetail(item, kind, hint) {
     var origin =
       S.detail && S.detail.item.id === item.id
         ? S.detail.origin
         : { tab: S.tab, zone: S.zone, focus: S.focusId };
-    S.detail = { item: item, kind: kind, origin: origin };
+    S.detail = {
+      item: item,
+      kind: kind,
+      origin: origin,
+      resume: (hint && hint.resume) || null,
+      next: (hint && hint.next) || null,
+    };
     S.detailInfo = null;
     S.season = 0;
     S.zone = "detail";
@@ -1552,12 +2366,19 @@
     );
     copy.appendChild(
       button(
-        detail.origin && detail.origin.tab === 3
+        detail.origin && detail.origin.tab === SEARCH
           ? "← Back to search"
-          : "← Back to titles",
+          : "← Back to " + sectionName(detail.origin ? detail.origin.tab : HOME),
         "detail-back",
         backDetail
       )
+    );
+    var favButton = button(
+      store.isFavourite(item.id) ? "✓ In Library" : "+ Add to Library",
+      "detail-fav",
+      function () {
+        toggleTitleFavorite(item);
+      }
     );
     if (detail.kind === "movies") {
       var recent = store.recents().filter(function (r) {
@@ -1578,16 +2399,31 @@
             playVod(item, 0);
           })
         );
-    } else if (!info)
+      copy.appendChild(favButton);
+    } else if (!info) {
+      copy.appendChild(favButton);
       copy.appendChild(el("div", "loading", "Loading episodes…"));
-    else if (info.error)
+    } else if (info.error) {
+      copy.appendChild(favButton);
       copy.appendChild(
         button("Retry episodes", "detail-retry", function () {
           openDetail(item, "series");
         })
       );
-    else {
+    } else {
       var seasons = info.seasons || [];
+      copy.appendChild(favButton);
+      // Opened from Continue watching: the episode being watched, or the one after the finished one.
+      if (seasons.length && (detail.resume || detail.next)) {
+        var opening = B.episodeToOpen(seasons, detail.resume, detail.next);
+        // The finished episode was the last one: the series leaves Continue watching.
+        if (!opening && detail.next && !detail.resume && store.clearUpNext) store.clearUpNext(item.id);
+        detail.resume = detail.next = null;
+        if (opening) {
+          S.season = opening.season;
+          detail.lastEpisodeFocus = "episode-" + opening.episode;
+        }
+      }
       if (seasons.length) {
         var seasonRow = el("div", "chip-row");
         seasons.forEach(function (season, i) {
@@ -1615,7 +2451,7 @@
               "episode-" + i,
               function () {
                 detail.lastEpisodeFocus = "episode-" + i;
-                playVod(episode, (resume && resume.position) || 0);
+                playVod(episodeOf(item, episode), (resume && resume.position) || 0);
               },
               "episode"
             );
@@ -1640,6 +2476,9 @@
     }
     layout.appendChild(copy);
     main.appendChild(layout);
+    var keep = detail.keepFocus;
+    detail.keepFocus = null;
+    if (keep && focus(keep)) return;
     focus(
       detail.kind === "movies"
         ? "detail-play"
@@ -1651,18 +2490,29 @@
             : "detail-back"
     );
   }
+  // An episode as played and saved: it names its series, so Continue watching can offer the series.
+  function episodeOf(series, episode) {
+    var result = {},
+      key;
+    for (key in episode)
+      if (Object.prototype.hasOwnProperty.call(episode, key)) result[key] = episode[key];
+    result.seriesId = series.id;
+    result.seriesName = series.name;
+    return result;
+  }
   function backDetail() {
     var origin = S.detail && S.detail.origin;
     S.detail = null;
     S.detailInfo = null;
     S.tab = origin ? origin.tab : S.tab;
     S.nav = S.tab;
-    S.zone = origin ? origin.zone : "cards";
+    S.zone = origin ? origin.zone : pageZone(S.tab);
     S.focusId = origin ? origin.focus : null;
     render();
   }
   function playVod(item, position) {
     if (dualActive) stopDual();
+    store.recordSeen(item.seriesId || item.id);
     currentPlayItem = item;
     S.watched = null;
     player.setRect(FULL_RECT);
@@ -2100,7 +2950,8 @@
     );
   }
   // opts.list: a vertical list (Up/Down); otherwise a button row (Left/Right). opts.focus: first focused
-  // action; opts.closeText / opts.focusClose: the close button's label and whether it starts focused.
+  // action; opts.closeText / opts.focusClose: the close button's label and whether it starts focused;
+  // opts.note: a smaller line under the text.
   function showDialog(title, text, actions, opts) {
     opts = opts || {};
     actions = actions || [];
@@ -2111,6 +2962,7 @@
     var box = el("div", opts.list ? "dialog choices" : "dialog");
     box.appendChild(el("h2", "", title));
     box.appendChild(el("p", "", text));
+    if (opts.note) box.appendChild(el("p", "dialog-note", opts.note));
     actions.forEach(function (action, i) {
       box.appendChild(
         button(action.text, "dialog-" + i, function () {
@@ -2212,6 +3064,19 @@
     if (S.zone === "nav") focus("tab-" + S.nav);
     else focus(S.pageFocus[3]) || focus("search-input");
   }
+  // Whether USA only shows a movie or series: its index entry decides; until the catalogue is indexed (a
+  // large one is prepared in slices) the category check alone does.
+  var searchCategoryCheck = { movies: null, series: null };
+  function searchFilter(kind) {
+    var index = browse.index[kind],
+      check = searchCategoryCheck[kind];
+    if (!check || check.cats !== S.cats[kind])
+      check = searchCategoryCheck[kind] = { cats: S.cats[kind], passes: B.categoryCheck(S.cats[kind]) };
+    return function (item) {
+      var at = index ? index.byId[item.id] : undefined;
+      return at !== undefined ? index.titles[at].us : check.passes(item);
+    };
+  }
   function renderSearchResults() {
     var results = document.getElementById("search-results");
     if (!results) return;
@@ -2227,10 +3092,14 @@
       results.appendChild(el("p", "muted", "Enter a title or channel name."));
       return;
     }
-    var found = [];
+    var found = [],
+      usOnly = vodUsOnly();
+    // Movies & Series: USA only applies here as on Home and Discover (the channels have their own switch).
+    if (usOnly) browseReady();
     ["live", "movies", "series"].forEach(function (kind) {
+      var shows = kind === "live" || !usOnly ? null : searchFilter(kind);
       S.catalogs[kind].some(function (item) {
-        if (item.name.toLowerCase().indexOf(q) >= 0)
+        if (item.name.toLowerCase().indexOf(q) >= 0 && (!shows || shows(item)))
           found.push({ item: item, kind: kind });
         return found.length >= 60;
       });
@@ -2448,7 +3317,7 @@
       saveSource();
     };
     var extras = el("div", "settings-extras");
-    extras.appendChild(el("h2", "", "Playback and privacy"));
+    extras.appendChild(el("h2", "", "Playback, privacy and start"));
     var extraRow = el("div", "settings-extra-row");
     extraRow.appendChild(
       button(
@@ -2486,6 +3355,19 @@
           "extra-button"
         )
       );
+    extraRow.appendChild(
+      button(
+        "Open on: " + (startTab() === LIVE ? "Live TV" : "Home"),
+        "start-setting",
+        function () {
+          store.saveSettings({ startOn: startTab() === LIVE ? "home" : "live" });
+          renderSettings();
+          focus("start-setting");
+          toast(startTab() === LIVE ? "Tuner opens on Live TV." : "Tuner opens on Home.");
+        },
+        "extra-button"
+      )
+    );
     extras.appendChild(extraRow);
     form.appendChild(extras);
     grid.appendChild(form);
@@ -2522,6 +3404,25 @@
           renderSettings();
           focus("lineup-setting");
           toast(store.settings.usOnly ? "Showing USA channels only." : "Showing all channels on your line.");
+        },
+        "local-button"
+      )
+    );
+    side.appendChild(
+      button(
+        vodUsOnly() ? "Movies & Series: USA only" : "Movies & Series: All",
+        "vod-region-setting",
+        function () {
+          store.saveSettings({ vodUsOnly: !vodUsOnly() });
+          browse.home = null;
+          browse.results = null;
+          renderSettings();
+          focus("vod-region-setting");
+          toast(
+            vodUsOnly()
+              ? "Movies & Series: showing USA titles only."
+              : "Movies & Series: showing every title on your line."
+          );
         },
         "local-button"
       )
@@ -2565,15 +3466,16 @@
       el(
         "p",
         "",
-        "Arrows move. OK selects; on a text field OK opens the keyboard. Back goes up one level. In the guide: Hold OK saves a Favorite, ← → browse the schedule, Channel +/− pages, number keys jump to a channel."
+        "Arrows move, OK selects, Back goes up a level. Hold OK saves a channel or a title. Guide: ← → schedule, CH +/− pages, numbers jump to a channel."
       )
     );
     side.appendChild(
       button("About Tuner", "about-tuner", function () {
         showDialog(
           "Tuner for Samsung TV",
-          "Version 1.4.13 · Samsung TV\nLive TV, guide, movies, series and Favorites. Two-channel PiP works on supported TVs and playlists. Embedded torrent playback is not available on Samsung.",
-          []
+          "Version 1.5.0 · Samsung TV\nLive TV, guide, movies, series and Favorites. Two-channel PiP works on supported TVs and playlists. Embedded torrent playback is not available on Samsung.",
+          [],
+          { note: withTmdb() ? TMDB_NOTICE : "" }
         );
       })
     );
@@ -2601,8 +3503,12 @@
           return toast(store.lastError || "The playlist could not be saved.");
         sourceDraft = {};
         connect();
-        openTab(0);
-        toast("Paired with LumaNest TV. Loading your channels.");
+        openTab(startTab());
+        toast(
+          startTab() === LIVE
+            ? "Paired with LumaNest TV. Loading your channels."
+            : "Paired with LumaNest TV. Loading your playlist."
+        );
       },
       onClose: function () { focus("pair-phone"); }
     });
@@ -2635,10 +3541,15 @@
       return toast(store.lastError || "The playlist could not be saved.");
     sourceDraft = {};
     connect();
-    openTab(0);
-    toast("Playlist saved. Loading your channels.");
+    openTab(startTab());
+    toast(
+      startTab() === LIVE
+        ? "Playlist saved. Loading your channels."
+        : "Playlist saved. Loading your playlist."
+    );
   }
-  function applyAdultFilter(kind) {
+  // redelivered: the provider sent the catalogue again (the lock did not change).
+  function applyAdultFilter(kind, redelivered) {
     var source = rawCatalogs[kind],
       shown =
         adultUnlocked || !D.adultFilter
@@ -2646,10 +3557,16 @@
           : D.adultFilter(source.items, source.categories);
     S.catalogs[kind] = shown.items;
     S.cats[kind] = shown.categories;
+    if (kind === "live") return;
+    if (redelivered) catalogueRedelivered(kind);
+    else invalidateBrowse(kind);
   }
   function setAdultUnlocked(value) {
     adultUnlocked = !!value;
-    ["live", "movies", "series"].forEach(applyAdultFilter);
+    // The titles shown change at once: each index is dropped, not kept while it is rebuilt.
+    ["live", "movies", "series"].forEach(function (kind) {
+      applyAdultFilter(kind, false);
+    });
     if (adultUnlocked) return;
     // Nothing that is now hidden may stay selected, saved for the guide preview or playing.
     var request = player.state && player.state.request;
@@ -2668,17 +3585,9 @@
       })
     )
       S.category = "__all";
-    ["movies", "series"].forEach(function (kind) {
-      if (
-        !S.cats[kind].some(function (cat) {
-          return cat.id === S.browseCategory[kind];
-        })
-      )
-        S.browseCategory[kind] = "__all";
-    });
     S.row = 0;
     S.offset = 0;
-    S.cards = { movies: 0, series: 0 };
+    resetDiscoverGrid();
   }
   function toggleAdult() {
     if (adultUnlocked) {
@@ -2898,39 +3807,37 @@
     S.guideChecked = {};
     S.row = 0;
     S.offset = 0;
+    if (!sameCatalog) {
+      invalidateBrowse("movies");
+      invalidateBrowse("series");
+      S.shelf.home = { rowId: null, rows: {} };
+      S.shelf.library = { rowId: null, rows: {}, fromHome: false };
+      S.discover.list = null;
+      S.discover.genre = "";
+      resetDiscoverGrid();
+    }
     client = D.createClient(store.settings.source, {
       zip: store.settings.zip,
       usOnly: !!store.settings.usOnly,
       onCatalog: function (kind, items, categories) {
         rawCatalogs[kind] = { items: items || [], categories: categories || [] };
-        applyAdultFilter(kind);
-        if (S.tab === 3 && !S.fullscreen && !S.dialog) renderSearchResults();
+        applyAdultFilter(kind, true);
+        if (kind === "live" && S.tab === 3 && !S.fullscreen && !S.dialog) renderSearchResults();
         if (kind === "live") resumeGuidePreview();
-        if (
-          !S.fullscreen &&
-          !S.dialog &&
-          ((S.tab === 0 && kind === "live") ||
-            (S.tab === 1 && kind === "movies") ||
-            (S.tab === 2 && kind === "series"))
-        )
-          render();
+        if (!S.fullscreen && !S.dialog && S.tab === 0 && kind === "live") render();
+        else if (kind !== "live") browseChanged();
       },
       onStatus: function (kind, status) {
         S.status[kind] = status;
-        if (
-          !S.fullscreen &&
-          !S.dialog &&
-          ((S.tab === 0 && kind === "live") ||
-            (S.tab === 1 && kind === "movies") ||
-            (S.tab === 2 && kind === "series"))
-        )
-          render();
+        if (!S.fullscreen && !S.dialog && S.tab === 0 && kind === "live") render();
+        else if (kind !== "live") browseChanged();
       },
     });
     client.load(force === true);
   }
   // Back goes up exactly one level and lands where the user came from.
   function back() {
+    S.shelfWaiting = false;
     if (entry.digits) {
       clearEntry();
       return;
@@ -2975,12 +3882,24 @@
       else toNav();
       return;
     }
+    if (S.zone !== "nav" && S.tab === DISCOVER) {
+      if (S.discover.fromHome) backHome();
+      else if (S.zone === "posters") {
+        S.zone = "filters";
+        renderDiscover();
+      } else toNav();
+      return;
+    }
+    if (S.zone !== "nav" && S.tab === LIBRARY && S.shelf.library.fromHome) {
+      backHome();
+      return;
+    }
     if (S.zone !== "nav") {
       toNav();
       return;
     }
-    if (S.tab !== 0) {
-      openTab(0, true);
+    if (S.tab !== startTab()) {
+      openTab(startTab(), true);
       return;
     }
     showDialog("Close Tuner?", "Your Favorites and settings are saved.", [
@@ -3000,6 +3919,7 @@
   }
   function handleArrow(code) {
     S.guideWaiting = false;
+    S.shelfWaiting = false;
     if (S.dialog) {
       if (pin) passcodeArrow(code);
       else dialogArrow(code);
@@ -3020,10 +3940,13 @@
     if (S.fullscreen) return playerArrow(code);
     if (S.zone === "nav") {
       if (code === 37 || code === 39) {
-        S.nav = Math.max(
-          0,
-          Math.min(tabs.length - 1, S.nav + (code === 37 ? -1 : 1))
-        );
+        S.nav =
+          tabOrder[
+            Math.max(
+              0,
+              Math.min(tabOrder.length - 1, tabOrder.indexOf(S.nav) + (code === 37 ? -1 : 1))
+            )
+          ];
         focus("tab-" + S.nav);
       } else if (code === 40) {
         if (S.nav !== S.tab) openTab(S.nav);
@@ -3036,42 +3959,8 @@
       return;
     }
     if (S.tab === 0) return guideArrow(code);
-    if (S.tab === 1 || S.tab === 2) {
-      var kind = browseKind();
-      if (S.zone === "cards") {
-        if (code === 38) {
-          S.zone = "categories";
-          focus("browse-cat-0");
-        } else if (code === 37 || code === 39) {
-          S.cards[kind] = Math.max(
-            0,
-            Math.min(
-              browseItems(kind).length - 1,
-              S.cards[kind] + (code === 37 ? -1 : 1)
-            )
-          );
-          renderBrowse();
-        }
-        return;
-      }
-      if (code === 40) {
-        S.zone = "cards";
-        renderBrowse();
-      } else if (code === 38) toNav();
-      else {
-        var parent = document.activeElement && document.activeElement.parentNode;
-        if (parent)
-          moveInRows(
-            [
-              focusables(parent).map(function (n) {
-                return n.id;
-              }),
-            ],
-            code
-          );
-      }
-      return;
-    }
+    if (S.tab === HOME || S.tab === LIBRARY) return shelfArrow(code);
+    if (S.tab === DISCOVER) return discoverArrow(code);
     if (S.tab === 5) {
       if (
         !moveInRows(
@@ -3578,10 +4467,14 @@
         enterHeld = false;
       }
       if (Date.now() - enterDown >= 650 && !enterHeld) {
-        var c = S.fullscreen ? S.watched : selectedLive();
+        var c = S.fullscreen ? S.watched : selectedLive(),
+          title = heldTitle();
         if (c && canHoldFavorite()) {
           enterHeld = true;
           toggleFavorite(c);
+        } else if (title) {
+          enterHeld = true;
+          toggleTitleFavorite(title.item);
         }
       }
       return;
@@ -3600,6 +4493,8 @@
         if (playerIsLive()) changeChannel(up ? 1 : -1);
       } else if (dualActive && S.tab === 5) return;
       else if (S.tab === 0 && !S.detail) pageGuide(up ? -4 : 4);
+      else if (S.tab === DISCOVER && !S.detail && S.zone === "posters") pageDiscover(up ? -1 : 1);
+      else if ((S.tab === HOME || S.tab === LIBRARY) && !S.detail && S.zone === "rows") pageShelf(up ? -1 : 1);
       else if (
         S.tab === 3 &&
         !S.detail &&
@@ -3661,9 +4556,17 @@
     var held = enterHeld || Date.now() - enterDown >= 650;
     enterDown = 0;
     enterHeld = false;
-    var c = S.fullscreen ? S.watched : selectedLive();
+    // The hold already ran its action while the key was down (it may have moved focus, such as to the
+    // empty Library's button): the release does nothing more.
+    if (alreadyHandled) return;
+    var c = S.fullscreen ? S.watched : selectedLive(),
+      title = held ? heldTitle() : null;
     if (held && c && canHoldFavorite()) {
-      if (!alreadyHandled && !S.dialog) toggleFavorite(c);
+      if (!S.dialog) toggleFavorite(c);
+      return;
+    }
+    if (title) {
+      toggleTitleFavorite(title.item);
       return;
     }
     if (S.dialog) {
@@ -3788,9 +4691,17 @@
   setInterval(function () {
     if (S.tab === 0 && !S.fullscreen && !S.dialog) renderGuide();
   }, 60000);
-  S.tab = store.settings.source ? 0 : 4;
+  // Open on Home, or on Live TV for customers who already watch channels here (decided once, then a setting).
+  if (store.settings.startOn !== "home" && store.settings.startOn !== "live")
+    store.saveSettings({
+      startOn:
+        store.settings.source && (store.lastWatched() || store.mostWatched().length)
+          ? "live"
+          : "home",
+    });
+  S.tab = store.settings.source ? startTab() : SETTINGS;
   S.nav = S.tab;
-  S.zone = store.settings.source ? "grid" : "form";
+  S.zone = store.settings.source ? pageZone(S.tab) : "form";
   render();
   resize();
   if (store.settings.source) connect();

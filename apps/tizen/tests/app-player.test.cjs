@@ -84,7 +84,8 @@ function harness(options = {}) {
     }));
     const movies = [{ id: 'm:1', name: 'Movie night', categoryIds: ['films'], url: 'https://fixture.invalid/m1.mp4', backups: [] },
         { id: 'm:2', name: 'Flagged film', categoryIds: ['films'], adult: true, url: 'https://fixture.invalid/m2.mp4', backups: [] }];
-    const settings = { source: { type: 'xtream', server: 'https://fixture.invalid', username: 'fixture', password: 'fixture' }, theme: '', zip: '' };
+    // An existing customer who opens on Live TV (the setting Tuner keeps for people who watch channels).
+    const settings = { source: { type: 'xtream', server: 'https://fixture.invalid', username: 'fixture', password: 'fixture' }, theme: '', zip: '', startOn: 'live' };
     const store = {
         settings, lastError: '', lastWatched() { return null; }, favourites() { return []; }, isFavourite() { return false; }, mostWatched() { return []; },
         recents() { return []; }, recordWatched() {}, saveRecent() {},
@@ -110,6 +111,8 @@ function harness(options = {}) {
             createStore() { return store; }, catalogIdentity() { return 'fixture'; },
             adultFilter: real.data.adultFilter,
             categoryItems: real.data.categoryItems,
+            // Movies & Series browsing with no catalog rows (no network in these tests).
+            browse: { ...real.data.browse, createRowsClient() { return { peek() { return null; }, refresh() { return false; } }; } },
             createClient(source, clientOptions) {
                 return { catalogIdentity: 'fixture', cancel() {}, guide() { return { then() {} }; }, movieInfo() { return { then() {} }; }, load() {
                     clientOptions.onCatalog('live', channels, liveCats); clientOptions.onStatus('live', { state: 'ready' });

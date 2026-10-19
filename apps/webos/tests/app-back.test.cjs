@@ -155,16 +155,16 @@ test("first launch opens Settings and the platform has replaced dual playback", 
     assert.equal(h.xhrs, 0);
 });
 
-test("LG Back (461) walks Settings -> navigation -> Live TV -> exit prompt", () => {
+test("LG Back (461) walks Settings -> navigation -> Home -> exit prompt", () => {
     const h = harness();
     const event = h.key(461);
     assert.equal(event.defaultPrevented, true, "Back must not reach the webOS system handler");
     assert.equal(h.focused.id, "tab-4", "Back from the Settings form moves focus to its tab");
     h.key(461);
-    assert.equal(h.focused.id, "tab-0", "Back from another tab returns to Live TV");
+    assert.equal(h.focused.id, "tab-6", "Back from another tab returns to the start section: Home on a new install");
     assert.equal(h.dialogOpen, false);
     h.key(461);
-    assert.equal(h.dialogOpen, true, "Back on Live TV asks before closing");
+    assert.equal(h.dialogOpen, true, "Back on the start section asks before closing");
     assert.match(h.node("dialog-layer").textContent, /Close Tuner\?/);
     assert.equal(h.palmCloses, 0);
 });

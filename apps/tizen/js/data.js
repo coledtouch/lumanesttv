@@ -43,6 +43,8 @@
         return source.server + '/' + kind + '/' + encodeURIComponent(source.username) + '/' + encodeURIComponent(source.password) + '/' + encodeURIComponent(id) + '.' + extension;
     }
     function metadata(row, keys) { var values = []; keys.forEach(function (key) { var value = row[key]; (Array.isArray(value) ? value : [value]).forEach(function (v) { if (text(v)) values.push(text(v)); }); }); return unique(values).join(';'); }
+    // The TMDB id a provider gives a movie or series (tmdb, tmdb_id or info.tmdb_id), digits only.
+    function providerTmdbId(row) { var values = [row.tmdb, row.tmdb_id, row.info && typeof row.info === 'object' ? row.info.tmdb_id : ''], i, value; for (i = 0; i < values.length; i++) { value = text(values[i]); if (/^[0-9]+$/.test(value) && !/^0+$/.test(value)) return value; } return ''; }
     function memberships(row) { return unique([row.category_id].concat(Array.isArray(row.category_ids) ? row.category_ids : []).map(text).filter(Boolean)); }
     // Adult content: a category name with a standalone XXX, adult(s), 18+ or porn token (but not "Adult Swim"),
     // or the Xtream is_adult flag on a category or stream. Hidden unless the passcode-protected lock is open.
@@ -74,6 +76,7 @@
                 country: metadata(row, ['country', 'country_code', 'country_name', 'stream_country', 'tvg-country']),
                 language: metadata(row, ['language', 'lang', 'original_language', 'audio_language', 'stream_language', 'tvg-language']) };
             if (adultFlag(row.is_adult)) item.adult = true;
+            if (kind !== 'live') { item.tmdb = providerTmdbId(row); item.genre = text(row.genre); }
             byId[rawId] = item; result.push(item);
         });
         return kind === 'live' ? renumber(result) : result;
@@ -225,7 +228,19 @@
         order.forEach(function (key) { var ranked = groups[key].sort(function (a, b) { return b.score - a.score || a.index - b.index; }), kept = copy(ranked[0].item), categoryIds = [], urls = [], chosenName = ranked[0].name; ranked.forEach(function (entry) { if (entry.item.adult) kept.adult = true; categoryIds = categoryIds.concat(entry.item.categoryIds); urls = urls.concat([entry.item.url], entry.item.backups || []); merged[entry.item.id] = kept.id; if (!kept.image && entry.item.image) kept.image = entry.item.image; if (!kept.epgId && entry.item.epgId) kept.epgId = entry.item.epgId; }); ranked.some(function (entry) { if (/[a-z]/.test(entry.name)) { chosenName = entry.name; return true; } return false; }); kept.name = chosenName; kept.categoryIds = unique(categoryIds); kept.backups = unique(urls.filter(function (url) { return url && url !== kept.url; })); result.push(kept); });
         return { items: result, categories: usedCategories(result, catalog.categories, '__tuner_us', 'USA'), merged: merged };
     }
-    function foldMovies(items) { var groups = Object.create(null), order = []; items.forEach(function (item) { var key = text(item.name).toLowerCase().replace(/[^a-z0-9]/g, '') || item.id; if (!groups[key]) { groups[key] = []; order.push(key); } groups[key].push(item); }); return order.map(function (key) { var copies = groups[key].sort(function (a, b) { return (b.added || 0) - (a.added || 0); }), kept = copy(copies[0]), ids = [], urls = []; copies.forEach(function (item) { if (item.adult) kept.adult = true; ids = ids.concat(item.categoryIds); urls = urls.concat([item.url], item.backups || []); }); kept.categoryIds = unique(ids); kept.categoryId = kept.categoryIds[0] || ''; kept.backups = unique(urls.filter(function (url) { return url && url !== kept.url; })); return kept; }); }
+    // Copies of one movie fold into the newest; a copy in a category the USA filter keeps comes before a newer
+    // copy filed under a foreign tag (usually dubbed), so USA only never plays the foreign one.
+    function foldMovies(items, categories) {
+        var groups = Object.create(null), order = [], browse = root.TunerData && root.TunerData.browse, passes = browse ? browse.categoryCheck(categories) : function () { return true; };
+        items.forEach(function (item) { var key = text(item.name).toLowerCase().replace(/[^a-z0-9]/g, '') || item.id; if (!groups[key]) { groups[key] = []; order.push(key); } groups[key].push(item); });
+        return order.map(function (key) {
+            var ranked = groups[key].length > 1 ? groups[key].map(function (item) { return { item: item, foreign: passes(item) ? 0 : 1 }; }).sort(function (a, b) { return a.foreign - b.foreign || (b.item.added || 0) - (a.item.added || 0); }) : [{ item: groups[key][0] }],
+                copies = ranked.map(function (entry) { return entry.item; }), kept = copy(copies[0]), ids = [], urls = [];
+            copies.forEach(function (item) { if (item.adult) kept.adult = true; if (!kept.tmdb && item.tmdb) kept.tmdb = item.tmdb; if (!kept.genre && item.genre) kept.genre = item.genre; ids = ids.concat(item.categoryIds); urls = urls.concat([item.url], item.backups || []); });
+            kept.categoryIds = unique(ids); kept.categoryId = kept.categoryIds[0] || ''; kept.backups = unique(urls.filter(function (url) { return url && url !== kept.url; }));
+            return kept;
+        });
+    }
     // order: 'featured' (main cable groups first, the default), 'provider' (as the line delivers them) or 'az'.
     function categoryItems(categories, hasMostWatched, order) { var ranked = ['SPORTS', 'PREMIUM', 'NEWS', 'MOVIES', 'ENTERTAINMENT', 'DOCUMENTARIES', 'LOCAL NEWS'], seen = Object.create(null), result = [{ id: '__all', name: 'All Channels' }, { id: '__fav', name: 'Favorites' }]; if (hasMostWatched !== false) result.push({ id: '__hot', name: 'Most Watched' }); var remaining = categories.filter(function (cat) { if (/^__(all|fav|hot)$/.test(cat.id) || seen[cat.id]) return false; seen[cat.id] = true; return true; }).map(function (cat, index) { var value = upper(cat.name).replace(/[^A-Z0-9]+/g, ' ').trim().replace(/^USA? /, ''), rank = ranked.indexOf(value); return { cat: cat, index: index, rank: order === 'provider' || order === 'az' ? 0 : rank < 0 ? 7 : rank, key: text(cat.name).replace(/^[^A-Za-z0-9]+/, '').toLowerCase() }; }).sort(function (a, b) { return a.rank - b.rank || (order === 'az' && a.key !== b.key ? (a.key < b.key ? -1 : 1) : 0) || a.index - b.index; }); return result.concat(remaining.map(function (value) { return value.cat; })); }
 
@@ -450,7 +465,7 @@
         var settings = read('tuner.tv.settings.v1', { source: null, zip: '01608' }), library = read('tuner.tv.library.v1', Object.create(null)), store;
         if (settings.zip === undefined) settings.zip = '01608'; if (settings.source === undefined) settings.source = null;
         function write(key, value) { try { storage.setItem(key, JSON.stringify(value)); store.lastError = ''; return true; } catch (_) { store.lastError = 'Unable to save on this TV. Check available storage.'; return false; } }
-        function row(key) { key = key || sourceKey(settings.source); if (!Object.prototype.hasOwnProperty.call(library, key)) library[key] = { favourites: [], recents: [], watches: {} }; var entry = library[key]; if (!Array.isArray(entry.favourites)) entry.favourites = []; if (!Array.isArray(entry.recents)) entry.recents = []; if (!entry.watches || typeof entry.watches !== 'object') entry.watches = {}; return entry; }
+        function row(key) { key = key || sourceKey(settings.source); if (!Object.prototype.hasOwnProperty.call(library, key)) library[key] = { favourites: [], recents: [], watches: {} }; var entry = library[key]; if (!Array.isArray(entry.favourites)) entry.favourites = []; if (!Array.isArray(entry.recents)) entry.recents = []; if (!entry.watches || typeof entry.watches !== 'object') entry.watches = {}; if (!Array.isArray(entry.upNext)) entry.upNext = []; if (!Array.isArray(entry.seen)) entry.seen = []; return entry; }
         function resolve(id, key) { var map = aliases[key || sourceKey(settings.source)]; return map && map[id] ? map[id] : id; }
         function persist() { return write('tuner.tv.library.v1', library); }
         store = { settings: settings, lastError: '', saveSettings: function (patch) { Object.keys(patch || {}).forEach(function (key) { if (key !== '__proto__' && key !== 'constructor' && key !== 'prototype') settings[key] = patch[key]; }); return write('tuner.tv.settings.v1', settings); },
@@ -458,7 +473,16 @@
             isFavourite: function (id) { return store.favourites().indexOf(resolve(id)) >= 0; },
             toggleFavourite: function (id) { var entry = row(), ids = store.favourites(), canonical = resolve(id), added = ids.indexOf(canonical) < 0; entry.favourites = added ? ids.concat([canonical]) : ids.filter(function (value) { return value !== canonical; }); persist(); return added; },
             recents: function () { return row().recents.map(copy); },
-            saveRecent: function (item, position, duration) { var entry = row(), record = copy(item); position = Math.max(0, Number(position) || 0); duration = Math.max(0, Number(duration) || 0); entry.recents = entry.recents.filter(function (value) { return value.id !== item.id; }); if (position > 15000 && (!duration || position <= duration * 0.95)) { record.position = record.positionMs = position; record.duration = record.durationMs = duration; record.updated = Date.now(); entry.recents.unshift(record); entry.recents = entry.recents.slice(0, 40); } return persist(); },
+            // An episode carries seriesId: finishing it (95%) leaves a "next episode" marker for its series.
+            saveRecent: function (item, position, duration) { var entry = row(), record = copy(item), finished; position = Math.max(0, Number(position) || 0); duration = Math.max(0, Number(duration) || 0); finished = duration > 0 && position > duration * 0.95; entry.recents = entry.recents.filter(function (value) { return value.id !== item.id; }); if (position > 15000 && !finished) { record.position = record.positionMs = position; record.duration = record.durationMs = duration; record.updated = Date.now(); entry.recents.unshift(record); entry.recents = entry.recents.slice(0, 40); }
+                if (item.seriesId && (finished || position > 15000)) { entry.upNext = entry.upNext.filter(function (value) { return value.seriesId !== item.seriesId; }); if (finished) { entry.upNext.unshift({ seriesId: item.seriesId, season: Number(item.season) || 0, episode: Number(item.episode) || 0, updated: Date.now() }); entry.upNext = entry.upNext.slice(0, 30); } }
+                return persist(); },
+            upNext: function () { return row().upNext.map(copy); },
+            // A series with no episode after the finished one leaves Continue watching.
+            clearUpNext: function (seriesId) { var entry = row(), kept = entry.upNext.filter(function (value) { return value.seriesId !== seriesId; }); if (kept.length === entry.upNext.length) return true; entry.upNext = kept; return persist(); },
+            // Movies and series played, newest first (Library: Recently watched).
+            seen: function () { return row().seen.map(copy); },
+            recordSeen: function (id) { var entry = row(); id = text(id); if (!id) return false; entry.seen = [{ id: id, updated: Date.now() }].concat(entry.seen.filter(function (value) { return value && value.id !== id; })).slice(0, 40); return persist(); },
             clearRecent: function (id) { var entry = row(); entry.recents = entry.recents.filter(function (item) { return item.id !== id; }); return persist(); },
             recordWatched: function (id) { var entry = row(), canonical = resolve(id), old = entry.watches[canonical] || { count: 0, updated: 0 }; entry.watches[canonical] = { count: old.count + 1, updated: Date.now() }; entry.lastWatched = canonical; return persist(); },
             mostWatched: function () { var entry = row(), totals = Object.create(null); Object.keys(entry.watches).forEach(function (id) { var canonical = resolve(id), old = totals[canonical] || { count: 0, updated: 0 }, value = entry.watches[id]; totals[canonical] = { count: old.count + (Number(value.count) || 0), updated: Math.max(old.updated, Number(value.updated) || 0) }; }); return Object.keys(totals).sort(function (a, b) { return totals[b].count - totals[a].count || totals[b].updated - totals[a].updated || a.localeCompare(b); }).slice(0, 50); },
@@ -582,7 +606,7 @@
             if (token !== generation || cancelled) return;
             var merged = {};
             if (kind === 'live') { var folded = foldLive(localPolicy(options.usOnly ? usPolicy(items, cats) : allPolicy(items, cats), options.zip === undefined ? '01608' : options.zip)); merged = folded.merged; items = folded.items; cats = folded.categories; }
-            else if (kind === 'movies') { items = foldMovies(items); cats = usedCategories(items, cats, '__tuner_movies', 'Movies'); }
+            else if (kind === 'movies') { items = foldMovies(items, cats); cats = usedCategories(items, cats, '__tuner_movies', 'Movies'); }
             else cats = usedCategories(items, cats, '__tuner_series', 'Series');
             items.forEach(function (item) { item.sourceKey = key; });
             var payload = { items: items, categories: cats, merged: merged, xmlUrl: xmlUrl };
@@ -653,4 +677,425 @@
         parseXtream: parseXtream, parseCategories: parseCategories, parseM3u: parseM3u, usPolicy: usPolicy, allPolicy: allPolicy, localPolicy: localPolicy, foldLive: foldLive, foldMovies: foldMovies,
         adultName: adultName, isAdultCategory: isAdultCategory, adultFilter: adultFilter, hashPasscode: hashPasscode, createPasscodeLock: createPasscodeLock,
         parseGuide: parseGuide, parseSeriesInfo: parseSeriesInfo, parseXmltv: parseXmltv, parseXmltvAsync: parseXmltvAsync, xmlTime: xmlTime, marketForZip: marketForZip, displayName: displayName, idleEvent: idleEvent, offAir: offAir };
+}(typeof window !== 'undefined' ? window : this));
+
+/* Movies & Series browsing (docs/browse.md), shared by the Samsung and LG apps: matching catalogue
+   titles to the lumanest.tv catalog rows, the "Movies & Series: USA only" filter, the Home rows and
+   Discover lists, and the rows client with its 12-hour cache. Everything here is pure data work; the
+   screens and their focus live in app.js.
+
+   An index is built once per catalogue: createIndexBuilder walks the titles in small steps (slow TVs
+   with 30,000 titles stay responsive), then matchIndex links them to the rows (cheap, rerun when new
+   rows arrive). Lists are arrays of title positions, sorted on first use and kept until the next match. */
+(function (root) {
+    'use strict';
+    var D = root.TunerData;
+    function text(value) { return value === null || value === undefined ? '' : String(value).replace(/^\s+|\s+$/g, ''); }
+    function map() { return Object.create(null); }
+
+    // Streaming services in Home's order, with the words that put a provider category in one.
+    var SERVICES = [{ key: 'netflix', name: 'Netflix' }, { key: 'disney', name: 'Disney+' }, { key: 'max', name: 'Max' },
+        { key: 'prime', name: 'Prime Video' }, { key: 'apple', name: 'Apple TV+' }, { key: 'hulu', name: 'Hulu' },
+        { key: 'paramount', name: 'Paramount+' }, { key: 'peacock', name: 'Peacock' }];
+    var SERVICE_WORDS = { netflix: /NETFLIX/, disney: /DISNEY/, max: /HBO|(^|[^A-Z0-9])MAX([^A-Z0-9]|$)/, prime: /AMAZON|(^|[^A-Z0-9])PRIME([^A-Z0-9]|VIDEO|$)/,
+        apple: /APPLE/, hulu: /HULU/, paramount: /PARAMOUNT/, peacock: /PEACOCK/ };
+
+    // ---------------------------------------------------------------- titles
+    // A pipe-delimited tag is short and upper case ("|EN|", "| 4K |"): "EN | The Matrix | 1999" keeps its title.
+    var TAGS = /\[[^\]]*\]|\{[^}]*\}|\|\s*[A-Z0-9+]{1,6}\s*\||\([0-9]{4}\)|\([A-Z0-9 +]{1,4}\)/g;
+    var PREFIX = /^\s*[A-Z0-9+]{2,4}(?:-[A-Z0-9+]{2,4})*\s*(?:\|\s*|[:\-]\s+)/;
+    var SUFFIX = /\s(?:\||-)\s*[A-Z0-9+]{2,4}\s*$/;
+    var QUALITY = { '4k': true, uhd: true, hd: true, fhd: true, hdr: true, hdr10: true, '1080p': true, '720p': true, '2160p': true };
+    var FOLD = { 'æ': 'ae', 'œ': 'oe', 'ø': 'o', 'ß': 'ss', 'đ': 'd', 'ł': 'l', 'ð': 'd', 'þ': 'th' };
+    // Normalized title for matching: lower case; no trailing (YYYY), bracketed or pipe-delimited tags or
+    // "US -" style prefixes; no quality words; & becomes and; no punctuation; single spaces; no leading "the".
+    function normalizeTitle(name) {
+        var s = text(name), i, stripped, words, out = [];
+        if (/[\[{|(]/.test(s)) s = s.replace(TAGS, ' ');
+        if (/[|:\-]/.test(s)) {
+            for (i = 0; i < 3; i++) { stripped = s.replace(PREFIX, ''); if (stripped === s) break; s = stripped; }
+            s = s.replace(SUFFIX, '');
+        }
+        s = s.toLowerCase();
+        if (s.indexOf('&') >= 0) s = s.replace(/&/g, ' and ');
+        if (s.indexOf("'") >= 0 || /[`´’]/.test(s)) s = s.replace(/['`´’]/g, '');
+        if (/[^\x00-\x7f]/.test(s)) {
+            if (s.normalize) s = s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
+            s = s.replace(/[æœøßđłðþ]/g, function (ch) { return FOLD[ch]; });
+        }
+        words = s.split(/[^a-z0-9]+/);
+        for (i = 0; i < words.length; i++) if (words[i] && !QUALITY[words[i]]) out.push(words[i]);
+        if (out.length > 1 && out[0] === 'the') out.shift();
+        return out.join(' ');
+    }
+    // The release year of a catalogue title: its year field, else "(2021)", "[2021]", " - 2021" or " | 2021" in the name.
+    function titleYear(item) {
+        var year = text(item && item.year).substring(0, 4), name = text(item && item.name), match;
+        if (/^(19|20)[0-9]{2}$/.test(year)) return Number(year);
+        match = (name.indexOf('(') >= 0 || name.indexOf('[') >= 0 ? /[(\[]\s*((?:19|20)[0-9]{2})\s*[)\]]/.exec(name) : null) ||
+            (name.indexOf('-') >= 0 || name.indexOf('|') >= 0 ? /\s[-|]\s*((?:19|20)[0-9]{2})\s*$/.exec(name) : null);
+        return match ? Number(match[1]) : 0;
+    }
+
+    // ---------------------------------------------------------------- the USA filter
+    // A category fails the USA filter when its name carries a non-US country or language tag: an upper-case
+    // code as a whole word or a "XX |", "|XX|", "XX:" prefix; IN and IT only next to a separator or at an
+    // end ("MOVIES IN 4K" is English); or the country or language written out.
+    var FOREIGN_CODE = /(^|[^A-Za-z0-9])(FR|DE|ES|LAT|MX|BR|PT|TR|AR|HINDI|PK|NL|PL|RO|RU|UK|CA)([^A-Za-z0-9]|$)/;
+    var FOREIGN_TAG = /^\s*(IN|IT)([^A-Za-z0-9]|$)|(^|[^A-Za-z0-9])(IN|IT)\s*$|([|:\[\]()\/\-]|–)\s*(IN|IT)([^A-Za-z0-9]|$)|(^|[^A-Za-z0-9])(IN|IT)\s*([|:\[\]()\/\-]|–)/;
+    var FOREIGN_WORD = /(^|[^a-z])(french|france|german|germany|deutsch|italian|italiano|italia|italy|spanish|espanol|español|spain|castellano|latino|latina|latam|mexico|mexican|brazil|brasil|brazilian|portuguese|portugal|turkish|turkey|arabic|arab|india|indian|hindi|bollywood|tamil|telugu|malayalam|punjabi|pakistan|pakistani|urdu|dutch|netherlands|polish|poland|polska|romanian|romania|russian|russia|british|canada|canadian|quebec)([^a-z]|$)/i;
+    function isForeignCategory(name) { name = text(name); return !!name && (FOREIGN_CODE.test(name) || FOREIGN_TAG.test(name) || FOREIGN_WORD.test(name)); }
+    function categoryServices(name) { var upper = text(name).toUpperCase(); return SERVICES.filter(function (service) { return SERVICE_WORDS[service.key].test(upper); }).map(function (service) { return service.key; }); }
+    // USA only: a title shows when its category passes and, if it is matched to TMDB and TMDB gave its
+    // countries, they include US. An empty origin is unknown: the category alone decides.
+    function usaAllowed(categoryPasses, origin) {
+        if (!categoryPasses) return false;
+        if (!origin || !origin.length) return true;
+        return origin.indexOf('US') >= 0;
+    }
+    // The category check alone, for one catalogue's categories: item => whether it passes (no category, an
+    // unknown one, or one without a non-US tag). The index applies the same rule.
+    function categoryCheck(categories) {
+        var foreign = map();
+        (categories || []).forEach(function (cat) { if (cat && isForeignCategory(cat.name)) foreign[cat.id] = true; });
+        return function (item) { var ids = (item && item.categoryIds) || [], i; if (!ids.length) return true; for (i = 0; i < ids.length; i++) if (!foreign[ids[i]]) return true; return false; };
+    }
+
+    // ---------------------------------------------------------------- genres
+    var GENRE_ALIASES = { 'sci-fi': 'science fiction', scifi: 'science fiction', 'sci fi': 'science fiction', 'science-fiction': 'science fiction', documentaries: 'documentary', docs: 'documentary', docu: 'documentary',
+        comedies: 'comedy', dramas: 'drama', thrillers: 'thriller', westerns: 'western', animated: 'animation', anime: 'animation', cartoon: 'animation', cartoons: 'animation', children: 'kids', childrens: 'kids', kid: 'kids',
+        romantic: 'romance', musical: 'music', musicals: 'music', suspense: 'thriller', horrors: 'horror', historical: 'history', crimes: 'crime', sport: 'sports', biographical: 'biography', biopic: 'biography' };
+    var GENRE_NOISE = { movies: true, movie: true, films: true, film: true, series: true, shows: true, show: true, tv: true, vod: true, '4k': true, uhd: true, hd: true, fhd: true, en: true, us: true, usa: true, english: true, 'new': true, top: true, best: true, all: true, and: true };
+    var COMMON_GENRES = { action: 'Action', adventure: 'Adventure', animation: 'Animation', biography: 'Biography', comedy: 'Comedy', crime: 'Crime', documentary: 'Documentary', drama: 'Drama', family: 'Family', fantasy: 'Fantasy', history: 'History',
+        horror: 'Horror', music: 'Music', mystery: 'Mystery', news: 'News', politics: 'Politics', romance: 'Romance', 'science fiction': 'Science Fiction', soap: 'Soap', talk: 'Talk', thriller: 'Thriller', war: 'War', western: 'Western', kids: 'Kids', reality: 'Reality', sports: 'Sports' };
+    function genreToken(value) { var t = text(value).toLowerCase().replace(/\s+/g, ' '); return GENRE_ALIASES[t] || t; }
+    // Provider genre text ("Action, Drama") as tokens with their display names.
+    function providerGenres(value) {
+        var out = [];
+        text(value).split(/[,\/|&;]+/).forEach(function (part) { var token = genreToken(part); if (token && !out.some(function (g) { return g.token === token; })) out.push({ token: token, name: text(part) }); });
+        return out;
+    }
+    // A category named after genres ("EN | Action Movies", "Kids & Family"): each part must be a genre once
+    // words such as Movies, EN or 4K are dropped, so "Comedy Central" or "Netflix" never count.
+    function categoryGenreTokens(name) {
+        var out = [];
+        text(name).split(/[,\/|&;:()\[\]]+|\s+-\s+|–/).forEach(function (part) {
+            var words = part.toLowerCase().split(/[^a-z0-9]+/).filter(function (word) { return word && !GENRE_NOISE[word]; }), token = genreToken(words.join(' '));
+            if (token && out.indexOf(token) < 0) out.push(token);
+        });
+        return out;
+    }
+    // TMDB genres of one type: the Discover list and a lookup from a genre word ("Action", "Adventure" of
+    // "Action & Adventure") to the TMDB id. With no TMDB genres the table is open: provider genres that are known
+    // genre words are used ("N/A" or "Unknown" never become a Genre choice).
+    function genreTable(rawGenres) {
+        var list = [], lookup = map();
+        (rawGenres || []).forEach(function (genre) {
+            list.push({ key: genre.id, name: genre.name });
+            lookup[genreToken(genre.name)] = genre.id;
+            genre.name.split('&').forEach(function (part) { var token = genreToken(part); if (token && !lookup[token]) lookup[token] = genre.id; });
+        });
+        return { list: list, lookup: lookup, open: !list.length, names: map() };
+    }
+    function genreKeys(tokens, table, categoryOnly) {
+        var keys = '|';
+        tokens.forEach(function (genre) {
+            var token = typeof genre === 'string' ? genre : genre.token, key = table.lookup[token];
+            if (!key && table.open && COMMON_GENRES[token]) {
+                key = token;
+                if (!table.names[key]) table.names[key] = COMMON_GENRES[token];
+            }
+            if (key && keys.indexOf('|' + key + '|') < 0) keys += key + '|';
+        });
+        return keys === '|' ? '' : keys;
+    }
+
+    // ---------------------------------------------------------------- the catalog rows endpoint
+    var ROWS_URL = 'https://lumanest.tv/api/catalog/rows?v=1', ROWS_KEY = 'tuner.tv.catalogrows.v1', ROWS_MAX_AGE = 43200000, ROWS_RETRY = 300000;
+    function rowsItem(raw) {
+        if (!raw || typeof raw !== 'object') return null;
+        var id = text(raw.id);
+        if (!/^[0-9]+$/.test(id)) return null;
+        return { id: id, title: text(raw.title), original_title: text(raw.original_title), year: Number(text(raw.year).substring(0, 4)) || 0,
+            origin: Array.isArray(raw.origin) ? raw.origin.map(function (c) { return text(c).toUpperCase(); }).filter(Boolean) : [],
+            genres: Array.isArray(raw.genres) ? raw.genres.map(text).filter(function (g) { return /^[0-9]+$/.test(g); }) : [] };
+    }
+    function rowsList(value) { return Array.isArray(value) ? value.slice(0, 200).map(rowsItem).filter(Boolean) : []; }
+    function rowsSection(raw) {
+        raw = raw && typeof raw === 'object' ? raw : {};
+        var services = raw.services && typeof raw.services === 'object' ? raw.services : {}, out = { popular: rowsList(raw.popular), featured: rowsList(raw.featured), top_rated: rowsList(raw.top_rated), services: {} };
+        SERVICES.forEach(function (service) { out.services[service.key] = rowsList(services[service.key]); });
+        return out;
+    }
+    function rowsGenres(raw) { return Array.isArray(raw) ? raw.filter(function (g) { return g && typeof g === 'object' && /^[0-9]+$/.test(text(g.id)) && text(g.name); }).map(function (g) { return { id: text(g.id), name: text(g.name) }; }) : []; }
+    // The body of GET /api/catalog/rows?v=1 (text or parsed), or null when it is not version 1. Missing lists are empty.
+    function parseRows(input) {
+        var data = input, genres;
+        if (typeof input === 'string') { try { data = JSON.parse(input); } catch (_) { return null; } }
+        if (!data || typeof data !== 'object' || Number(data.v) !== 1) return null;
+        genres = data.genres && typeof data.genres === 'object' ? data.genres : {};
+        return { v: 1, source: text(data.source) || 'none', generated: text(data.generated), movie: rowsSection(data.movie), tv: rowsSection(data.tv), genres: { movie: rowsGenres(genres.movie), tv: rowsGenres(genres.tv) } };
+    }
+    // Whether rows carry TMDB lists (source "none" and empty answers do not).
+    function hasTmdb(rows) {
+        if (!rows || rows.source === 'none') return false;
+        return ['movie', 'tv'].some(function (kind) { var s = rows[kind]; return s.popular.length || s.featured.length || s.top_rated.length || SERVICES.some(function (service) { return s.services[service.key].length; }); });
+    }
+    // A saved copy is fresh for 12 hours; an older one is stale but still used until a request succeeds.
+    function rowsFreshness(record, now) {
+        if (!record || typeof record.saved !== 'number' || !record.rows) return 'none';
+        var age = now - record.saved;
+        return age >= 0 && age < ROWS_MAX_AGE ? 'fresh' : 'stale';
+    }
+    // options: storage (localStorage), XMLHttpRequest, now(), url, timeout. Only an HTTP 200 version 1 answer
+    // (source "none" included) replaces the saved copy; errors, 503 and unreadable answers keep it.
+    function createRowsClient(options) {
+        options = options || {};
+        var storage = options.storage || null, Xhr = options.XMLHttpRequest || null, now = options.now || function () { return Date.now(); },
+            record = null, loaded = false, pending = false, lastTry = 0;
+        function read() {
+            if (loaded) return record;
+            loaded = true;
+            try { var raw = storage && JSON.parse(storage.getItem(ROWS_KEY)), rows = raw && parseRows(raw.rows); record = rows && typeof raw.saved === 'number' ? { saved: raw.saved, rows: rows } : null; } catch (_) { record = null; }
+            return record;
+        }
+        function save(rows) { record = { saved: now(), rows: rows }; try { if (storage) storage.setItem(ROWS_KEY, JSON.stringify(record)); } catch (_) {} }
+        return {
+            peek: function () { var saved = read(); return saved ? saved.rows : null; },
+            freshness: function () { return rowsFreshness(read(), now()); },
+            // Requests new rows unless the saved copy is fresh, a request is running, or one failed in the last
+            // five minutes (the server's Retry-After). onRows receives new rows only. Returns whether it asked.
+            refresh: function (onRows) {
+                var xhr;
+                if (pending || !Xhr || rowsFreshness(read(), now()) === 'fresh' || (lastTry && now() - lastTry >= 0 && now() - lastTry < ROWS_RETRY)) return false;
+                lastTry = now(); pending = true;
+                function done(rows) { if (!pending) return; pending = false; if (rows) { lastTry = 0; save(rows); if (onRows) onRows(rows); } }
+                try { xhr = new Xhr(); xhr.open('GET', options.url || ROWS_URL, true); xhr.timeout = options.timeout || 15000; } catch (_) { pending = false; return false; }
+                xhr.onreadystatechange = function () { if (xhr.readyState === 4) done(xhr.status === 200 ? parseRows(xhr.responseText) : null); };
+                xhr.onerror = xhr.ontimeout = xhr.onabort = function () { done(null); };
+                try { xhr.send(); } catch (_) { done(null); }
+                return true;
+            }
+        };
+    }
+
+    // ---------------------------------------------------------------- the index
+    // kind: 'movies' or 'series'; items and categories as the app shows them (adult content already removed).
+    // step(budget) prepares up to budget titles and returns true once all are done; index is then ready for matchIndex.
+    function createIndexBuilder(kind, items, categories) {
+        items = items || [];
+        var cats = map(), index = { kind: kind, section: kind === 'series' ? 'tv' : 'movie', titles: [], byId: map(), cats: cats, catServices: map(), lists: map(), fixed: map(), rows: null, matched: 0, genres: [] }, at = 0;
+        SERVICES.forEach(function (service) { index.catServices[service.key] = []; });
+        (categories || []).forEach(function (cat) { cats[cat.id] = { ok: !isForeignCategory(cat.name), services: categoryServices(cat.name), genres: categoryGenreTokens(cat.name) }; });
+        return { index: index, step: function (budget) {
+            var end = Math.min(items.length, at + (budget > 0 ? budget : items.length)), item, entry, ids, info, i, j, ok, services, rating, added;
+            for (; at < end; at++) {
+                item = items[at]; ids = item.categoryIds || []; ok = !ids.length; services = [];
+                for (i = 0; i < ids.length; i++) {
+                    info = cats[ids[i]];
+                    if (!info) { ok = true; continue; }
+                    if (info.ok) ok = true;
+                    for (j = 0; j < info.services.length; j++) if (services.indexOf(info.services[j]) < 0) services.push(info.services[j]);
+                }
+                rating = Number(item.rating) || 0;
+                // Seconds, as Xtream gives them; a feed in milliseconds is brought to seconds.
+                added = Number(item.added) || 0;
+                if (added > 1e11) added = Math.floor(added / 1000);
+                entry = { item: item, norm: normalizeTitle(item.name), year: titleYear(item), ok: ok, hint: text(item.tmdb), pg: item.genre ? providerGenres(item.genre) : null,
+                    added: added, rating: rating > 10 ? rating / 10 : rating, tmdb: '', us: ok, g: '' };
+                if (index.byId[item.id] === undefined) index.byId[item.id] = index.titles.length;
+                for (j = 0; j < services.length; j++) index.catServices[services[j]].push(index.titles.length);
+                index.titles.push(entry);
+            }
+            return at >= items.length;
+        } };
+    }
+    function tmdbLookup(section) {
+        var byId = map(), byTitle = map(), lists = [section.popular, section.featured, section.top_rated];
+        SERVICES.forEach(function (service) { lists.push(section.services[service.key]); });
+        lists.forEach(function (list) {
+            list.forEach(function (raw) {
+                if (byId[raw.id]) return;
+                var entry = { id: raw.id, year: raw.year, origin: raw.origin, g: raw.genres.length ? '|' + raw.genres.join('|') + '|' : '' };
+                byId[raw.id] = entry;
+                [normalizeTitle(raw.title), normalizeTitle(raw.original_title)].forEach(function (key) { if (!key) return; var bucket = byTitle[key] || (byTitle[key] = []); if (bucket.indexOf(entry) < 0) bucket.push(entry); });
+            });
+        });
+        return { byId: byId, byTitle: byTitle };
+    }
+    // 1. A provider TMDB id matches on the id alone. 2. Otherwise the normalized title must match and the years
+    // may differ by 1 (an exact year wins). A title without a year matches only when one TMDB title has that name.
+    function matchTmdb(lookup, hint, norm, year) {
+        var candidates, best = null, i, c;
+        if (hint) return lookup.byId[hint] || null;
+        candidates = norm ? lookup.byTitle[norm] : null;
+        if (!candidates) return null;
+        if (!year) return candidates.length === 1 ? candidates[0] : null;
+        for (i = 0; i < candidates.length; i++) {
+            c = candidates[i];
+            if (c.year === year) return c;
+            if (!best && c.year && Math.abs(c.year - year) <= 1) best = c;
+        }
+        return best;
+    }
+    // Links the titles to the rows (null: no TMDB data) and works out each title's USA flag and genres.
+    // step(budget) matches up to budget titles into its own arrays and returns true when all are done; apply()
+    // then writes them into the index in one quick pass, so a screen never sees a half-matched index.
+    function createMatcher(index, rows) {
+        var section = rows ? rows[index.section] : rowsSection(null), lookup = tmdbLookup(section), table = genreTable(rows ? rows.genres[index.section] : []),
+            titles = index.titles, byTmdb = map(), catKeys = map(), used = map(), usUsed = map(), result = { tmdb: [], us: [], g: [] }, matched = 0, at = 0;
+        Object.keys(index.cats).forEach(function (id) { catKeys[id] = genreKeys(index.cats[id].genres, table, true); });
+        return {
+            step: function (budget) {
+                var end = Math.min(titles.length, at + (budget > 0 ? budget : titles.length)), entry, m, ids, g, i;
+                for (; at < end; at++) {
+                    entry = titles[at]; m = matchTmdb(lookup, entry.hint, entry.norm, entry.year); ids = entry.item.categoryIds || []; g = '';
+                    if (m) { matched++; g = m.g; (byTmdb[m.id] || (byTmdb[m.id] = [])).push(at); }
+                    if (!g && entry.pg) g = genreKeys(entry.pg, table, false);
+                    if (!g) for (i = 0; i < ids.length; i++) if (catKeys[ids[i]]) g += g ? catKeys[ids[i]].substring(1) : catKeys[ids[i]];
+                    result.tmdb[at] = m ? m.id : '';
+                    result.us[at] = m ? usaAllowed(entry.ok, m.origin) : entry.ok;
+                    result.g[at] = g;
+                    if (g) { used[g] = true; if (result.us[at]) usUsed[g] = true; }
+                }
+                return at >= titles.length;
+            },
+            apply: function () {
+                var keys = map(), usKeys = map(), all, i;
+                function mark(found, target) { Object.keys(found).forEach(function (g) { g.split('|').forEach(function (key) { if (key) target[key] = true; }); }); }
+                for (i = 0; i < titles.length; i++) { titles[i].tmdb = result.tmdb[i] || ''; titles[i].us = result.us[i] !== undefined ? result.us[i] : titles[i].ok; titles[i].g = result.g[i] || ''; }
+                mark(used, keys); mark(usUsed, usKeys);
+                // Copies of one TMDB title: the ones that pass the USA filter first.
+                Object.keys(byTmdb).forEach(function (id) { var group = byTmdb[id]; if (group.length > 1) byTmdb[id] = group.filter(function (p) { return titles[p].us; }).concat(group.filter(function (p) { return !titles[p].us; })); });
+                index.rows = section; index.byTmdb = byTmdb; index.matched = matched; index.lists = map();
+                // The Genre choices: genres some title has (usGenres: some title USA only shows).
+                all = table.open ? Object.keys(table.names).map(function (key) { return { key: key, name: table.names[key] }; }).sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; }) : table.list;
+                index.genres = all.filter(function (genre) { return keys[genre.key]; });
+                index.usGenres = all.filter(function (genre) { return usKeys[genre.key]; });
+                return index;
+            }
+        };
+    }
+    function matchIndex(index, rows) { var matcher = createMatcher(index, rows || null); matcher.step(0); return matcher.apply(); }
+    function buildIndex(kind, items, categories, rows) { var builder = createIndexBuilder(kind, items, categories); builder.step(0); return matchIndex(builder.index, rows || null); }
+
+    // ---------------------------------------------------------------- lists
+    function tmdbOrder(list, byTmdb) { var out = []; list.forEach(function (raw) { var group = byTmdb[raw.id]; if (group) out = out.concat(group); }); return out; }
+    function merged(first, second) { var seen = map(), out = []; first.concat(second).forEach(function (p) { if (!seen[p]) { seen[p] = true; out.push(p); } }); return out; }
+    // Numbers sort natively (no comparator calls; about twice as fast on 30,000 titles) as one typed array of
+    // value * 2^20 + reversed position, so equal values keep catalogue order. Values are capped at 2^33 - 1 so a
+    // key never passes 2^53, where positions would be lost; past 2^20 titles a comparator sort is used.
+    var POSITION = 1048576, MAX_VALUE = 8589934591;
+    function sortedBy(index, positions, field) {
+        var titles = index.titles, scale = field === 'rating' ? 100 : 1, keys = [], out = [], i, value, sorted;
+        if (titles.length > POSITION) return positions.filter(function (p) { return titles[p][field] > 0; }).sort(function (a, b) { return titles[b][field] - titles[a][field] || a - b; });
+        for (i = 0; i < positions.length; i++) { value = titles[positions[i]][field]; if (value > 0) keys.push(Math.min(Math.round(value * scale), MAX_VALUE) * POSITION + (POSITION - 1 - positions[i])); }
+        sorted = typeof root.Float64Array === 'function' && root.Float64Array.prototype.sort ? new root.Float64Array(keys).sort() : keys.sort(function (a, b) { return a - b; });
+        for (i = sorted.length - 1; i >= 0; i--) out.push(POSITION - 1 - sorted[i] % POSITION);
+        return out;
+    }
+    function alphabetical(index) {
+        var titles = index.titles, keys = [], i;
+        for (i = 0; i < titles.length; i++) keys.push(titles[i].norm || titles[i].item.name.toLowerCase());
+        return allPositions(index).sort(function (a, b) { return keys[a] < keys[b] ? -1 : keys[a] > keys[b] ? 1 : a - b; });
+    }
+    function allPositions(index) { var out = [], i; for (i = 0; i < index.titles.length; i++) out.push(i); return out; }
+    // Title positions for one list key, best first: popular, featured, rated, recent, az or a service key.
+    // Top rated and the services list TMDB's titles first, then the provider's (by rating, or newest first).
+    function listOf(index, key) {
+        var titles = index.titles, fixed = index.fixed, out = index.lists[key];
+        if (out) return out;
+        if (key === 'recent') out = fixed.recent || (fixed.recent = sortedBy(index, allPositions(index), 'added'));
+        else if (key === 'az') out = fixed.az || (fixed.az = alphabetical(index));
+        else if (key === 'popular' || key === 'featured') out = tmdbOrder(index.rows[key], index.byTmdb);
+        else if (key === 'rated') out = merged(tmdbOrder(index.rows.top_rated, index.byTmdb), fixed.rated || (fixed.rated = sortedBy(index, allPositions(index), 'rating')));
+        else if (index.catServices[key]) out = merged(tmdbOrder(index.rows.services[key], index.byTmdb), fixed[key] || (fixed[key] = sortedBy(index, index.catServices[key], 'added').concat(index.catServices[key].filter(function (p) { return !titles[p].added; }))));
+        else out = [];
+        index.lists[key] = out;
+        return out;
+    }
+    // opts: usOnly, genre ('' for all).
+    function visible(entry, opts) { return (!opts.usOnly || entry.us) && (!opts.genre || entry.g.indexOf('|' + opts.genre + '|') >= 0); }
+    // Up to limit visible titles of a list from cursor, one per TMDB title (opts.seen is shared by one row or grid).
+    // Returns { picked: [position], cursor, done }.
+    function pick(index, key, opts, cursor, limit) {
+        var list = listOf(index, key), picked = [], i = cursor || 0, seen = opts.seen || (opts.seen = map()), entry, id;
+        while (i < list.length && picked.length < limit) {
+            entry = index.titles[list[i]];
+            if (visible(entry, opts)) {
+                id = entry.tmdb ? 't' + entry.tmdb : 'i' + entry.item.id;
+                if (!seen[id]) { seen[id] = true; picked.push(list[i]); }
+            }
+            i++;
+        }
+        return { picked: picked, cursor: i, done: i >= list.length };
+    }
+    function homeRowSpecs(withTmdb) {
+        var specs = [];
+        function pair(list, title) { specs.push({ kind: 'movies', list: list, title: title + ' – Movies' }); specs.push({ kind: 'series', list: list, title: title + ' – Series' }); }
+        if (withTmdb) { pair('popular', 'Popular'); pair('featured', 'Featured'); }
+        SERVICES.forEach(function (service) { pair(service.key, service.name); });
+        pair('recent', 'Recently added');
+        pair('rated', 'Top rated');
+        return specs;
+    }
+    function discoverLists(withTmdb) {
+        var lists = withTmdb ? [{ key: 'popular', name: 'Popular' }, { key: 'featured', name: 'Featured' }] : [];
+        lists.push({ key: 'rated', name: 'Top rated' }, { key: 'recent', name: 'Recently added' }, { key: 'az', name: 'A–Z' });
+        SERVICES.forEach(function (service) { lists.push({ key: service.key, name: service.name }); });
+        return lists;
+    }
+    // Home rows after Continue watching: each with at least 5 visible titles, 20 at most.
+    // indexes: { movies, series }. Returns [{ id, title, kind, list, positions }].
+    function homeRows(indexes, opts) {
+        var rows = [];
+        homeRowSpecs(!!opts.withTmdb).forEach(function (spec) {
+            var index = indexes[spec.kind], result;
+            if (!index) return;
+            result = pick(index, spec.list, { usOnly: !!opts.usOnly, genre: '', seen: map() }, 0, 20);
+            if (result.picked.length >= 5) rows.push({ id: spec.kind + ':' + spec.list, title: spec.title, kind: spec.kind, list: spec.list, positions: result.picked });
+        });
+        return rows;
+    }
+    // Continue watching, newest first: movies in progress and, per series, the episode in progress or the next
+    // one after a finished episode. find(kind, id) returns the catalogue item or null (titles gone are dropped).
+    function continueWatching(recents, upNext, find) {
+        var events = [], out = [], series = map(), movies = map();
+        (recents || []).forEach(function (r, i) { if (r && r.id) events.push({ r: r, at: Number(r.updated) || 0, i: i, next: false }); });
+        (upNext || []).forEach(function (r, i) { if (r && r.seriesId) events.push({ r: r, at: Number(r.updated) || 0, i: 1000 + i, next: true }); });
+        events.sort(function (a, b) { return b.at - a.at || a.i - b.i; });
+        events.forEach(function (event) {
+            var r = event.r, item, fraction = r.duration > 0 ? Math.max(0, Math.min(1, r.position / r.duration)) : 0;
+            if (event.next || r.seriesId) {
+                if (series[r.seriesId]) return;
+                series[r.seriesId] = true;
+                item = find('series', r.seriesId);
+                if (item) out.push(event.next ? { kind: 'series', item: item, next: { season: Number(r.season) || 0, episode: Number(r.episode) || 0 } } : { kind: 'series', item: item, progress: fraction, resume: r.id });
+            } else if (!/^(e|me):/.test(r.id) && !movies[r.id]) {
+                movies[r.id] = true;
+                item = find('movies', r.id);
+                if (item) out.push({ kind: 'movies', item: item, progress: fraction });
+            }
+        });
+        return out;
+    }
+    // The episode a series opens on: the one being watched (resume: episode id) or the one after the finished
+    // one (next: {season, episode}). seasons: [{number, episodes: [{id, episode}]}]. Returns {season, episode} indexes or null.
+    function episodeToOpen(seasons, resume, next) {
+        var s, e, list;
+        for (s = 0; resume && s < seasons.length; s++) for (e = 0; e < seasons[s].episodes.length; e++) if (seasons[s].episodes[e].id === resume) return { season: s, episode: e };
+        if (!next) return null;
+        for (s = 0; s < seasons.length; s++) {
+            list = seasons[s].episodes;
+            if (seasons[s].number === next.season) {
+                for (e = 0; e < list.length; e++) if (list[e].episode > next.episode) return { season: s, episode: e };
+            } else if (seasons[s].number > next.season && list.length) return { season: s, episode: 0 };
+        }
+        return null;
+    }
+
+    D.browse = { SERVICES: SERVICES, ROWS_URL: ROWS_URL, ROWS_KEY: ROWS_KEY, normalizeTitle: normalizeTitle, titleYear: titleYear, isForeignCategory: isForeignCategory, categoryCheck: categoryCheck,
+        categoryServices: categoryServices, usaAllowed: usaAllowed, parseRows: parseRows, hasTmdb: hasTmdb, rowsFreshness: rowsFreshness, createRowsClient: createRowsClient,
+        createIndexBuilder: createIndexBuilder, createMatcher: createMatcher, matchIndex: matchIndex, buildIndex: buildIndex, matchTmdb: matchTmdb, listOf: listOf, visible: visible, pick: pick,
+        homeRowSpecs: homeRowSpecs, discoverLists: discoverLists, homeRows: homeRows, continueWatching: continueWatching, episodeToOpen: episodeToOpen };
 }(typeof window !== 'undefined' ? window : this));
