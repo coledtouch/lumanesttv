@@ -40,6 +40,9 @@ class StoreEditionTest {
 
     @Test fun buildFlagDrivesTheEditionAndTheManifest() {
         assertEquals(BuildConfig.STORE_BUILD, Edition.STORE)
+        // The store edition is a separate app: app.tunertv on the stores, tv.lumanest.tuner for the lumanest.tv APK.
+        assertEquals(if (Edition.STORE) "app.tunertv" else "tv.lumanest.tuner", BuildConfig.APPLICATION_ID)
+        assertEquals(BuildConfig.APPLICATION_ID, context.packageName)
         assertTrue(Edition.pictureInPictureAllowed(store = false))
         assertFalse(Edition.pictureInPictureAllowed(store = true))
         // The merged manifest follows the same flag: TV-only and no picture-in-picture in the store edition.

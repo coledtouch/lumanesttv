@@ -48,7 +48,7 @@ Watch your LumaNest TV live channels, movies and series. Set up with your phone.
 
 ## Android store edition (Google Play and Amazon)
 
-Google Play and the Amazon Appstore get the **store edition** of the Android app. It is the same app, package (`tv.lumanest.tuner`), version and signing key as the lumanest.tv APK, built with `-Pstore=true`. It differs only where store reviewers require it:
+Google Play and the Amazon Appstore get the **store edition** of the Android app, built with `-Pstore=true` from the same code and version as the lumanest.tv APK. It is a **separate app** with its own package name, **`app.tunertv`** (the lumanest.tv APK stays `tv.lumanest.tuner`). It differs only where store reviewers require it:
 
 - **Adult content:** adult categories are always hidden. There is no unlock, passcode or "XXX" text in Settings. Channels and titles with adult names are hidden too, wherever they're listed, and more category spellings are caught (+18, 18 Plus, Adultos, Porno, Erotic).
 - **Picture-in-picture:** not offered. Google's TV rules don't allow it for video apps, or starting it automatically on Home.
@@ -68,12 +68,7 @@ Build it on Windows from `apps/android` (PowerShell):
 
 All three are signed with the existing release key when `TUNER_SIGNING_DIR` (or `-PtunerSigningProperties`) points at it, exactly like today's APK. Without the key, the APKs end in `-unsigned.apk` and the AAB is unsigned; stores reject unsigned files. Store files have their own names, so they can't be mistaken for the lumanest.tv APK. Each `assembleRelease` replaces the APK from the previous one, so upload or copy one APK before building the other. `.\gradlew.bat bundleRelease` without `-Pstore=true` stops with an error, so the direct edition can't reach Google Play by mistake.
 
-Because both editions share the package and key, each can update the other in place. A customer who moves from the lumanest.tv APK to Google Play keeps the pairing, Favorites and settings, but loses picture-in-picture and any adult unlock; moving back to the lumanest.tv APK brings both back.
-
-**Decide before the first Google Play upload: may Google Play update lumanest.tv installs?** Google Play treats an app installed from lumanest.tv as its own when the package and key match. As soon as Google Play publishes a higher `versionCode` than the one on a Google TV, it offers that TV the update, usually installing it automatically. With one rising `versionCode` for both editions, every lumanest.tv install on a TV with Google Play therefore becomes the store edition at the next Google Play release, without the customer choosing it: adult categories lock for good and picture-in-picture disappears. Each later Google Play release does the same to anyone who went back to the lumanest.tv APK. Fire TV is not affected (no Google Play), and Amazon only updates its own installs. Choose one:
-
-- **Accept it:** Google Play takes over lumanest.tv installs on Google TV. Tell customers before the first Google Play release, and point those who want adult categories or picture-in-picture to a TV without Google Play or to turning off auto-update for Tuner in Google Play.
-- **Keep the lumanest.tv APK ahead:** give the lumanest.tv APK a `versionCode` that is always higher than anything uploaded to Google Play (for example 1,000,000 plus the release number, while Google Play uploads count up from 19). Google Play then never updates a lumanest.tv install, and the lumanest.tv APK can still replace a Google Play install. This needs a change to how `versionCode` is set in `apps/android/app/build.gradle.kts`, made before the first Google Play upload; this branch doesn't change it.
+Because the packages differ, Android treats the two editions as different apps. A store install never updates a lumanest.tv install, or the reverse, and both can be installed on the same TV. A customer moving from the lumanest.tv APK to Google Play or Amazon installs Tuner from the store, pairs it again with the phone (Favorites and settings don't carry over), and can then uninstall the APK. The store edition never has adult categories or picture-in-picture.
 
 ## Google Play (Android TV)
 
@@ -82,15 +77,14 @@ Because both editions share the package and key, each can update the other in pl
   - A **Personal** account created after 13 November 2023 must first run a closed test with at least 12 testers, opted in for 14 days in a row, then apply for production access. For a TV-only app every tester needs a Google TV or Android TV device. New personal accounts must also confirm access to an Android phone (Android 10 or later) in the Play Console app. Organization accounts skip both.
 - **Package:** the store edition App Bundle, `app-store-release.aab` (see [Android store edition](#android-store-edition-google-play-and-amazon)). Google Play takes only App Bundles for new apps, and requires them for TV apps.
   - **Target API level:** Tuner targets Android 15 (API 35). Since 31 August 2026 Google Play asks phone apps for API 36, but Android TV apps for API 34 only, and the store edition is TV-only (it requires `android.software.leanback`). Raise the target before ever offering it to phones. The minimum stays Android 6.0.
-  - **Version codes:** Play rejects a code it has already seen, so raise it before every upload. Whether Google Play and lumanest.tv share one rising code depends on the decision in [Android store edition](#android-store-edition-google-play-and-amazon).
-- **Play App Signing: use the existing key.** Decide this before the first upload, including internal testing. It can't be changed afterwards.
-  1. When Play Console asks how to sign the app, choose your own key: **Export and upload a key from Java keystore** (the PEPK tool). Upload the **existing** Tuner release key, the one in `TUNER_SIGNING_DIR`. Never let Google generate a new key.
-  2. In Play Console, open **App integrity → Play app signing**. The app signing key certificate's SHA-256 fingerprint must be `EC:6F:ED:26:F3:B6:88:C4:6A:CB:1A:55:2B:D0:B9:EE:8C:E8:C9:62:BA:B4:DB:74:51:DF:3F:35:A3:95:45:86` (the one in `apps/android/README.md`).
-  3. An upload key is optional. Without one, you sign uploads with the same existing key, so the build command above is all you need. If you want a separate upload key, create it yourself, outside this repository, and build with `-PtunerSigningProperties=<its keystore.properties>`.
-  - **Why the existing key:** Android installs an update only when it's signed with the same key as the installed app. With the existing key, Google Play and lumanest.tv installs update each other, so customers keep their pairing, Favorites and settings when they switch. With a key Google generates, switching means uninstalling and setting up again, and that can never be fixed.
-  - **Never use key upgrade** later. Play would sign new installs with a new key, and the lumanest.tv APK could no longer update them.
-  - **Leave automatic protection off** (App integrity). It tells people who installed from lumanest.tv to get the app from Google Play instead.
-  - Apps using Play App Signing are registered for Android developer verification automatically, which also covers the lumanest.tv APK (same package and key). Check the Play Console home page for the registration task.
+  - **Package name:** `app.tunertv`. Play Console fixes it at the first upload, and it can never change afterwards.
+  - **Version codes:** Play rejects a code it has already seen, so raise it before every upload. The lumanest.tv APK is a different app, so the two can share the version number in `build.gradle.kts`.
+- **Play App Signing:** choose this before the first upload, including internal testing; it can't be changed afterwards.
+  1. When Play Console asks how to sign the app, keep the default: **Google generates the app signing key** and keeps it safe. The store edition is a separate app (`app.tunertv`), so it doesn't need the lumanest.tv key.
+  2. Sign uploads with an **upload key**. The simplest choice is the existing Tuner release key in `TUNER_SIGNING_DIR`: the build command above already signs with it, and Play Console registers it as the upload key at the first upload. If you'd rather keep it separate, create a new upload key yourself, outside this repository, and build with `-PtunerSigningProperties=<its keystore.properties>`. Never commit either key.
+  3. If the upload key is ever lost, request an upload key reset in Play Console (App integrity). The app signing key stays with Google, so the app keeps updating.
+  - **Leave automatic protection off** (App integrity) unless you want Google Play to block installs that didn't come from Google Play.
+  - Apps using Play App Signing are registered for Android developer verification automatically. The lumanest.tv APK (`tv.lumanest.tuner`) is a different package: when Android developer verification reaches TVs, register it separately with its own key. Check the Play Console home page for the registration task.
 - **Android TV form factor:** Test and release → Advanced settings → Form factors → Add form factor → Android TV, then opt in. When asked where to release, keep the main tracks (the same tracks as phones): the bundle is TV-only anyway, and Google says a dedicated Android TV track can't be switched back afterwards. Upload the TV banner and TV screenshots first. Opting in starts Google's TV quality review; the status shows Pending, Approved or Not approved. Mention Android TV in the full description.
 - **Assets:**
   - **App icon:** [`icon-512.png`](store/icon-512.png) (512×512, 32-bit PNG).
@@ -131,12 +125,11 @@ Because both editions share the package and key, each can update the other in pl
   - The content-rights answer and a reviewer line with no expiry date (see [Before you submit anywhere](#before-you-submit-anywhere)).
   - The TV apps section in the privacy policy.
   - lumanest.tv/pair without Plans, Renew or buy links.
-  - The decision on whether Google Play may update lumanest.tv installs (see [Android store edition](#android-store-edition-google-play-and-amazon)).
 - **Steps:**
   1. Create and verify the developer account (Organization).
   2. Create the app: name "Tuner by LumaNest TV", type App, Free.
-  3. Set up Play App Signing with the existing key, before uploading anything.
-  4. Build the store edition AAB and upload it to an **Internal testing** release. Check the update behaviour you chose on a Google TV that has the lumanest.tv APK installed. If Google Play may take over lumanest.tv installs, installing from Google Play should update in place and keep the pairing (Google Play only updates an install whose `versionCode` is lower than the upload). If the lumanest.tv APK stays ahead, Google Play should offer no update, and on a TV that got Tuner from Google Play, the lumanest.tv APK should install over it and keep the pairing.
+  3. Accept Play App Signing with a Google-generated app signing key, before uploading anything (package name `app.tunertv`).
+  4. Build the store edition AAB and upload it to an **Internal testing** release. On a Google TV that also has the lumanest.tv APK, check that both apps install side by side and that the Google Play one pairs and plays.
   5. Fill in the store listing, assets and App content forms.
   6. Opt in to the Android TV form factor.
   7. Personal accounts only: run the closed test (12 testers, 14 days), then apply for production access.
@@ -145,8 +138,8 @@ Because both editions share the package and key, each can update the other in pl
 ## Amazon Fire TV (Amazon Appstore)
 
 - **Account:** Amazon Developer, at developer.amazon.com. It's free.
-- **Package:** the store edition APK, `app-store-release.apk` (see [Android store edition](#android-store-edition-google-play-and-amazon)). Don't upload the lumanest.tv download: Amazon also bans adult content and rejects apps that mention other platforms, such as Google TV. Use the same version name as the lumanest.tv download, and the same `versionCode` as the Google Play upload.
-- **Signing:** Amazon may re-sign the APK with its own key; the upload page shows the "Appstore certificate hashes". If they don't match the Tuner fingerprint in `apps/android/README.md`, Amazon installs and lumanest.tv installs can't update each other, and a customer switching between them has to uninstall first.
+- **Package:** the store edition APK, `app-store-release.apk` (see [Android store edition](#android-store-edition-google-play-and-amazon)). Don't upload the lumanest.tv download: Amazon also bans adult content and rejects apps that mention other platforms, such as Google TV. Its package is `app.tunertv`, like the Google Play edition. Use the same version name as the lumanest.tv download, and the same `versionCode` as the Google Play upload.
+- **Signing:** Amazon may re-sign the APK with its own key; the upload page shows the "Appstore certificate hashes". That's fine: the Amazon install (`app.tunertv`) is a separate app from the lumanest.tv APK either way, and Amazon updates only its own installs.
 - **Device targeting:** select every Fire TV model. Keep phones and tablets off. The store edition requires Android TV support (`android.software.leanback`), which keeps Google Play from offering it to phones. After uploading, check that Amazon lists your Fire TV models as supported; if it marks them unsupported, don't submit. Fire TV models running Vega OS can't run Android apps at all.
 - **Assets:**
   - **App icons:** [`icon-512.png`](store/icon-512.png) (512×512) and [`icon-114.png`](store/icon-114.png) (114×114).

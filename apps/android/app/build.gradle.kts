@@ -40,7 +40,10 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "tv.lumanest.tuner"
+        // The store edition is its own app on Google Play and the Amazon Appstore (package app.tunertv, after
+        // tunertv.app); the lumanest.tv APK keeps tv.lumanest.tuner. Different packages never update each other, so a
+        // store release can't replace a lumanest.tv install (or the reverse), and the two can sit side by side.
+        applicationId = if (storeBuild) "app.tunertv" else "tv.lumanest.tuner"
         minSdk = 23
         targetSdk = 35
         versionCode = 18
