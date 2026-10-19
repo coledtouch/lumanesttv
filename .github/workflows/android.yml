@@ -58,3 +58,17 @@ jobs:
           path: apps/android/app/build/outputs/apk/release/*-unsigned.apk
           if-no-files-found: error
           retention-days: 7
+      # The Google Play / Amazon Appstore edition (-Pstore=true), after the lumanest.tv APK above is saved.
+      # Its own test classes run in store mode too: they check the store manifest (TV only, no picture-in-picture),
+      # Settings and the content rules. The other tests describe the lumanest.tv edition.
+      # Unsigned here: the owner builds the signed AAB locally with the existing release key.
+      - name: Store edition tests and bundle (Google Play)
+        run: ./gradlew --no-daemon testDebugUnitTest --tests 'tv.lumanest.tuner.StoreEdition*' bundleRelease -Pstore=true
+      - name: Save store edition test reports
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: android-store-test-reports
+          path: apps/android/app/build/reports/tests/
+          if-no-files-found: ignore
+          retention-days: 7

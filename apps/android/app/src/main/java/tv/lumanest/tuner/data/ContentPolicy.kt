@@ -7,7 +7,8 @@ import java.util.Locale
  * categories a line includes. Customers can switch Live TV to "USA channels only" in Settings, which keeps U.S.
  * programming and hides international channels. Movies, series and audio have no language restrictions.
  * Adult categories (see [AdultFilter]) and everything listed in them are left out of every catalogue unless the
- * viewer unlocked adult content with the Settings passcode.
+ * viewer unlocked adult content with the Settings passcode. The store edition ([storeBuild]) never unlocks and also
+ * leaves out channels and titles named as adult content.
  */
 object ContentPolicy {
     data class Catalogue<T>(val items: List<T>, val categories: List<Category>)
@@ -133,8 +134,10 @@ object ContentPolicy {
     private fun conflictingCountry(country: String?): Boolean = metadataParts(country).any { countryAliases[it] != "US" }
     private fun isEnglish(value: String): Boolean = value in englishAliases || englishMetadata.matches(value)
 
-    fun live(items: List<Channel>, categories: List<Category>, usOnly: Boolean = true, adultUnlocked: Boolean = false): Catalogue<Channel> {
-        val allowed = AdultFilter.filter(items, categories, adultUnlocked, { it.categoryIds }, { it.adult })
+    fun live(items: List<Channel>, categories: List<Category>, usOnly: Boolean = true, adultUnlocked: Boolean = false,
+             storeBuild: Boolean = false): Catalogue<Channel> {
+        val allowed = AdultFilter.filter(items, categories, adultUnlocked, { it.categoryIds },
+            { it.adult || storeBuild && AdultFilter.isAdultTitle(it.name, live = true) }, strict = storeBuild)
         if (!usOnly) {
             val all = allowed.distinctBy { it.key }.map { channel ->
                 val ids = channel.categoryIds.distinct().ifEmpty { listOf("__tuner_live") }
@@ -157,8 +160,9 @@ object ContentPolicy {
         return Catalogue(accepted, usedCategories(accepted.flatMap { it.categoryIds }, categories, "__tuner_us", "USA"))
     }
 
-    fun movies(items: List<Movie>, categories: List<Category>, adultUnlocked: Boolean = false): Catalogue<Movie> {
-        val allowed = AdultFilter.filter(items, categories, adultUnlocked, { it.categoryIds }, { it.adult })
+    fun movies(items: List<Movie>, categories: List<Category>, adultUnlocked: Boolean = false, storeBuild: Boolean = false): Catalogue<Movie> {
+        val allowed = AdultFilter.filter(items, categories, adultUnlocked, { it.categoryIds },
+            { it.adult || storeBuild && AdultFilter.isAdultTitle(it.name, live = false) }, strict = storeBuild)
         val accepted = allowed.distinctBy { it.id }.map { movie ->
             val ids = movie.categoryIds.distinct().ifEmpty { listOf("__tuner_movies") }
             movie.copy(categoryId = ids.first(), categoryIds = ids)
@@ -166,8 +170,9 @@ object ContentPolicy {
         return Catalogue(accepted, usedCategories(accepted.flatMap { it.categoryIds }, categories, "__tuner_movies", "Movies"))
     }
 
-    fun series(items: List<Series>, categories: List<Category>, adultUnlocked: Boolean = false): Catalogue<Series> {
-        val allowed = AdultFilter.filter(items, categories, adultUnlocked, { it.categoryIds }, { it.adult })
+    fun series(items: List<Series>, categories: List<Category>, adultUnlocked: Boolean = false, storeBuild: Boolean = false): Catalogue<Series> {
+        val allowed = AdultFilter.filter(items, categories, adultUnlocked, { it.categoryIds },
+            { it.adult || storeBuild && AdultFilter.isAdultTitle(it.name, live = false) }, strict = storeBuild)
         val accepted = allowed.distinctBy { it.id }.map { series ->
             val ids = series.categoryIds.distinct().ifEmpty { listOf("__tuner_series") }
             series.copy(categoryId = ids.first(), categoryIds = ids)

@@ -7,6 +7,7 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.style.TextAlign
+import tv.lumanest.tuner.Edition
 import tv.lumanest.tuner.data.PhoneSetup
 import tv.lumanest.tuner.data.Pairing
 import com.google.zxing.BarcodeFormat
@@ -54,8 +55,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.util.UUID
 
+/** [store] is the store edition (see [Edition]): neutral wording, no user-agent field, phone form only while shown. */
 @Composable
-fun EditSourceScreen(sourceId: String?, canCancel: Boolean, onDone: () -> Unit) {
+fun EditSourceScreen(sourceId: String?, canCancel: Boolean, store: Boolean = Edition.STORE, onDone: () -> Unit) {
     val existing = remember(sourceId) { Repo.prefs.sources.value.firstOrNull { it.id == sourceId } }
     var type by remember { mutableStateOf(existing?.type ?: SourceType.XTREAM) }
     var name by remember { mutableStateOf(existing?.name ?: "") }
@@ -115,10 +117,12 @@ fun EditSourceScreen(sourceId: String?, canCancel: Boolean, onDone: () -> Unit) 
         }
     }
 
-    // Phone/computer setup page served by the TV while this screen is open.
+    // Phone/computer setup page served by the TV while this screen is open. Its QR code shows only when editing,
+    // so the store edition serves it only then.
     var phoneUrl by remember { mutableStateOf<String?>(null) }
     DisposableEffect(Unit) {
-        val setup = PhoneSetup { f ->
+        if (store && existing == null) return@DisposableEffect onDispose { }
+        val setup = PhoneSetup(store) { f ->
             // Only overwrite what was actually filled in, so the page also works for edits.
             fun v(k: String) = f[k]?.trim()?.takeIf { it.isNotEmpty() }
             if (f["type"] == "m3u") { type = SourceType.M3U; v("m3u")?.let { m3uUrl = it } }
@@ -146,15 +150,16 @@ fun EditSourceScreen(sourceId: String?, canCancel: Boolean, onDone: () -> Unit) 
                 Column(Modifier.padding(start = 14.dp)) {
                     Text(if (existing == null) "Add a playlist" else "Edit playlist", color = Palette.text, fontSize = 26.sp, fontWeight = FontWeight.Bold)
                     Text(
-                        "Sign in with your provider's Xtream Codes login, or paste an M3U link.",
+                        if (store) "Enter your server login, or paste your playlist link."
+                        else "Sign in with your provider's Xtream Codes login, or paste an M3U link.",
                         color = Palette.dim, fontSize = 14.sp,
                     )
                 }
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                TypeChip("Xtream Codes", type == SourceType.XTREAM, Modifier.focusRequester(firstFocus)) { type = SourceType.XTREAM }
-                TypeChip("M3U URL", type == SourceType.M3U) { type = SourceType.M3U }
+                TypeChip(if (store) "Server login" else "Xtream Codes", type == SourceType.XTREAM, Modifier.focusRequester(firstFocus)) { type = SourceType.XTREAM }
+                TypeChip(if (store) "Playlist link" else "M3U URL", type == SourceType.M3U) { type = SourceType.M3U }
             }
 
             if (type == SourceType.XTREAM) {
@@ -164,16 +169,20 @@ fun EditSourceScreen(sourceId: String?, canCancel: Boolean, onDone: () -> Unit) 
                     TvTextField("Password", password, { password = it }, Modifier.weight(1f), password = true)
                 }
             } else {
-                TvTextField("Playlist URL", m3uUrl, { m3uUrl = it }, placeholder = "http://provider.example/get.php?username=…&type=m3u_plus")
+                TvTextField("Playlist URL", m3uUrl, { m3uUrl = it },
+                    placeholder = if (store) "The playlist link from your account" else "http://provider.example/get.php?username=…&type=m3u_plus")
                 Text(
-                    "Tip: if this is a get.php link with a username and password, Tuner switches to Xtream mode automatically so you also get movies and series.",
+                    if (store) "Tip: if this link holds a username and password, Tuner signs in with them so you also get movies and series."
+                    else "Tip: if this is a get.php link with a username and password, Tuner switches to Xtream mode automatically so you also get movies and series.",
                     color = Palette.faint, fontSize = 12.sp, lineHeight = 16.sp,
                 )
             }
             TvTextField("Guide (XMLTV) URL · optional", epgUrl, { epgUrl = it }, placeholder = if (type == SourceType.XTREAM) "Uses the provider's guide by default" else "Uses the playlist's url-tvg if present")
-            TvTextField("Trending channels URL · optional", hotUrl, { hotUrl = it }, placeholder = "An M3U of featured channels, shown as a Trending row in the guide")
-            TvTextField("Name · optional", name, { name = it }, placeholder = "Living room IPTV", keyboardType = KeyboardType.Text)
-            TvTextField("User agent · optional", userAgent, { userAgent = it }, placeholder = "Default: VLC", keyboardType = KeyboardType.Text)
+            TvTextField("Trending channels URL · optional", hotUrl, { hotUrl = it },
+                placeholder = if (store) "A playlist link of featured channels, shown as a Trending row in the guide" else "An M3U of featured channels, shown as a Trending row in the guide")
+            TvTextField("Name · optional", name, { name = it }, placeholder = if (store) "Living room" else "Living room IPTV", keyboardType = KeyboardType.Text)
+            // The store edition keeps a saved user agent but doesn't offer the field.
+            if (!store) TvTextField("User agent · optional", userAgent, { userAgent = it }, placeholder = "Default: VLC", keyboardType = KeyboardType.Text)
 
             error?.let { Text(it, color = Palette.live, fontSize = 14.sp) }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {

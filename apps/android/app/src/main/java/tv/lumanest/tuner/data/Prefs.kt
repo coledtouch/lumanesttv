@@ -2,13 +2,17 @@ package tv.lumanest.tuner.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import tv.lumanest.tuner.Edition
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Small persistent store: sources, favorites, resume points and a few settings. */
-class Prefs(context: Context) {
+/**
+ * Small persistent store: sources, favorites, resume points and a few settings.
+ * [storeBuild] is the store edition (see [Edition]): adult content never unlocks and the free guide fallback starts off.
+ */
+class Prefs(context: Context, private val storeBuild: Boolean = Edition.STORE) {
     data class ChannelWatch(val count: Long, val updated: Long)
 
     private val sp: SharedPreferences = context.getSharedPreferences("tuner", Context.MODE_PRIVATE)
@@ -68,8 +72,9 @@ class Prefs(context: Context) {
     /**
      * Adult ("XXX") categories are hidden until unlocked with a 4-digit passcode (see [AdultFilter]). The passcode
      * is kept only as a salted SHA-256 hash; clearing the app's data is the way to reset a forgotten one.
+     * The store edition stays locked, even with an unlock saved by the lumanest.tv APK it replaced.
      */
-    private val _adultUnlocked = MutableStateFlow(sp.getBoolean("adultUnlocked", false) && hasAdultPasscode)
+    private val _adultUnlocked = MutableStateFlow(!storeBuild && sp.getBoolean("adultUnlocked", false) && hasAdultPasscode)
     val adultUnlocked: StateFlow<Boolean> = _adultUnlocked
 
     val hasAdultPasscode: Boolean
@@ -97,6 +102,7 @@ class Prefs(context: Context) {
 
     /** Unlocking needs a passcode check first (see Settings); locking never does. */
     fun setAdultUnlocked(on: Boolean) {
+        if (storeBuild) { _adultUnlocked.value = false; return }
         val value = on && hasAdultPasscode
         sp.edit().putBoolean("adultUnlocked", value).apply()
         _adultUnlocked.value = value
@@ -126,7 +132,12 @@ class Prefs(context: Context) {
 
     /** epgshare01 region codes used to fill guide gaps. Empty list turns the fallback off. */
     var freeEpgRegions: List<String>
-        get() = sp.getString("freeEpg", null)?.split(',')?.filter { it.isNotBlank() } ?: FreeEpg.defaults
+        get() {
+            val saved = sp.getString("freeEpg", null)?.split(',')?.filter { it.isNotBlank() } ?: return FreeEpg.defaults(storeBuild)
+            if (!storeBuild) return saved
+            val offered = FreeEpg.regions(storeBuild).mapTo(HashSet()) { it.code }
+            return saved.filter { it in offered }
+        }
         set(v) = sp.edit().putString("freeEpg", v.joinToString(",")).apply()
 
     var themeId: String?

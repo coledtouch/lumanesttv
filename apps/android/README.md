@@ -69,7 +69,7 @@ Multi View uses at most two concurrent live streams. It stops the ordinary guide
 
 ## Picture-in-Picture
 
-Select **Picture-in-Picture** in the full-screen player's actions to keep the video playing in Android's native floating window. Supported devices also enter PiP when you press Home during full-screen playback. The guide preview does not enter PiP. The native window provides play/pause and Android's expand/close controls; reopening Tuner restores the full-screen player and its controls. PiP requires device support and Android's per-app permission. Video keeps playing in PiP; closing the window stops or pauses playback according to the normal live/VOD background behavior.
+Select **Picture-in-Picture** in the full-screen player's actions to keep the video playing in Android's native floating window. Supported devices also enter PiP when you press Home during full-screen playback. The guide preview does not enter PiP. The native window provides play/pause and Android's expand/close controls; reopening Tuner restores the full-screen player and its controls. PiP requires device support and Android's per-app permission. Video keeps playing in PiP; closing the window stops or pauses playback according to the normal live/VOD background behavior. The store edition from Google Play and the Amazon Appstore doesn't offer picture-in-picture, because Google Play's TV rules don't allow it for video.
 
 ## Guide data
 
@@ -103,7 +103,7 @@ Themes (True Black, Midnight, Carbon, Ocean, Ember, Cable Blue, Daylight), multi
 
 Both build types use the LumaNest application ID `tv.lumanest.tuner`. Debug builds are always signed with the standard Android debug key, so a debug build cannot replace an installed release; uninstall the release first when testing a debug build on the same device. Install the signed release APK for normal use.
 
-Build from `apps/android` with JDK 17, the Android SDK (platform 35), and the checked-in Gradle 8.11.1 wrapper. Set `JAVA_HOME` to your JDK and `ANDROID_HOME` to your SDK. Alternatively, create an ignored `local.properties` in this folder containing `sdk.dir` for your SDK location. Do not commit local SDK paths.
+Build from `apps/android` with JDK 17, the Android SDK (platform 37), and the checked-in Gradle 9.8.1 wrapper. Set `JAVA_HOME` to your JDK and `ANDROID_HOME` to your SDK. Alternatively, create an ignored `local.properties` in this folder containing `sdk.dir` for your SDK location. Do not commit local SDK paths.
 
 ```powershell
 cd apps/android
@@ -113,6 +113,18 @@ cd apps/android
 On macOS or Linux, run `./gradlew assembleRelease` from the same folder. The wrapper downloads its pinned Gradle distribution when it is not cached; no global Gradle installation is required.
 
 Output: `app\build\outputs\apk\release\app-release.apk` when the external release key is available. Without that key, Gradle produces `app-release-unsigned.apk`; CI never invents a replacement release key.
+
+### Store edition (Google Play and Amazon Appstore)
+
+`-Pstore=true` builds the store edition, made for Google Play and Amazon Appstore review. It has the same application ID, version and release key as the APK above, so a Google Play install (Play App Signing with this key) and the lumanest.tv APK can update each other. That includes Google Play updating lumanest.tv installs on Google TV to the store edition, usually automatically, whenever Google Play has the higher `versionCode`: decide before the first upload whether that is wanted (see [Android store edition](../../docs/store-listings.md#android-store-edition-google-play-and-amazon)). Without the flag nothing changes. The store edition always hides adult categories (no unlock or passcode, and adult channel and title names are hidden too), offers no picture-in-picture, is offered only to TVs in the stores (`android.software.leanback` required; it can still be sideloaded onto a phone), uses neutral setup wording without the user-agent field, has a "Privacy policy" row in Settings, starts with the free guide fallback off, and keeps Trending to channels already in the lineup. See `Edition.kt`.
+
+```powershell
+.\gradlew.bat bundleRelease -Pstore=true    # Google Play: app\build\outputs\bundle\release\app-store-release.aab
+.\gradlew.bat assembleRelease -Pstore=true  # Amazon Appstore: app\build\outputs\apk\release\app-store-release.apk
+.\gradlew.bat assembleRelease               # lumanest.tv download, unchanged: app\build\outputs\apk\release\app-release.apk
+```
+
+Store files are signed with the same external key, or left unsigned (`-unsigned` in the APK name) without it. Each `assembleRelease` replaces the previous APK in `apk\release`, so copy one edition's APK before building the other. `bundleRelease` without `-Pstore=true` stops with an error, so the direct edition can't be uploaded to Google Play by mistake. On Google Play, use Play App Signing with this existing key (export it with PEPK), never a key Google generates; [`docs/store-listings.md`](../../docs/store-listings.md) has the full Google Play and Amazon checklists.
 
 Keep the existing release key and signing properties private. Gradle checks signing configuration in this order: `-PtunerSigningProperties=/absolute/path/keystore.properties`, the `keystore.properties` file in `TUNER_SIGNING_DIR`, then `signing/android/keystore.properties` at the repository root. The repository-root `signing` directory is ignored by Git. For signing material stored elsewhere, set `TUNER_SIGNING_DIR` to its directory before building. A relative `storeFile` resolves beside the properties file; the required properties are `storeFile`, `keyAlias`, `storePassword`, and `keyPassword`. Never put passwords on the command line or include signing files in source archives.
 

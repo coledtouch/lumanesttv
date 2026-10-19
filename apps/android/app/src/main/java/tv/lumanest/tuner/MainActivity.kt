@@ -59,7 +59,9 @@ class MainActivity : ComponentActivity() {
         setContent { TunerTheme { App() } }
     }
 
-    private fun supportsNativePip() = Build.VERSION.SDK_INT >= 26 && packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+    /** The store edition never offers picture-in-picture (Google Play's TV rules); its manifest doesn't declare it either. */
+    private fun supportsNativePip() = Edition.pictureInPictureAllowed() && Build.VERSION.SDK_INT >= 26 &&
+        packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
 
     fun updatePipSourceRect(rect: Rect) {
         if (rect.width() <= 0 || rect.height() <= 0) return

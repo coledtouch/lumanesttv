@@ -1,6 +1,7 @@
 package tv.lumanest.tuner.data
 
 import android.content.Context
+import tv.lumanest.tuner.Edition
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -48,7 +49,13 @@ object Repo {
     fun snapshotDiagnostics(): String = (snapshots.readDiagnostics + startupPhases).toSortedMap().entries.joinToString { "${it.key}=${it.value}" }
     private data class LoadRequest(val source: Source, val identity: CatalogSnapshots.Identity,
         val format: String, val zip: String, val generation: Long, val force: Boolean, val usOnly: Boolean = false,
-        val adultUnlocked: Boolean = false)
+        val adultUnlocked: Boolean = false, val storeBuild: Boolean = false)
+
+    /**
+     * The store edition's content rules (see [Edition]): adult content never unlocks and adult names are hidden too.
+     * Each load keeps the value it started with. Only tests change it, to load both editions in one build.
+     */
+    @Volatile internal var storeEdition: Boolean = Edition.STORE
 
     val liveCategories = MutableStateFlow<List<Category>>(emptyList())
     val channels = MutableStateFlow<List<Channel>>(emptyList())
@@ -85,11 +92,19 @@ object Repo {
         cacheRoot = File(context.cacheDir, "sources")
         snapshotRoot = File(context.filesDir, "catalogues")
         snapshots = CatalogSnapshots(snapshotRoot)
-        // Older versions had a torrent player: drop its saved addon link (it may hold a debrid key) and caches.
-        context.getSharedPreferences("torrentio", Context.MODE_PRIVATE).takeIf { it.all.isNotEmpty() }?.edit()?.clear()?.apply()
-        val stale = listOf("torrent-playback", "streaming-catalogs").map { File(context.cacheDir, it) }.filter { it.exists() }
+        val stale = clearTorrentPlayerData(context)
         if (stale.isNotEmpty()) scope.launch(Dispatchers.IO) { stale.forEach { it.deleteRecursively() } }
         if (prefs.activeId.value == null) prefs.sources.value.firstOrNull()?.let { prefs.setActive(it.id) }
+    }
+
+    /**
+     * Versions before 1.6.0 had a torrent player: drop its saved addon link (it may hold a debrid key) and return its
+     * cache folders, for deleting off the main thread. Both editions run this: a TV can update from such a lumanest.tv
+     * APK straight to the store edition (same package and key).
+     */
+    internal fun clearTorrentPlayerData(context: Context): List<File> {
+        context.getSharedPreferences("torrentio", Context.MODE_PRIVATE).takeIf { it.all.isNotEmpty() }?.edit()?.clear()?.apply()
+        return listOf("torrent-playback", "streaming-catalogs").map { File(context.cacheDir, it) }.filter { it.exists() }
     }
 
     fun programsFor(c: Channel): List<Program>? = epg[c.key]
@@ -107,7 +122,8 @@ object Repo {
         val zip = prefs.localZip.value
         val usOnly = prefs.usOnly.value
         val adultUnlocked = prefs.adultUnlocked.value
-        val identity = src?.let { CatalogSnapshots.identity(it, format, zip, usOnly, adultUnlocked) }
+        val storeBuild = storeEdition
+        val identity = src?.let { CatalogSnapshots.identity(it, format, zip, usOnly, adultUnlocked, storeBuild) }
         generation++
         startupPhases.clear(); snapshots.readDiagnostics.clear()
         // A refresh keeps the usable lineup. An account/format/market change cannot expose it.
@@ -120,7 +136,7 @@ object Repo {
         }
         catalogueIdentity = identity
         if (src == null || identity == null) { job = null; return }
-        val request = LoadRequest(src, identity, format, zip, generation, force, usOnly, adultUnlocked)
+        val request = LoadRequest(src, identity, format, zip, generation, force, usOnly, adultUnlocked, storeBuild)
         job = scope.launch {
             if (!current(request)) return@launch
             val dir = withContext(Dispatchers.IO) {
@@ -154,7 +170,7 @@ object Repo {
 
     private fun current(request: LoadRequest) = generation == request.generation && activeSource == request.source &&
         prefs.liveFormat == request.format && prefs.localZip.value == request.zip && prefs.usOnly.value == request.usOnly &&
-        prefs.adultUnlocked.value == request.adultUnlocked
+        prefs.adultUnlocked.value == request.adultUnlocked && storeEdition == request.storeBuild
 
     private inline fun commit(request: LoadRequest, action: () -> Unit) = synchronized(this) {
         if (current(request)) action()
@@ -243,7 +259,7 @@ object Repo {
                 val listFile = File(dir, "live.json"); val categoriesFile = File(dir, "live_cats.json")
                 var availableAt = cached?.storedAt
                 if (cached == null && !request.force && cachedFile(listFile) != null && cachedFile(categoriesFile) != null) {
-                    publishLive(ContentPolicy.live(x.parseLive(listFile, request.format), x.parseCategories(categoriesFile), request.usOnly, request.adultUnlocked), request, storedAt(listFile, categoriesFile))
+                    publishLive(ContentPolicy.live(x.parseLive(listFile, request.format), x.parseCategories(categoriesFile), request.usOnly, request.adultUnlocked, request.storeBuild), request, storedAt(listFile, categoriesFile))
                     liveAvailable.complete(Unit)
                     availableAt = storedAt(listFile, categoriesFile)
                     if (fresh(storedAt(listFile, categoriesFile), LIVE_AGE)) return@launch
@@ -255,7 +271,7 @@ object Repo {
                     val cats = catsF.await(); val list = listF.await()
                     coroutineContext.ensureActive()
                     if (storedAt(list, cats) != availableAt || before != (list.lastModified() to cats.lastModified()))
-                        publishLive(ContentPolicy.live(x.parseLive(list, request.format), x.parseCategories(cats), request.usOnly, request.adultUnlocked), request, storedAt(list, cats))
+                        publishLive(ContentPolicy.live(x.parseLive(list, request.format), x.parseCategories(cats), request.usOnly, request.adultUnlocked, request.storeBuild), request, storedAt(list, cats))
                     liveAvailable.complete(Unit)
                 }
                 commit(request) { liveStatus.value = LoadStatus.Ready }
@@ -287,7 +303,7 @@ object Repo {
                 val listFile = File(dir, "vod.json"); val categoriesFile = File(dir, "vod_cats.json")
                 fun publish(list: File, categories: File) {
                     if (!current(request)) return
-                    val catalogue = ContentPolicy.movies(x.parseMovies(list), x.parseCategories(categories), request.adultUnlocked)
+                    val catalogue = ContentPolicy.movies(x.parseMovies(list), x.parseCategories(categories), request.adultUnlocked, request.storeBuild)
                     val cleaned = Cleanup.movies(catalogue.items)
                     commit(request) { movieCategories.value = catalogue.categories; movies.value = cleaned; vodStatus.value = LoadStatus.Ready }
                     saveSnapshot(request) { snapshots.writeMovies(request.identity, ContentPolicy.Catalogue(cleaned, catalogue.categories), storedAt(list, categories)) }
@@ -321,7 +337,7 @@ object Repo {
                 val listFile = File(dir, "series.json"); val categoriesFile = File(dir, "series_cats.json")
                 fun publish(list: File, categories: File) {
                     if (!current(request)) return
-                    val catalogue = ContentPolicy.series(x.parseSeries(list), x.parseCategories(categories), request.adultUnlocked)
+                    val catalogue = ContentPolicy.series(x.parseSeries(list), x.parseCategories(categories), request.adultUnlocked, request.storeBuild)
                     commit(request) { seriesCategories.value = catalogue.categories; series.value = catalogue.items; seriesStatus.value = LoadStatus.Ready }
                     saveSnapshot(request) { snapshots.writeSeries(request.identity, catalogue, storedAt(list, categories)) }
                 }
@@ -362,9 +378,9 @@ object Repo {
                 fun publish(file: File) {
                     if (!current(request)) return
                     val r = M3u.parse(file)
-                    publishLive(ContentPolicy.live(r.channels, r.liveCategories, request.usOnly, request.adultUnlocked), request, file.lastModified())
+                    publishLive(ContentPolicy.live(r.channels, r.liveCategories, request.usOnly, request.adultUnlocked, request.storeBuild), request, file.lastModified())
                     liveAvailable.complete(Unit)
-                    val vod = ContentPolicy.movies(r.movies, r.movieCategories, request.adultUnlocked)
+                    val vod = ContentPolicy.movies(r.movies, r.movieCategories, request.adultUnlocked, request.storeBuild)
                     val cleaned = Cleanup.movies(vod.items)
                     commit(request) { movieCategories.value = vod.categories; movies.value = cleaned; vodStatus.value = LoadStatus.Ready }
                     saveSnapshot(request) { snapshots.writeMovies(request.identity, ContentPolicy.Catalogue(cleaned, vod.categories), file.lastModified()) }
@@ -446,7 +462,9 @@ object Repo {
     /**
      * Loads the optional trending M3U and maps each entry onto a channel we already have (same
      * stream id), so favorites, numbers and guide data carry over. Event feeds that are only in
-     * the trending list get appended as extra channels.
+     * the trending list get appended as extra channels, except in the store edition: there an entry
+     * missing from the lineup may be a channel the adult filter hid, listed again under a neutral
+     * name and group, so only lineup channels are kept.
      */
     private suspend fun loadTrending(request: LoadRequest, dir: File) {
         val src = request.source
@@ -460,7 +478,7 @@ object Repo {
             val playlist = M3u.parse(f)
             val now = System.currentTimeMillis()
             val dead = prefs.deadChannels(now)
-            val parsed = LocalLineup.filterCatalogue(ContentPolicy.live(playlist.channels, playlist.liveCategories, request.usOnly, request.adultUnlocked), request.zip).items
+            val parsed = LocalLineup.filterCatalogue(ContentPolicy.live(playlist.channels, playlist.liveCategories, request.usOnly, request.adultUnlocked, request.storeBuild), request.zip).items
                 .filterNot { Cleanup.isIdleEvent(it.name) || Cleanup.isOffAir(it.name, now) }
                 .sortedBy { it.key.substringAfterLast(':').toIntOrNull() ?: 0 }
             fun sid(url: String) = url.substringBefore('?').substringAfterLast('/').substringBefore('.')
@@ -470,9 +488,9 @@ object Repo {
             channels.value.forEach { c -> known[c.streamId ?: sid(c.url)] = c }
             var extra = (channels.value.maxOfOrNull { it.number } ?: 0) + 1
             if (!current(request)) return
-            val result = parsed.map { t ->
-                known[sid(t.url)] ?: t.copy(key = "h:" + sid(t.url), name = Cleanup.displayName(t.name), number = extra++,
-                    categoryId = "__hot", categoryIds = listOf("__hot"))
+            val result = parsed.mapNotNull { t ->
+                known[sid(t.url)] ?: if (request.storeBuild) null else t.copy(key = "h:" + sid(t.url), name = Cleanup.displayName(t.name),
+                    number = extra++, categoryId = "__hot", categoryIds = listOf("__hot"))
             }.distinctBy { it.key }.filterNot { it.key in dead }
             commit(request) { trending.value = result }
             saveSnapshot(request) { snapshots.writeTrending(request.identity, result, f.lastModified()) }

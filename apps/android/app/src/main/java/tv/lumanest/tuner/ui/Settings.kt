@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import tv.lumanest.tuner.Edition
 import tv.lumanest.tuner.data.FreeEpg
 import tv.lumanest.tuner.data.LoadStatus
 import tv.lumanest.tuner.data.LocalLineup
@@ -68,8 +69,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** [store] is the store edition (see [Edition]): no adult content section, neutral wording and the privacy notice. */
 @Composable
-fun SettingsScreen(state: AppState) {
+fun SettingsScreen(state: AppState, store: Boolean = Edition.STORE) {
     val scope = rememberCoroutineScope()
     val windowFocused = LocalWindowInfo.current.isWindowFocused
     val sources by Repo.prefs.sources.collectAsState()
@@ -131,22 +133,22 @@ fun SettingsScreen(state: AppState) {
                 val active = s.id == activeId
                 SettingRow(
                     title = s.name,
-                    subtitle = (if (s.type == SourceType.XTREAM) "Xtream Codes · " + s.server.removePrefix("http://").removePrefix("https://")
-                    else "M3U · " + s.m3uUrl.take(60)),
+                    subtitle = (if (s.type == SourceType.XTREAM) (if (store) "Server login · " else "Xtream Codes · ") + s.server.removePrefix("http://").removePrefix("https://")
+                    else (if (store) "Playlist link · " else "M3U · ") + s.m3uUrl.take(60)),
                     trailing = if (active) "Active" else null,
                     modifier = if (s == sources.first()) Modifier.focusRequester(first) else Modifier,
                     onClick = { sheetFor = s },
                 )
             }
             item {
-                SettingRow("Add a playlist", "Xtream Codes login or M3U link", icon = true,
+                SettingRow("Add a playlist", if (store) "Pair with your phone, or enter a server login" else "Xtream Codes login or M3U link", icon = true,
                     modifier = if (sources.isEmpty()) Modifier.focusRequester(first) else Modifier,
                     onClick = { state.push(Screen.EditSource(null)) })
             }
 
             header("Remote")
             item(key = "remote-help") {
-                SettingRow("onn 4K remote", "Arrows, OK and Back: see all Tuner controls", modifier = Modifier.focusRequester(remoteHelpFocus),
+                SettingRow(remoteHelpTitle(store), "Arrows, OK and Back: see all Tuner controls", modifier = Modifier.focusRequester(remoteHelpFocus),
                     onClick = { remoteHelp = true })
             }
 
@@ -249,7 +251,7 @@ fun SettingsScreen(state: AppState) {
             }
             item(key = "free$rev") {
                 val regions = Repo.prefs.freeEpgRegions
-                val names = FreeEpg.regions.filter { it.code in regions }.map { it.name }
+                val names = FreeEpg.regions(store).filter { it.code in regions }.map { it.name }
                 SettingRow(
                     "Free guide fallback",
                     if (names.isEmpty()) "Off · only your provider's guide is used"
@@ -259,33 +261,36 @@ fun SettingsScreen(state: AppState) {
                 )
             }
 
-            header("Adult content")
-            item(key = "adult") {
-                SettingRow(
-                    "Adult content",
-                    if (adultUnlocked) "XXX and adult categories are shown. Press OK to hide them again."
-                    else "XXX and adult categories are hidden. Press OK and enter your passcode to show them.",
-                    trailing = if (adultUnlocked) "Unlocked" else "Locked",
-                    modifier = Modifier.focusRequester(adultFocus),
-                    onClick = {
-                        if (adultUnlocked) {
-                            Repo.prefs.setAdultUnlocked(false)
-                            // Nothing adult keeps playing behind the guide once it is locked again.
-                            PlayerHolder.stop()
-                            Repo.load()
-                            Toasts.show("Adult content hidden")
-                        } else passcodeDialog = PasscodeMode.UNLOCK
-                    },
-                )
-            }
-            item(key = "adult-pin$rev") {
-                val hasPasscode = Repo.prefs.hasAdultPasscode
-                SettingRow(
-                    if (hasPasscode) "Change passcode" else "Adult content passcode",
-                    if (hasPasscode) "Needs the current passcode. Forgot it? Clear the app's data in your TV's settings."
-                    else "No passcode yet. You'll create one the first time you unlock adult content.",
-                    onClick = { if (hasPasscode) passcodeDialog = PasscodeMode.CHANGE else passcodeDialog = PasscodeMode.UNLOCK },
-                )
+            // The store edition has no adult content to unlock: no header, rows, passcode or "XXX" text.
+            if (!store) {
+                header("Adult content")
+                item(key = "adult") {
+                    SettingRow(
+                        "Adult content",
+                        if (adultUnlocked) "XXX and adult categories are shown. Press OK to hide them again."
+                        else "XXX and adult categories are hidden. Press OK and enter your passcode to show them.",
+                        trailing = if (adultUnlocked) "Unlocked" else "Locked",
+                        modifier = Modifier.focusRequester(adultFocus),
+                        onClick = {
+                            if (adultUnlocked) {
+                                Repo.prefs.setAdultUnlocked(false)
+                                // Nothing adult keeps playing behind the guide once it is locked again.
+                                PlayerHolder.stop()
+                                Repo.load()
+                                Toasts.show("Adult content hidden")
+                            } else passcodeDialog = PasscodeMode.UNLOCK
+                        },
+                    )
+                }
+                item(key = "adult-pin$rev") {
+                    val hasPasscode = Repo.prefs.hasAdultPasscode
+                    SettingRow(
+                        if (hasPasscode) "Change passcode" else "Adult content passcode",
+                        if (hasPasscode) "Needs the current passcode. Forgot it? Clear the app's data in your TV's settings."
+                        else "No passcode yet. You'll create one the first time you unlock adult content.",
+                        onClick = { if (hasPasscode) passcodeDialog = PasscodeMode.CHANGE else passcodeDialog = PasscodeMode.UNLOCK },
+                    )
+                }
             }
 
             header("Data")
@@ -320,6 +325,15 @@ fun SettingsScreen(state: AppState) {
                     onClick = { Repo.restoreHiddenChannels(); Toasts.show("Hidden channels restored") },
                 )
             }
+            // A focusable row, so the D-pad brings it into view like every other row. Selecting it only says where to
+            // read the policy: TV apps on Google Play must not open a web browser.
+            if (store) {
+                header("About")
+                item(key = "privacy") {
+                    SettingRow("Privacy policy", Edition.PRIVACY_URL,
+                        onClick = { Toasts.show("Read it on your phone or computer at ${Edition.PRIVACY_URL}") })
+                }
+            }
             item {
                 Text(
                     "Tuner by LumaNest TV ${tv.lumanest.tuner.BuildConfig.VERSION_NAME}  ·  Hold OK on a guide channel to favorite it  ·  Number keys tune directly",
@@ -328,7 +342,7 @@ fun SettingsScreen(state: AppState) {
             }
         }
 
-        passcodeDialog?.let { mode ->
+        passcodeDialog?.takeIf { !store }?.let { mode ->
             PasscodeDialog(
                 mode,
                 onDone = {
@@ -342,7 +356,7 @@ fun SettingsScreen(state: AppState) {
                 onClose = { passcodeDialog = null; rev++; restoreAdult = true },
             )
         }
-        if (remoteHelp) OnnRemoteHelp(onClose = { remoteHelp = false; restoreRemoteHelp = true })
+        if (remoteHelp) OnnRemoteHelp(store, onClose = { remoteHelp = false; restoreRemoteHelp = true })
         if (localMarketSheet) ActionSheet(
             title = "Local stations",
             actions = listOf(
@@ -360,7 +374,7 @@ fun SettingsScreen(state: AppState) {
             onClose = { localMarketSheet = false; restoreLocalMarket = true },
         )
         if (themeSheet) ThemeSheet(onClose = { themeSheet = false; restoreTheme = true })
-        if (regionSheet) RegionSheet(onClose = { changed ->
+        if (regionSheet) RegionSheet(store, onClose = { changed ->
             regionSheet = false; rev++; state.restoreFocus = true
             if (changed) { Repo.reloadFreeGuides(); Toasts.show("Looking for guide data in the new regions") }
         })
@@ -397,14 +411,26 @@ fun SettingsScreen(state: AppState) {
     }
 }
 
+/** The onn 4K remote ships with Google TV; the store edition (also on Fire TV) describes any TV remote. */
+private fun remoteHelpTitle(store: Boolean) = if (store) "Remote control" else "onn 4K remote"
+
 @Composable
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
-private fun OnnRemoteHelp(onClose: () -> Unit) {
+private fun OnnRemoteHelp(store: Boolean, onClose: () -> Unit) {
     val done = remember { FocusRequester() }
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    val controls = remember {
-        listOf(
+    val controls = remember(store) {
+        if (store) listOf(
+            "Arrows" to "Move through tabs, channels and titles.",
+            "OK / Select" to "Open the selected item. While a movie or episode plays, pause or resume.",
+            "Back" to "Close details or player controls. From a library, return to the top tabs.",
+            "Channel + / −" to "Change channels while watching live TV, on remotes that have them.",
+            "Multi View" to "Choose two channels and Watch both. OK on a video selects its audio; Channel + / − changes the focused channel.",
+            "Hold OK" to "While watching live TV, add or remove the channel from Favorites.",
+            "Subtitles" to "While watching live TV, press Right for Subtitles and Audio. During a movie or episode, press Down. Settings > Subtitles turns them on for every stream.",
+            "Home" to "Return to your TV's home screen. Volume buttons keep their usual functions.",
+        ) else listOf(
             "Arrows" to "Move through tabs, channels and titles.",
             "OK / Enter" to "Open the selected item. While a movie or episode plays, pause or resume.",
             "Back" to "Close details or player controls. From a library, return to the top tabs.",
@@ -444,7 +470,7 @@ private fun OnnRemoteHelp(onClose: () -> Unit) {
                         }
                     },
             ) {
-                Text("onn 4K remote", color = Palette.text, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text(remoteHelpTitle(store), color = Palette.text, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                 Text("Use the arrows and the center OK button.", color = Palette.dim, fontSize = 13.sp, modifier = Modifier.padding(top = 5.dp, bottom = 12.dp))
                 LazyColumn(state = list, modifier = Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp)) {
                     items(controls, key = { it.first }) { (key, action) ->
@@ -595,11 +621,12 @@ internal fun ThemeSheet(onClose: () -> Unit) {
 }
 
 @Composable
-private fun RegionSheet(onClose: (changed: Boolean) -> Unit) {
+private fun RegionSheet(store: Boolean, onClose: (changed: Boolean) -> Unit) {
+    val offered = remember(store) { FreeEpg.regions(store) }
     val initial = remember { Repo.prefs.freeEpgRegions.toSet() }
     var selected by remember { mutableStateOf(initial) }
     val first = remember { FocusRequester() }
-    fun done() { Repo.prefs.freeEpgRegions = FreeEpg.regions.map { it.code }.filter { it in selected }; onClose(selected != initial) }
+    fun done() { Repo.prefs.freeEpgRegions = offered.map { it.code }.filter { it in selected }; onClose(selected != initial) }
     BackHandler { done() }
     LaunchedEffect(Unit) { delay(40); runCatching { first.requestFocus() } }
     Box(Modifier.fillMaxSize().dimBackground(0.6f), contentAlignment = Alignment.CenterEnd) {
@@ -613,7 +640,7 @@ private fun RegionSheet(onClose: (changed: Boolean) -> Unit) {
                 item {
                     PillButton("Done", { done() }, Modifier.focusRequester(first).padding(bottom = 6.dp), primary = true)
                 }
-                items(FreeEpg.regions, key = { it.code }) { r ->
+                items(offered, key = { it.code }) { r ->
                     val on = r.code in selected
                     FocusBox(
                         onClick = { selected = if (on) selected - r.code else selected + r.code },

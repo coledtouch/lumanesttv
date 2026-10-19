@@ -4,10 +4,12 @@ IPTV player for Android TV / Google TV. Kotlin, Jetpack Compose (no tv-material)
 
 ## Build and test (PowerShell, from this folder)
 
-Use JDK 17 and Android SDK platform 35. Set `JAVA_HOME` and `ANDROID_HOME`, or keep the SDK path in ignored `local.properties`. The checked-in wrapper uses Gradle 8.11.1.
+Use JDK 17 and Android SDK platform 37. Set `JAVA_HOME` and `ANDROID_HOME`, or keep the SDK path in ignored `local.properties`. The checked-in wrapper uses Gradle 9.8.1.
 
     .\gradlew.bat assembleRelease        # app\build\outputs\apk\release\app-release.apk (release-key signed when the external key is available)
     .\gradlew.bat testDebugUnitTest      # parsers, name matching, Robolectric screenshots -> app\build\screens
+    .\gradlew.bat bundleRelease -Pstore=true    # store edition for Google Play -> app\build\outputs\bundle\release\app-store-release.aab
+    .\gradlew.bat assembleRelease -Pstore=true  # store edition for Amazon -> app\build\outputs\apk\release\app-store-release.apk
 
 Signing configuration is private. `-PtunerSigningProperties` takes precedence over `TUNER_SIGNING_DIR`, followed by the ignored repository-root `signing/android/keystore.properties`. Without the existing release key, release builds remain unsigned. Never create a replacement release key or commit signing properties, certificates, or SDK paths.
 
@@ -38,3 +40,5 @@ The connect port changes if wireless debugging is toggled; `adb mdns services` l
 - Clickable is only focusable in keyboard input mode. Tests force `InputMode.Keyboard` to match a TV.
 - Example provider: Xtream API at https://mybunny.tv, streams served from turbobunny.net (about 17k live, 17.6k movies, 3.8k series).
 - No em dashes in user-facing text or docs.
+- targetSdk stays 35. Google Play asks TV-only apps (the store edition) for API 34 only, and targeting 36 would let Android 16 ignore `screenOrientation="landscape"` for the lumanest.tv APK on tablets and Chromebooks. Robolectric 4.14 also stops at API 35.
+- Two editions, one codebase: `Edition.STORE` (`-Pstore=true`) is the Google Play / Amazon build. Keep the direct (lumanest.tv) edition's behaviour unchanged when adding store-only rules; screens and `Prefs` take a `store`/`storeBuild` parameter defaulting to `Edition.STORE`, and `Repo.storeEdition` switches the library rules, so tests cover both (`StoreEditionTest`, `StoreEditionScreensTest`, `StoreEditionLibraryTest`). CI also runs those three classes with `-Pstore=true`, so they must pass explicit edition values (the manifest test reads `Edition.STORE` on purpose); other tests assume the direct edition.
