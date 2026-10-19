@@ -53,8 +53,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import tv.lumanest.tuner.data.BrowseTitle
 import tv.lumanest.tuner.data.PlayRequest
 import tv.lumanest.tuner.data.Repo
+import tv.lumanest.tuner.data.VodType
 import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -82,6 +84,8 @@ fun SearchScreen(state: AppState) {
     val favorites by Repo.prefs.favorites.collectAsState()
     val sourceId by Repo.prefs.activeId.collectAsState()
     val epgVersion by Repo.epgVersion.collectAsState()
+    val vodUsOnly by Repo.prefs.vodUsOnly.collectAsState()
+    val browse by Repo.browse.collectAsState()
     val now = rememberNow(30_000)
     val live = remember(channels, trending) { (channels + trending).distinctBy { it.key } }
     val searchList = state.rowState("search-results")
@@ -141,7 +145,7 @@ fun SearchScreen(state: AppState) {
         scope.launch { requestAttachedFocus(fieldFocus) }
     }
 
-    LaunchedEffect(normalized, sourceId, live, movies, series, epgVersion, now) {
+    LaunchedEffect(normalized, sourceId, live, movies, series, epgVersion, now, vodUsOnly, browse) {
         val catalogueSource = sourceId
         val q = query.trim().lowercase(Locale.ROOT)
         if (!ready) { sections = emptyList(); resultQuery = normalized; resultSource = sourceId; searching = false; return@LaunchedEffect }
@@ -171,13 +175,16 @@ fun SearchScreen(state: AppState) {
                     }
                 }
             }
-            val mv = movies.asSequence().filter { it.name.lowercase(Locale.ROOT).contains(q) }.take(40).map { m ->
+            // Movies & Series: USA only applies here as on Home and Discover, once the browse index knows each title.
+            val catalog = browse?.takeIf { vodUsOnly && it.source == Repo.activeSource && it.movies === movies && it.series === series }?.catalog
+            fun shown(key: String) = catalog?.get(key)?.us != false
+            val mv = movies.asSequence().filter { it.name.lowercase(Locale.ROOT).contains(q) && shown(BrowseTitle.movieKey(it.id)) }.take(40).map { m ->
                 Hit("$catalogueSource:movie:${m.id}", m.name, listOfNotNull("Movie", contentRating(m.rating)?.let { "★ $it" }).joinToString(" · "), m.poster, false) {
                     if (Repo.prefs.activeId.value == catalogueSource && Repo.movies.value.any { it.id == m.id && it.url == m.url }) state.push(Screen.MovieDetail(m))
                     else Toasts.show("This movie changed. Search again.")
                 }
             }.toList()
-            val se = series.asSequence().filter { it.name.lowercase(Locale.ROOT).contains(q) }.take(40).map { s ->
+            val se = series.asSequence().filter { it.name.lowercase(Locale.ROOT).contains(q) && shown(BrowseTitle.seriesKey(it.id)) }.take(40).map { s ->
                 Hit("$catalogueSource:series:${s.id}", s.name, listOfNotNull("Series", s.year).joinToString(" · "), s.cover, false) {
                     if (Repo.prefs.activeId.value == catalogueSource && Repo.series.value.any { it.id == s.id }) state.push(Screen.SeriesDetail(s))
                     else Toasts.show("This series changed. Search again.")
@@ -230,8 +237,8 @@ fun SearchScreen(state: AppState) {
                     color = Palette.dim, fontSize = 13.sp, textAlign = TextAlign.Center, lineHeight = 19.sp, modifier = Modifier.padding(top = 8.dp))
                 Row(Modifier.padding(top = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     PillButton("Live TV", { state.tab = Tab.GUIDE; state.restoreFocus = true }, icon = { Icon(Icons.Rounded.Tv, null, tint = it, modifier = Modifier.size(18.dp)) })
-                    PillButton("Movies", { state.tab = Tab.MOVIES; state.restoreFocus = true }, icon = { Icon(Icons.Rounded.Movie, null, tint = it, modifier = Modifier.size(18.dp)) })
-                    PillButton("Series", { state.tab = Tab.SERIES; state.restoreFocus = true }, icon = { Icon(Icons.Rounded.Tv, null, tint = it, modifier = Modifier.size(18.dp)) })
+                    PillButton("Movies", { state.openDiscover(VodType.MOVIES) }, icon = { Icon(Icons.Rounded.Movie, null, tint = it, modifier = Modifier.size(18.dp)) })
+                    PillButton("Series", { state.openDiscover(VodType.SERIES) }, icon = { Icon(Icons.Rounded.Tv, null, tint = it, modifier = Modifier.size(18.dp)) })
                 }
             }
             visibleSections.isEmpty() -> EmptyMessage("No matches for “${query.trim().take(45)}”", "Try a shorter title, another spelling or a channel number.")

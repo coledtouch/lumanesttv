@@ -10,6 +10,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -23,6 +24,12 @@ import java.util.Collections
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * The browse index (see [BrowseCatalog]) for one playlist's movies and series. [source] is the playlist it was built
+ * for: screens ignore an index built for another one, so a switched account never shows the previous library.
+ */
+class BrowseIndex(val catalog: BrowseCatalog, val source: Source?, val movies: List<Movie>, val series: List<Series>, val rows: CatalogRows)
 
 sealed interface LoadStatus {
     data object Idle : LoadStatus
@@ -64,6 +71,20 @@ object Repo {
     val seriesCategories = MutableStateFlow<List<Category>>(emptyList())
     val series = MutableStateFlow<List<Series>>(emptyList())
 
+    /** The popularity lists from lumanest.tv (docs/browse.md); [CatalogRows.NONE] until loaded, or without TMDB. */
+    val catalogRows = MutableStateFlow(CatalogRows.NONE)
+
+    /**
+     * Home, Discover and Library read this index. It is rebuilt off the main thread whenever the movies, series,
+     * their categories or [catalogRows] change, and stays null until the first build finishes.
+     */
+    val browse = MutableStateFlow<BrowseIndex?>(null)
+
+    /** Off in Robolectric tests, so loading a playlist never calls the live site. */
+    internal var catalogRowsEnabled = android.os.Build.FINGERPRINT != "robolectric"
+    private var catalogRowsClient: CatalogRowsClient? = null
+    private var catalogRowsJob: Job? = null
+
     /** Channels from the source's optional "trending" playlist, in the provider's order. */
     val trending = MutableStateFlow<List<Channel>>(emptyList())
 
@@ -95,7 +116,85 @@ object Repo {
         val stale = clearTorrentPlayerData(context)
         if (stale.isNotEmpty()) scope.launch(Dispatchers.IO) { stale.forEach { it.deleteRecursively() } }
         if (prefs.activeId.value == null) prefs.sources.value.firstOrNull()?.let { prefs.setActive(it.id) }
+        catalogRowsClient = CatalogRowsClient(File(cacheRoot, "catalog/rows-v1.json"))
+        // A saved copy of the lists is usable at once, whatever its age; load() refreshes it when it is old.
+        scope.launch(Dispatchers.IO) {
+            runCatching { catalogRowsClient?.cached() }.getOrNull()?.let { saved ->
+                if (catalogRows.value === CatalogRows.NONE) catalogRows.value = saved.rows
+            }
+        }
+        startBrowseIndex()
     }
+
+    /** Reuses the movie or series index when only the other one changed. */
+    private val browseBuilder = BrowseBuilder()
+
+    private class BrowseInputs(val movies: List<Movie>, val movieCategories: List<Category>, val series: List<Series>,
+                               val seriesCategories: List<Category>, val rows: CatalogRows, val source: Source?)
+
+    /**
+     * Rebuilds [browse] whenever the library or the lists change. A newer library cancels an older build without
+     * waiting for it, so a slow build for a previous playlist never holds up the current one, and only a build whose
+     * inputs are still current is published.
+     */
+    private fun startBrowseIndex() {
+        val library = combine(movies, movieCategories, series, seriesCategories, catalogRows) { m, mc, s, sc, r -> listOf(m, mc, s, sc, r) }
+        scope.launch {
+            var building: Job? = null
+            combine(library, prefs.activeId, prefs.sources) { values, _, _ ->
+                @Suppress("UNCHECKED_CAST")
+                BrowseInputs(values[0] as List<Movie>, values[1] as List<Category>, values[2] as List<Series>, values[3] as List<Category>,
+                    values[4] as CatalogRows, activeSource)
+            }.collect { inputs ->
+                building?.cancel()
+                building = launch(Dispatchers.Default) {
+                    val job = this.coroutineContext[Job]!!
+                    // A cancelled build stops here; a failed one publishes an empty index, so the screens leave "Preparing".
+                    val built = try {
+                        browseBuilder.buildOrEmpty(inputs.movies, inputs.movieCategories, inputs.series, inputs.seriesCategories, inputs.rows,
+                            cancelled = { !job.isActive }, onError = { android.util.Log.e("Tuner", "Building the movies and series index failed", it) })
+                    } catch (_: kotlinx.coroutines.CancellationException) { return@launch }
+                    synchronized(this@Repo) {
+                        if (job.isActive && movies.value === inputs.movies && series.value === inputs.series && movieCategories.value === inputs.movieCategories &&
+                            seriesCategories.value === inputs.seriesCategories && catalogRows.value === inputs.rows && activeSource == inputs.source)
+                            browse.value = BrowseIndex(built, inputs.source, inputs.movies, inputs.series, inputs.rows)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Fetches the popularity lists (12 hour cache, stale copy on failure) without holding up the library. A failed
+     * request is tried again after [CatalogRowsClient.retryDelay] (5 minutes, backing off to an hour) a few times, and
+     * again each time the app comes back to the foreground ([refreshCatalogRows]).
+     */
+    private fun loadCatalogRows(force: Boolean) {
+        val client = catalogRowsClient ?: return
+        if (!catalogRowsEnabled || (catalogRowsJob?.isActive == true && !force && !catalogRowsWaiting)) return
+        catalogRowsJob?.cancel()
+        catalogRowsWaiting = false
+        catalogRowsJob = scope.launch(Dispatchers.IO) {
+            var refresh = force
+            for (attempt in 0..CATALOG_ROWS_RETRIES) {
+                val loaded = runCatching { client.refresh(refresh) }.getOrNull()
+                // The client hands back the same object for an unchanged copy, so nothing is rebuilt for it.
+                loaded?.rows?.let { if (it !== catalogRows.value) catalogRows.value = it }
+                if (loaded?.ok == true || attempt == CATALOG_ROWS_RETRIES) break
+                catalogRowsWaiting = true
+                try { kotlinx.coroutines.delay(CatalogRowsClient.retryDelay(attempt)) } finally { catalogRowsWaiting = false }
+                refresh = false
+            }
+        }
+    }
+
+    /** The app came back to the foreground: fetch the lists if the saved copy is old or the last request failed. */
+    fun refreshCatalogRows() {
+        if (::prefs.isInitialized && activeSource != null) loadCatalogRows(false)
+    }
+
+    @Volatile private var catalogRowsWaiting = false
+    private const val CATALOG_ROWS_RETRIES = 6
 
     /**
      * Versions before 1.6.0 had a torrent player: drop its saved addon link (it may hold a debrid key) and return its
@@ -136,6 +235,7 @@ object Repo {
         }
         catalogueIdentity = identity
         if (src == null || identity == null) { job = null; return }
+        loadCatalogRows(force)
         val request = LoadRequest(src, identity, format, zip, generation, force, usOnly, adultUnlocked, storeBuild)
         job = scope.launch {
             if (!current(request)) return@launch
@@ -199,6 +299,8 @@ object Repo {
     }
 
     private fun cachedFile(file: File) = file.takeIf { it.isFile && it.length() > 0 }
+    /** Categories "Movies & Series: USA only" excludes: uploads listed only there stay apart from the same film elsewhere. */
+    private fun foreignCategoryIds(categories: List<Category>) = categories.filter { VodRegion.isForeignCategory(it.name) }.mapTo(HashSet()) { it.id }
     private fun storedAt(vararg files: File) = files.minOf { it.lastModified() }.coerceAtLeast(1)
     private fun fresh(at: Long, age: Long) = System.currentTimeMillis() - at < age
     private fun saveSnapshot(request: LoadRequest, write: () -> Unit) {
@@ -304,7 +406,7 @@ object Repo {
                 fun publish(list: File, categories: File) {
                     if (!current(request)) return
                     val catalogue = ContentPolicy.movies(x.parseMovies(list), x.parseCategories(categories), request.adultUnlocked, request.storeBuild)
-                    val cleaned = Cleanup.movies(catalogue.items)
+                    val cleaned = Cleanup.movies(catalogue.items, foreignCategoryIds(catalogue.categories))
                     commit(request) { movieCategories.value = catalogue.categories; movies.value = cleaned; vodStatus.value = LoadStatus.Ready }
                     saveSnapshot(request) { snapshots.writeMovies(request.identity, ContentPolicy.Catalogue(cleaned, catalogue.categories), storedAt(list, categories)) }
                 }
@@ -381,7 +483,7 @@ object Repo {
                     publishLive(ContentPolicy.live(r.channels, r.liveCategories, request.usOnly, request.adultUnlocked, request.storeBuild), request, file.lastModified())
                     liveAvailable.complete(Unit)
                     val vod = ContentPolicy.movies(r.movies, r.movieCategories, request.adultUnlocked, request.storeBuild)
-                    val cleaned = Cleanup.movies(vod.items)
+                    val cleaned = Cleanup.movies(vod.items, foreignCategoryIds(vod.categories))
                     commit(request) { movieCategories.value = vod.categories; movies.value = cleaned; vodStatus.value = LoadStatus.Ready }
                     saveSnapshot(request) { snapshots.writeMovies(request.identity, ContentPolicy.Catalogue(cleaned, vod.categories), file.lastModified()) }
                     epgUrl = src.epgUrl.ifBlank { r.epgUrl ?: "" }

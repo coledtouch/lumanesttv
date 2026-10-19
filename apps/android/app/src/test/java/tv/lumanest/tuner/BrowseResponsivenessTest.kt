@@ -23,6 +23,11 @@ import org.robolectric.annotation.GraphicsMode
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
+/**
+ * The browse index (matching and sorting every title) is built off the main thread: the remote keeps working while a
+ * full library prepares, a refresh of the same playlist keeps the focused poster, and an older playlist's build can
+ * never publish into a newer one.
+ */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [34], qualifiers = "w960dp-h540dp-land-xhdpi")
@@ -30,14 +35,19 @@ import java.util.concurrent.TimeUnit
 class BrowseResponsivenessTest {
     @get:Rule val rule = createAndroidComposeRule<androidx.activity.ComponentActivity>()
 
+    /** Holds the first build that reads it until released; a later build (of a newer playlist) reads it freely. */
     private class HeldLibrary(private val values: List<Movie>) : AbstractList<Movie>() {
         val started = CountDownLatch(1)
         val release = CountDownLatch(1)
+        private val holder = java.util.concurrent.atomic.AtomicReference<Thread?>(null)
         override val size get() = values.size
         override fun get(index: Int): Movie {
             check(Looper.myLooper() != Looper.getMainLooper()) { "The full movie library was scanned on the UI thread" }
-            started.countDown()
-            check(release.await(10, TimeUnit.SECONDS)) { "The preparation fixture was never released" }
+            holder.compareAndSet(null, Thread.currentThread())
+            if (holder.get() === Thread.currentThread()) {
+                started.countDown()
+                check(release.await(10, TimeUnit.SECONDS)) { "The preparation fixture was never released" }
+            }
             return values[index]
         }
         // StateFlow compares its previous value before publication; this fixture measures
@@ -51,6 +61,8 @@ class BrowseResponsivenessTest {
         Repo.prefs.saveSource(Source("browse-large-a", "Large fixture", SourceType.M3U))
         Repo.prefs.setActive("browse-large-a")
         Repo.prefs.guidePreview = false
+        Repo.prefs.setVodUsOnly(true)
+        Repo.catalogRows.value = CatalogRows.NONE
         Repo.channels.value = emptyList()
         Repo.trending.value = emptyList()
         Repo.movies.value = emptyList()
@@ -60,6 +72,12 @@ class BrowseResponsivenessTest {
         Repo.liveStatus.value = LoadStatus.Ready
         Repo.vodStatus.value = LoadStatus.Ready
         Repo.seriesStatus.value = LoadStatus.Ready
+        // Start from this empty library's own index, not one an earlier test left behind.
+        val deadline = System.currentTimeMillis() + 5_000
+        while (Repo.browse.value?.let { it.movies === Repo.movies.value && it.series === Repo.series.value && it.source?.id == "browse-large-a" } != true) {
+            check(System.currentTimeMillis() < deadline) { "The browse index never caught up" }
+            Thread.sleep(10)
+        }
         rule.mainClock.autoAdvance = false
     }
 
@@ -68,7 +86,7 @@ class BrowseResponsivenessTest {
             CompositionLocalProvider(LocalInputModeManager provides object : InputModeManager {
                 override val inputMode = InputMode.Keyboard
                 override fun requestInputMode(inputMode: InputMode) = true
-            }) { TunerTheme { HomeScreen(state) } }
+            }) { TunerTheme { HomeScreen(state, store = false) } }
         }
     }
 
@@ -81,104 +99,108 @@ class BrowseResponsivenessTest {
         }
     }
 
+    /** 12,700 films; "Movie 1" is the newest upload, so a refresh moves it to the front of Recently added. */
     private fun library() = HeldLibrary((0 until 12_700).map { index ->
         Movie("m:$index", "Movie $index", null, "9.95", "a", "https://example.invalid/$index.mp4",
-            added = index + 1L, categoryIds = listOf("a", "b", "c"))
+            added = if (index == 1) 99_999L else index + 1L, categoryIds = listOf("a", "b", "c"))
     })
 
-    private fun smallLibrary() = HeldLibrary((0 until 3).map { index ->
-        Movie("m:$index", "Movie $index", null, "8", "a", "https://example.invalid/$index.mp4")
+    private fun smallLibrary(prefix: String = "", name: String = "Movie") = HeldLibrary((0 until 6).map { index ->
+        Movie("m:$prefix$index", "$name $index", null, null, "a", "https://example.invalid/$prefix$index.mp4", added = index + 1L)
     }).apply { release.countDown() }
 
-    @Test fun sameAccountRefreshKeepsTheFocusedCardAndRestoresItAfterRowsMove() {
+    private fun card(key: String) = rule.onNodeWithTag("card:home:movies:recent:movie:$key")
+
+    @Test fun sameAccountRefreshKeepsTheFocusedPosterAndRestoresItAfterItMoves() {
         Repo.movies.value = smallLibrary()
-        val state = AppState().apply { tab = Tab.MOVIES }
+        val state = AppState(Tab.HOME)
         val updated = library()
         try {
             mount(state)
-            await { state.lastFocusedKey == "movies:ca:m:0" }
-            rule.onNode(hasClickAction() and hasText("Movie 1")).performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+            await { state.lastFocusedKey == "home:movies:recent:movie:m:5" && !state.restoreFocus }
+            card("m:1").performSemanticsAction(SemanticsActions.RequestFocus) { it() }
             rule.runOnIdle { Repo.movies.value = updated }
             await { updated.started.count == 0L }
-            rule.onNode(hasClickAction() and hasText("Movie 1")).assertIsFocused()
-            rule.onNodeWithTag("browse-preparing:movies").assertDoesNotExist()
-            rule.runOnIdle { assertEquals("movies:ca:m:1", state.lastFocusedKey); assertFalse(state.restoreFocus) }
+            card("m:1").assertIsFocused()
+            rule.onNodeWithTag("browse-preparing:home").assertDoesNotExist()
+            rule.runOnIdle { assertEquals("home:movies:recent:movie:m:1", state.lastFocusedKey); assertFalse(state.restoreFocus) }
             updated.release.countDown()
-            // Recently Added inserts a row ahead of the selected category. The same title
-            // must remain reachable and focused rather than falling out of the lazy viewport.
-            await { state.moviesList.firstVisibleItemIndex == 1 && state.lastFocusedKey == "movies:ca:m:1" && !state.restoreFocus }
-            rule.onNode(hasClickAction() and hasText("Movie 1")).assertIsFocused()
-            rule.runOnIdle {
-                Repo.movies.value = listOf(Movie("m:new", "Available replacement", null, null, "a", "https://example.invalid/new.mp4"))
-            }
-            await { state.lastFocusedKey == "movies:ca:m:new" && !state.restoreFocus }
-            rule.onNode(hasClickAction() and hasText("Available replacement")).assertIsFocused()
+            // The newest upload moved from the fifth poster to the first: the same title keeps remote focus.
+            await { rule.onAllNodesWithTag("card:home:movies:recent:movie:m:12699").fetchSemanticsNodes().isNotEmpty() &&
+                state.lastFocusedKey == "home:movies:recent:movie:m:1" && !state.restoreFocus }
+            card("m:1").assertIsFocused()
+            rule.runOnIdle { assertEquals(0, state.rowState("home:movies:recent").firstVisibleItemIndex) }
+            rule.runOnIdle { Repo.movies.value = smallLibrary("new", "Available replacement") }
+            await { state.lastFocusedKey == "home:movies:recent:movie:m:new5" && !state.restoreFocus }
+            card("m:new5").assertIsFocused()
         } finally { updated.release.countDown() }
     }
 
     @Test fun completedRefreshDoesNotStealFocusFromNavigation() {
         Repo.movies.value = smallLibrary()
-        val state = AppState().apply { tab = Tab.MOVIES }
+        val state = AppState(Tab.HOME)
         val updated = library()
         try {
             mount(state)
-            await { state.lastFocusedKey == "movies:ca:m:0" }
+            await { state.lastFocusedKey == "home:movies:recent:movie:m:5" }
             rule.runOnIdle { Repo.movies.value = updated }
             await { updated.started.count == 0L }
             rule.onRoot().performKeyInput { pressKey(Key.Menu) }
             await { state.navigationFocused && state.navigationRequest == state.handledNavigationRequest }
-            rule.onNodeWithContentDescription("Movies").assertIsFocused()
+            rule.onNodeWithContentDescription("Home").assertIsFocused()
             updated.release.countDown()
-            await { rule.onAllNodesWithText("Movie 12699").fetchSemanticsNodes().isNotEmpty() }
-            rule.onNodeWithContentDescription("Movies").assertIsFocused()
-            rule.runOnIdle { assertFalse(state.restoreFocus); assertEquals(Tab.MOVIES, state.tab) }
+            await { rule.onAllNodesWithTag("card:home:movies:recent:movie:m:12699").fetchSemanticsNodes().isNotEmpty() }
+            rule.onNodeWithContentDescription("Home").assertIsFocused()
+            rule.runOnIdle { assertFalse(state.restoreFocus); assertEquals(Tab.HOME, state.tab) }
         } finally { updated.release.countDown() }
     }
 
     @Test fun remoteNavigationRemainsUsableWhileTheFullLibraryPrepares() {
         val library = library()
         Repo.movies.value = library
-        val state = AppState().apply { tab = Tab.MOVIES }
+        val state = AppState(Tab.HOME)
         try {
             mount(state)
             await { library.started.count == 0L }
-            rule.onNodeWithTag("browse-preparing:movies").assertExists()
-            rule.onNodeWithContentDescription("Movies").performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+            rule.onNodeWithTag("browse-preparing:home").assertExists()
+            rule.onNodeWithContentDescription("Home").performSemanticsAction(SemanticsActions.RequestFocus) { it() }
             rule.onRoot().performKeyInput { pressKey(Key.DirectionRight) }
-            rule.onNodeWithContentDescription("Series").assertIsFocused()
-            rule.runOnIdle { assertEquals(Tab.MOVIES, state.tab) }
+            rule.onNodeWithContentDescription("Live TV").assertIsFocused()
+            rule.runOnIdle { assertEquals(Tab.HOME, state.tab) }
             rule.onRoot().performKeyInput { pressKey(Key.Enter) }
-            await { state.tab == Tab.SERIES }
-            rule.onNodeWithContentDescription("Live TV").assertExists()
+            await { state.tab == Tab.GUIDE }
+            rule.onNodeWithContentDescription("Discover").assertExists()
             library.release.countDown()
-            rule.onNodeWithContentDescription("Movies").performClick()
-            await { state.lastFocusedKey == "movies:recent:m:12699" }
-            rule.onNodeWithTag("browse-content:movies").assertExists()
-            rule.onNode(hasClickAction() and hasText("Movie 12699")).assertIsFocused()
+            rule.onNodeWithContentDescription("Home").performClick()
+            await { state.lastFocusedKey == "home:movies:recent:movie:m:1" && !state.restoreFocus }
+            rule.onNodeWithTag("browse-content:home").assertExists()
+            card("m:1").assertIsFocused()
         } finally { library.release.countDown() }
     }
 
     @Test fun aCancelledOldAccountPreparationCannotPublishIntoTheNewLibrary() {
         val library = library()
         Repo.movies.value = library
-        val state = AppState().apply { tab = Tab.MOVIES }
+        val state = AppState(Tab.HOME)
         try {
             mount(state)
             await { library.started.count == 0L }
             rule.runOnIdle {
                 Repo.prefs.saveSource(Source("browse-large-b", "New fixture", SourceType.M3U))
                 Repo.prefs.setActive("browse-large-b")
-                Repo.movies.value = listOf(Movie("m:new", "Replacement Movie", null, null, "new", "https://example.invalid/new.mp4"))
-                Repo.movieCategories.value = listOf(Category("new", "New library"))
+                Repo.movies.value = smallLibrary("new", "Replacement Movie")
+                Repo.movieCategories.value = listOf(Category("a", "New library"))
             }
-            await { state.lastFocusedKey == "movies:cnew:m:new" }
-            rule.onNodeWithTag("browse-content:movies").assertExists()
+            await { state.lastFocusedKey == "home:movies:recent:movie:m:new5" && Repo.browse.value?.source?.id == "browse-large-b" }
+            rule.onNodeWithTag("browse-content:home").assertExists()
             library.release.countDown()
-            // Deliver the cancelled worker's completion and another frame; its previous
-            // rows must remain absent while the new account's selected title stays focused.
-            await { rule.onAllNodesWithText("Replacement Movie").fetchSemanticsNodes().isNotEmpty() }
+            // Deliver the cancelled build's completion and more frames; its titles must stay out of the new library.
+            repeat(20) { rule.mainClock.advanceTimeByFrame(); org.robolectric.shadows.ShadowLooper.idleMainLooper() }
+            Thread.sleep(300)
+            await { rule.onAllNodesWithText("Replacement Movie 5").fetchSemanticsNodes().isNotEmpty() }
             rule.onAllNodesWithText("Movie 12699").assertCountEquals(0)
-            rule.onNode(hasClickAction() and hasText("Replacement Movie")).assertIsFocused()
+            rule.runOnIdle { assertEquals(6, Repo.browse.value!!.catalog.movies.titles.size) }
+            card("m:new5").assertIsFocused()
             rule.runOnIdle { assertEquals(Screen.Home, state.top) }
         } finally { library.release.countDown() }
     }

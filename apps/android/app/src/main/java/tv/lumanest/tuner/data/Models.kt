@@ -53,6 +53,17 @@ data class Movie(
     val backups: List<String> = emptyList(),
     /** Provider `is_adult` flag. Only read by [ContentPolicy] before the catalogue is published. */
     val adult: Boolean = false,
+    /** TMDB id from the provider (`tmdb`, `tmdb_id` or `info.tmdb_id`), digits only. */
+    val tmdb: String? = null,
+    /** Release year from the provider's list, when it sends one. */
+    val year: String? = null,
+    /** Provider genre text ("Action, Drama"), when its list sends one. */
+    val genre: String? = null,
+    /**
+     * Ids of older uploads of this film that [Cleanup.movies] folded into it. The Library, Recently watched and saved
+     * positions may still name one of them after the provider re-uploads a film.
+     */
+    val aliases: List<String> = emptyList(),
 )
 
 data class Series(
@@ -71,6 +82,8 @@ data class Series(
     val language: String? = null,
     /** Provider `is_adult` flag. Only read by [ContentPolicy] before the catalogue is published. */
     val adult: Boolean = false,
+    /** TMDB id from the provider (`tmdb`, `tmdb_id` or `info.tmdb_id`), digits only. */
+    val tmdb: String? = null,
 )
 
 data class Episode(
@@ -136,6 +149,8 @@ sealed interface PlayRequest {
         val requireEnglishAudio: Boolean = false,
         val streamBackups: List<String> = emptyList(),
         val subtitles: List<ExternalSubtitle> = emptyList(),
+        /** The movie or series this plays ("movie:<id>" / "series:<id>"), for Continue watching and Recently watched. */
+        val titleKey: String? = null,
     ) : PlayRequest
 }
 
@@ -148,4 +163,8 @@ data class Recent(
     val positionMs: Long,
     val durationMs: Long,
     val updated: Long,
+    /** The movie or series ("movie:<id>" / "series:<id>"); older saved entries have none. */
+    val titleKey: String? = null,
+    /** The next episode of a series whose previous episode was finished: kept at position 0 for Continue watching. */
+    val nextUp: Boolean = false,
 )

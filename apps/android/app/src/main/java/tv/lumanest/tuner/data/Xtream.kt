@@ -89,6 +89,19 @@ class Xtream(private val src: Source) {
     }
 
     private fun adultOf(o: JMap) = AdultFilter.isAdultFlag(o.str("is_adult"))
+
+    /** A TMDB id in `tmdb`, `tmdb_id` or `info.tmdb_id` (docs/browse.md), digits only; "0" and blanks are no id. */
+    private fun tmdbOf(o: JMap): String? {
+        val info = o.obj("info")
+        return sequenceOf(o.str("tmdb"), o.str("tmdb_id"), info?.str("tmdb_id"), info?.str("tmdb"))
+            .mapNotNull { it?.removeSuffix(".0")?.trim()?.takeIf { v -> v.length in 1..12 && v.all(Char::isDigit) && v.trimStart('0').isNotEmpty() } }
+            .firstOrNull()
+    }
+
+    /** The release year from `year` or a release date, as four digits. */
+    private fun yearOf(o: JMap): String? = sequenceOf("year", "releaseDate", "release_date", "releasedate")
+        .mapNotNull { key -> o.str(key)?.trim()?.take(4)?.takeIf { it.length == 4 && it.all(Char::isDigit) && it.toInt() in 1870..2200 } }
+        .firstOrNull()
     private fun countryOf(o: JMap) = metadata(o, COUNTRY_FIELDS)
     private fun languageOf(o: JMap) = metadata(o, LANGUAGE_FIELDS)
     private fun mergeMetadata(first: String?, second: String?): String? = when {
@@ -113,7 +126,7 @@ class Xtream(private val src: Source) {
             if (prev != null) {
                 byId[id] = prev.copy(categoryIds = (prev.categoryIds + cats).distinct(),
                     country = mergeMetadata(prev.country, countryOf(o)), language = mergeMetadata(prev.language, languageOf(o)),
-                    adult = prev.adult || adultOf(o))
+                    adult = prev.adult || adultOf(o), tmdb = prev.tmdb ?: tmdbOf(o), year = prev.year ?: yearOf(o), genre = prev.genre ?: o.str("genre"))
                 return@forEachJsonObject
             }
             byId[id] = Movie(
@@ -128,6 +141,9 @@ class Xtream(private val src: Source) {
                 country = countryOf(o),
                 language = languageOf(o),
                 adult = adultOf(o),
+                tmdb = tmdbOf(o),
+                year = yearOf(o),
+                genre = o.str("genre"),
             )
         }
         return ArrayList(byId.values)
@@ -142,7 +158,7 @@ class Xtream(private val src: Source) {
             if (prev != null) {
                 byId[id] = prev.copy(categoryIds = (prev.categoryIds + cats).distinct(),
                     country = mergeMetadata(prev.country, countryOf(o)), language = mergeMetadata(prev.language, languageOf(o)),
-                    adult = prev.adult || adultOf(o))
+                    adult = prev.adult || adultOf(o), tmdb = prev.tmdb ?: tmdbOf(o))
                 return@forEachJsonObject
             }
             byId[id] = Series(
@@ -153,13 +169,14 @@ class Xtream(private val src: Source) {
                 rating = o.str("rating")?.takeIf { it != "0" && it != "0.0" },
                 categoryId = cats.firstOrNull() ?: "",
                 genre = o.str("genre"),
-                year = (o.str("releaseDate") ?: o.str("release_date"))?.take(4),
+                year = (o.str("releaseDate") ?: o.str("release_date"))?.take(4) ?: yearOf(o),
                 backdrop = o.str("backdrop_path"),
                 added = o.str("last_modified")?.toLongOrNull() ?: 0,
                 categoryIds = cats,
                 country = countryOf(o),
                 language = languageOf(o),
                 adult = adultOf(o),
+                tmdb = tmdbOf(o),
             )
         }
         return ArrayList(byId.values)
@@ -273,8 +290,10 @@ class Xtream(private val src: Source) {
         private val COMMON_FIELDS = (COUNTRY_FIELDS + LANGUAGE_FIELDS + listOf("name", "category_id", "category_ids", "is_adult")).toSet()
         private val CATEGORY_FIELDS = setOf("category_id", "category_name", "is_adult")
         private val LIVE_FIELDS = COMMON_FIELDS + setOf("stream_id", "num", "stream_icon", "epg_channel_id", "direct_source")
-        private val MOVIE_FIELDS = COMMON_FIELDS + setOf("stream_id", "stream_icon", "rating", "direct_source", "container_extension", "added")
-        private val SERIES_FIELDS = COMMON_FIELDS + setOf("series_id", "cover", "plot", "rating", "genre", "releaseDate", "release_date", "backdrop_path", "last_modified")
+        /** TMDB ids and years for matching titles to the popularity lists (docs/browse.md). */
+        private val TMDB_FIELDS = setOf("tmdb", "tmdb_id", "info", "year", "releaseDate", "release_date", "releasedate")
+        private val MOVIE_FIELDS = COMMON_FIELDS + TMDB_FIELDS + setOf("stream_id", "stream_icon", "rating", "direct_source", "container_extension", "added", "genre")
+        private val SERIES_FIELDS = COMMON_FIELDS + TMDB_FIELDS + setOf("series_id", "cover", "plot", "rating", "genre", "backdrop_path", "last_modified")
 
         fun normalizeServer(raw: String): String {
             var s = raw.trim()

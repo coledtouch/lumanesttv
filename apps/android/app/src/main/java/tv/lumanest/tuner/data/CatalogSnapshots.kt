@@ -58,7 +58,8 @@ internal class CatalogSnapshots(private val root: File) {
     fun readMovies(id: Identity, now: Long = System.currentTimeMillis()) = read(id.catalogue, "movies", now) { input ->
         val categories = input.categories()
         val movies = input.rows(100_000) {
-            val item = Movie(text(), text(), optional(), optional(), text(), text(), readLong(), strings(), optional(), optional(), strings())
+            val item = Movie(text(), text(), optional(), optional(), text(), text(), readLong(), strings(), optional(), optional(), strings(),
+                tmdb = optional(), year = optional(), genre = optional(), aliases = strings())
             if (item.id.isBlank() || !http(item.url) || item.backups.any { !http(it) }) throw IOException("Invalid movie snapshot")
             item
         }
@@ -69,13 +70,15 @@ internal class CatalogSnapshots(private val root: File) {
         output.rows(value.items, 100_000) {
             text(it.id); text(it.name); optional(it.poster); optional(it.rating); text(it.categoryId); text(it.url)
             writeLong(it.added); strings(it.categoryIds); optional(it.country); optional(it.language); strings(it.backups)
+            optional(it.tmdb); optional(it.year); optional(it.genre); strings(it.aliases)
         }
     }
 
     fun readSeries(id: Identity, now: Long = System.currentTimeMillis()) = read(id.catalogue, "series", now) { input ->
         val categories = input.categories()
         val series = input.rows(50_000) {
-            Series(text(), text(), optional(), optional(), optional(), text(), optional(), optional(), optional(), readLong(), strings(), optional(), optional())
+            Series(text(), text(), optional(), optional(), optional(), text(), optional(), optional(), optional(), readLong(), strings(), optional(), optional(),
+                tmdb = optional())
         }
         ContentPolicy.Catalogue(series, categories)
     }
@@ -84,7 +87,7 @@ internal class CatalogSnapshots(private val root: File) {
         output.rows(value.items, 50_000) {
             text(it.id); text(it.name); optional(it.cover); optional(it.plot); optional(it.rating); text(it.categoryId)
             optional(it.genre); optional(it.year); optional(it.backdrop); writeLong(it.added); strings(it.categoryIds)
-            optional(it.country); optional(it.language)
+            optional(it.country); optional(it.language); optional(it.tmdb)
         }
     }
 
@@ -125,7 +128,7 @@ internal class CatalogSnapshots(private val root: File) {
             if (size !in 32..MAX_BYTES) return reject(kind, "size")
             val checked = CheckedInputStream(BoundedInput(raw, size - 8), CRC32())
             val input = DataInputStream(BufferedInputStream(checked, 64 * 1024))
-            if (input.readInt() != MAGIC || input.readInt() != FORMAT || input.text() != identity || input.text() != kind) return reject(kind, "header")
+            if (input.readInt() != MAGIC || input.readInt() != format(kind) || input.text() != identity || input.text() != kind) return reject(kind, "header")
             val storedAt = input.readLong()
             if (storedAt <= 0 || storedAt > now + 5 * 60_000 || now - storedAt > MAX_AGE) return reject(kind, "date")
             val value = decode(input)
@@ -143,7 +146,7 @@ internal class CatalogSnapshots(private val root: File) {
         try {
                 val checked = CheckedOutputStream(BoundedOutput(raw, MAX_BYTES - 8), CRC32())
                 val output = DataOutputStream(BufferedOutputStream(checked, 64 * 1024))
-                output.writeInt(MAGIC); output.writeInt(FORMAT); output.text(identity); output.text(kind); output.writeLong(storedAt)
+                output.writeInt(MAGIC); output.writeInt(format(kind)); output.text(identity); output.text(kind); output.writeLong(storedAt)
                 encode(output); output.flush()
                 DataOutputStream(raw).writeLong(checked.checksum.value)
                 atomic.finishWrite(raw)
@@ -176,6 +179,13 @@ internal class CatalogSnapshots(private val root: File) {
         private val locks = ConcurrentHashMap<String, Any>()
         private const val MAGIC = 0x54554E52
         private const val FORMAT = 1
+        /**
+         * Movies and series gained TMDB ids, years and genres for browsing (docs/browse.md) in format 2, and movies the
+         * ids of the uploads folded into them (and dubbed copies kept apart) in format 3. Older snapshots fail the
+         * header check once and are rebuilt from the saved provider lists; live and guide snapshots stay valid.
+         */
+        private const val LIBRARY_FORMAT = 3
+        private fun format(kind: String) = if (kind == "movies" || kind == "series") LIBRARY_FORMAT else FORMAT
         private const val POLICY_VERSION = 2
         private const val MAX_BYTES = 128L * 1024 * 1024
         private const val MAX_AGE = 7 * 24 * 3600_000L

@@ -6,12 +6,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -26,6 +28,7 @@ import tv.lumanest.tuner.data.Movie
 import tv.lumanest.tuner.data.PlayRequest
 import tv.lumanest.tuner.data.Repo
 import tv.lumanest.tuner.data.Series
+import tv.lumanest.tuner.data.VodType
 import tv.lumanest.tuner.player.PlayerHolder
 
 sealed interface Screen {
@@ -36,20 +39,84 @@ sealed interface Screen {
     data class Player(val request: PlayRequest) : Screen
 }
 
-enum class Tab(val title: String) { GUIDE("Live TV"), MOVIES("Movies"), SERIES("Series"), MULTIVIEW("Multi View"), SEARCH("Search"), SETTINGS("Settings") }
+/**
+ * The top navigation (docs/browse.md): Home, Live TV, Discover, Library, Search and Settings, with Multi View where it
+ * has always been, after the movie and series sections.
+ */
+enum class Tab(val title: String) {
+    HOME("Home"), GUIDE("Live TV"), DISCOVER("Discover"), LIBRARY("Library"), MULTIVIEW("Multi View"), SEARCH("Search"), SETTINGS("Settings"),
+}
 
-/** Screen-independent state that has to survive navigating to a detail page or the player and back. */
-class AppState {
+/** Discover's filters, grid position and selection, kept while a title or the player is open. */
+class DiscoverState {
+    var type by mutableStateOf(VodType.MOVIES)
+    /** A [tv.lumanest.tuner.data.BrowseList] key, or null for the catalogue's default list. */
+    var list by mutableStateOf<String?>(null)
+    /** A [tv.lumanest.tuner.data.GenreOption] key, or null for All. */
+    var genre by mutableStateOf<String?>(null)
+    val grid = LazyGridState()
+    /** The grid card or filter that had focus, restored when coming back from a title or the player. */
+    var focusedKey by mutableStateOf<String?>(null)
+    /** The grid position of the last focused card: focus returns there when its title leaves the grid. */
+    var focusedIndex = 0
+    /** The Home "See all" tile that opened Discover: Back returns to it. Null when Discover was opened from the top bar. */
+    var openedFrom by mutableStateOf<String?>(null)
+}
+
+/**
+ * Screen-independent state that has to survive navigating to a detail page or the player and back. [startTab] is the
+ * section the app opens on (Home, or Live TV when Settings says so); Back from the top bar returns to it, and it
+ * follows the Settings switch while the app runs.
+ */
+class AppState(startTab: Tab = Tab.GUIDE) {
     val stack = mutableStateListOf<Screen>(Screen.Home)
-    var tab by mutableStateOf(Tab.GUIDE)
+    var startTab by mutableStateOf(startTab)
+    var tab by mutableStateOf(startTab)
     val guide = GuideState()
     val multiView = MultiViewUiState()
-    val moviesList = LazyListState()
-    val seriesList = LazyListState()
+    val homeList = LazyListState()
+    val libraryList = LazyListState()
+    val discover = DiscoverState()
     private val rowStates = HashMap<String, LazyListState>()
     fun rowState(key: String): LazyListState = rowStates.getOrPut(key) { LazyListState() }
     fun clearRowStates() = rowStates.clear()
+    /** The poster last focused on Home or Library ("home:<row>:<title>", "library:<row>:<title>"). */
     var lastFocusedKey by mutableStateOf<String?>(null)
+    /** The poster last focused on each rows screen, by prefix ("home", "library"). */
+    val rowFocus = mutableStateMapOf<String, String>()
+
+    /** The Home "See all" tile (Continue watching's) that opened the Library: Back returns to it. */
+    var libraryOpenedFrom by mutableStateOf<String?>(null)
+
+    /** Opens the Library from Continue watching's See all tile [from]. */
+    fun openLibrary(from: String?) {
+        libraryOpenedFrom = from
+        tab = Tab.LIBRARY
+        restoreFocus = true
+    }
+
+    /** Back from a section a Home tile opened: Home, with focus on that tile ([from], a "home:" card key). */
+    fun returnHome(from: String) {
+        discover.openedFrom = null
+        libraryOpenedFrom = null
+        rowFocus["home"] = from
+        lastFocusedKey = from
+        tab = Tab.HOME
+        restoreFocus = true
+    }
+
+    /** Opens Discover on [type] and [list] (Home's See all, Search's shortcuts). [from] is the tile to return to. */
+    fun openDiscover(type: VodType, list: String? = null, from: String? = null) {
+        discover.type = type
+        discover.list = list
+        discover.genre = null
+        discover.focusedKey = null
+        discover.focusedIndex = 0
+        discover.openedFrom = from
+        discover.grid.requestScrollToItem(0)
+        tab = Tab.DISCOVER
+        restoreFocus = true
+    }
     var lastEpisodeKey by mutableStateOf<String?>(null)
     var searchQuery by mutableStateOf("")
     var searchFocusedKey by mutableStateOf<String?>(null)
@@ -75,7 +142,7 @@ class AppState {
 
 @Composable
 fun App() {
-    val state = remember { AppState() }
+    val state = remember { AppState(if (Repo.prefs.startOnLiveTv.value) Tab.GUIDE else Tab.HOME) }
     val sources by Repo.prefs.sources.collectAsState()
     val activeId by Repo.prefs.activeId.collectAsState()
     val pipVideoOnly by PlayerHolder.pipVideoOnly.collectAsState()

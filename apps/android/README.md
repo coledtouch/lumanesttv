@@ -28,7 +28,19 @@ If you only have a link like `http://host:port/get.php?username=...&password=...
 
 ## Remote controls
 
-The main controls match the onn 4K remote: the directional pad, center OK, Back, and Channel +/−. Use Left / Right in the top navigation, then OK to open Live TV, Movies, Series, Multi View, Search, or Settings. Moving across the navigation keeps the current page open until you select a destination. Back from Movies or Series focuses its tab while keeping your place; a second Back returns to Live TV. Select a category shortcut to jump straight to its titles; returning from details restores your place. Settings includes **onn 4K remote**. Other remotes can also use Menu to focus navigation.
+The main controls match the onn 4K remote: the directional pad, center OK, Back, and Channel +/−. Use Left / Right in the top navigation, then OK to open Home, Live TV, Discover, Library, Multi View, Search, or Settings. Moving across the navigation keeps the current page open until you select a destination. Back from a section focuses its tab while keeping your place; a second Back returns to the section Tuner opens on (Home, or Live TV when Settings > **Start on** says so). Returning from details or the player restores your place. Settings includes **onn 4K remote**. Other remotes can also use Menu to focus navigation.
+
+### Movies & Series
+
+Movies and series follow the shared design in [docs/browse.md](../../docs/browse.md):
+
+- **Home**: rows of posters (Continue watching, Popular, Featured, one pair per streaming service, Recently added, Top rated; movies before series). A row needs at least 5 titles, shows up to 20, and ends with **See all**, which opens Discover with that row's Type and List; Back returns to the tile.
+- **Discover**: Type (Movies or Series), List (Popular, Featured, Top rated, Recently added, A–Z, and each service) and Genre filters over a poster grid without a length limit. Up from the grid reaches the filters; OK opens a filter's choices.
+- **Library**: Continue watching, Favorite movies, Favorite series and Recently watched. **Add to Library** on a title's page, or hold OK on its poster, saves it; saved titles show a check badge, titles in progress a progress bar. A finished episode leaves its series in Continue watching as the next episode. Continue watching's **See all** opens the Library, and Back returns to that tile. A film the provider uploads again keeps its Library entry, history and saved position.
+- Popularity comes from `https://lumanest.tv/api/catalog/rows?v=1`, cached for 12 hours (a stale copy is kept when the request fails; a failed request is tried again after 5 minutes, backing off to hourly, and when Tuner returns to the foreground). It only orders and picks titles from your own playlist. Titles match by the provider's TMDB id, otherwise by cleaned-up title and year (±1); a title without a year matches only a name that is unique in the lists. Without TMDB data Popular and Featured are hidden, service rows come from provider categories named after the service, and Recently added and Top rated use the provider's dates and ratings.
+- Settings > **Movies & Series**: USA only (default) or All, separate from the Channels switch. USA only keeps titles whose provider category carries no other country or language tag and, when matched to TMDB, whose origin includes the US. It applies to Home, Discover and Search; the Library keeps what you saved.
+- Settings > About shows the TMDB notice while TMDB data is in use.
+- The store edition (`-Pstore=true`) shows no rows or lists named after streaming services.
 
 Browsing the guide never changes the channel playing in the preview. The selected row updates the program description while the preview identifies the channel you are watching. Choose Watch or press OK on a current program to change channels. Select the preview to return to the channel already playing, even when browsing a different category or Favorites.
 
@@ -83,7 +95,7 @@ Snapshots belong to the exact provider account and relevant format/market settin
 
 ## Content and Favorites
 
-Live TV keeps U.S. channels using provider country labels, category labels, tagged names and U.S. EPG identifiers. Unknown or conflicting countries are hidden. Movies and Series show the complete provider library, including foreign and unlabelled titles. Audio language never blocks playback; English is preferred when available and other supported tracks remain selectable.
+Live TV keeps U.S. channels using provider country labels, category labels, tagged names and U.S. EPG identifiers. Unknown or conflicting countries are hidden. Movies and series have their own switch (see Movies & Series above); with All, they show the complete provider library, including foreign and unlabelled titles. Audio language never blocks playback; English is preferred when available and other supported tracks remain selectable.
 
 Settings > Guide > **Local stations** optionally limits local affiliates to Boston, Worcester and New Hampshire while preserving national cable, sports, events and entertainment. The supported market uses ZIP 01608 for Worcester; blank means all U.S. local markets. Nearby news stations appear in the **Local news** guide category. Filtering uses station identifiers and regional news brands before duplicate folding, so an outside-market affiliate cannot become a local station's backup. Movies and Series are unaffected. This setting is stored privately on the device and survives app updates.
 
@@ -136,7 +148,7 @@ Tests (parsers, content policy, name matching, remote navigation, and Robolectri
 .\gradlew.bat testDebugUnitTest
 ```
 
-Screenshot coverage includes Live TV, Movies, Series, playback controls, themes, and a compact 720 × 405 dp layout. Robolectric's native dependencies require a supported host architecture; on Windows ARM, use an x64 JDK under Windows emulation for these tests.
+Screenshot coverage includes Live TV, Home, Discover, Library, playback controls, themes, and a compact 720 × 405 dp layout. Robolectric's native dependencies require a supported host architecture; on Windows ARM, use an x64 JDK under Windows emulation for these tests.
 
 Device tests in `app/src/androidTest` are opt-in through instrumentation arguments so they never disturb a TV's saved playlist by accident. The **Android device tests** workflow runs the self-contained ones nightly (and on demand) on an emulator: `AudioFallbackTest`, `GuideRemoteTest`, `MultiViewFullscreenTest`, `PictureInPictureTest` and `TwoChannelPlaybackTest`, which play the packaged fixture from a loopback server. Suites that need a saved provider account, its cached catalogue or live provider streams, or that change saved settings (`CatalogTimingTest`, `DeviceNavigationTest`, `InstalledCatalogTest`, `StartupSpeedTest`, `TwoChannelProviderTest`) run only on a configured TV. To run the CI set against a connected device or emulator:
 

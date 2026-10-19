@@ -77,7 +77,7 @@ The apps never call TMDB directly. The website serves the lists, so the TMDB key
 ## Matching catalogue titles to TMDB
 
 1. If the provider item carries a TMDB id (`tmdb`, `tmdb_id` or `tmdb_id` inside `info`), match on it.
-2. Otherwise match on normalized title plus year (year may differ by 1). Normalize: lowercase; drop a trailing `(YYYY)` and any bracketed or pipe-delimited tags such as `[4K]`, `|US|`, `US -`; drop quality words (4K, UHD, HD, FHD, HDR); `&` → `and`; remove punctuation; collapse spaces; drop a leading `the `.
+2. Otherwise match on normalized title plus year (year may differ by 1). A title without a year (none in the provider item or its name) matches only when exactly one TMDB title in the lists has that normalized title. Normalize: lowercase; drop a trailing `(YYYY)` and any bracketed or pipe-delimited tags such as `[4K]`, `|US|`, `US -`; drop quality words (4K, UHD, HD, FHD, HDR); `&` → `and`; remove punctuation; collapse spaces; drop a leading `the `.
 3. Unmatched titles still appear in Recently added, Top rated, A–Z, genre filters and category-based rows.
 
 ## Fallback without TMDB

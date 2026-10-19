@@ -607,8 +607,12 @@ private fun VodPlayer(req: PlayRequest.Vod, onExit: () -> Unit) {
         val pos = player.currentPosition
         val dur = player.duration.takeIf { it != C.TIME_UNSET } ?: 0
         if (pos > 0) {
+            val now = System.currentTimeMillis()
+            // A finished episode hands Continue watching to the next one in the queue.
+            val next = queue.firstOrNull()?.let { Recent(it.resumeId, it.title, it.subtitle, it.image, it.url, 0, 0, now, titleKey = it.titleKey) }
             Repo.prefs.saveProgress(
-                Recent(current.resumeId, current.title, current.subtitle, current.image, current.url, pos, dur, System.currentTimeMillis()),
+                Recent(current.resumeId, current.title, current.subtitle, current.image, current.url, pos, dur, now, titleKey = current.titleKey),
+                next,
             )
         }
     }

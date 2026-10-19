@@ -25,7 +25,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Replay
 import androidx.compose.material3.CircularProgressIndicator
@@ -53,6 +55,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import tv.lumanest.tuner.data.BrowseTitle
 import tv.lumanest.tuner.data.Episode
 import tv.lumanest.tuner.data.Movie
 import tv.lumanest.tuner.data.MovieInfo
@@ -97,13 +100,14 @@ fun MovieDetailScreen(movie: Movie, state: AppState) {
         loading = false
     }
     val recents by Repo.prefs.recents.collectAsState()
-    val resume = recents.firstOrNull { it.id == movie.id && (it.url == movie.url || it.url in movie.backups) && it.positionMs > 0 }
+    // A position saved for an older upload of this film (Movie.aliases) resumes here too.
+    val resume = recents.firstOrNull { (it.id == movie.id || it.id in movie.aliases) && (it.url == movie.url || it.url in movie.backups) && it.positionMs > 0 }
     val first = remember(movie.id) { FocusRequester() }
     LaunchedEffect(movie.id) { requestAttachedFocus(first) }
 
     fun play(from: Long) = state.push(
         Screen.Player(PlayRequest.Vod(movie.id, movie.name, info?.year, info?.poster ?: movie.poster, movie.url, from, streamBackups = movie.backups,
-            subtitles = info?.subtitles.orEmpty())),
+            subtitles = info?.subtitles.orEmpty(), titleKey = BrowseTitle.movieKey(movie.id))),
     )
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -151,6 +155,7 @@ fun MovieDetailScreen(movie: Movie, state: AppState) {
                             icon = { Icon(Icons.Rounded.PlayArrow, null, tint = it) }, primary = true,
                         )
                         if (resume != null) PillButton("Start over", { play(0) }, icon = { Icon(Icons.Rounded.Replay, null, tint = it, modifier = Modifier.size(20.dp)) })
+                        LibraryButton(BrowseTitle.movieKey(movie.id), movie.name, aliases = movie.aliases.map(BrowseTitle::movieKey))
                     }
                     resume?.let { recent ->
                         Text(
@@ -268,31 +273,48 @@ fun SeriesDetailScreen(series: Series, state: AppState) {
                         if (metadata.isNotBlank()) Text(metadata, color = Palette.dim, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp))
                         Spacer(Modifier.height(if (compact) 14.dp else 20.dp))
                         when {
-                            loading -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                CircularProgressIndicator(color = Palette.accent, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
-                                Text("Loading episodes…", color = Palette.dim, fontSize = 13.sp)
+                            // Add to Library is on the page whatever the episodes do: loading, failed or none.
+                            loading -> {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    CircularProgressIndicator(color = Palette.accent, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+                                    Text("Loading episodes…", color = Palette.dim, fontSize = 13.sp)
+                                }
+                                LibraryButton(BrowseTitle.seriesKey(series.id), series.name, Modifier.padding(top = 12.dp))
                             }
                             info == null -> {
                                 Text("Couldn't load episodes", color = Palette.text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                                 Text("Check your connection and try again.", color = Palette.dim, fontSize = 12.sp, modifier = Modifier.padding(top = 5.dp, bottom = 12.dp))
-                                PillButton("Try again", { loadAttempt++ }, Modifier.focusRequester(playFocus), primary = true)
+                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    PillButton("Try again", { loadAttempt++ }, Modifier.focusRequester(playFocus), primary = true)
+                                    LibraryButton(BrowseTitle.seriesKey(series.id), series.name)
+                                }
                             }
                             allEpisodes.isEmpty() -> {
                                 Text("No episodes available", color = Palette.dim, fontSize = 14.sp)
-                                PillButton("Back to Series", { state.pop() }, Modifier.padding(top = 12.dp).focusRequester(playFocus))
+                                Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    PillButton("Back to Series", { state.pop() }, Modifier.focusRequester(playFocus))
+                                    LibraryButton(BrowseTitle.seriesKey(series.id), series.name)
+                                }
                             }
                             lastWatched != null -> {
+                                val nextUp = lastWatched.second.nextUp
+                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    PillButton(
+                                        (if (nextUp) "Play" else "Resume") + " S${lastWatched.first.season} E${lastWatched.first.number}",
+                                        { play(lastWatched.first, lastWatched.second.positionMs) }, Modifier.focusRequester(playFocus),
+                                        icon = { Icon(Icons.Rounded.PlayArrow, null, tint = it, modifier = Modifier.size(20.dp)) }, primary = true,
+                                    )
+                                    LibraryButton(BrowseTitle.seriesKey(series.id), series.name)
+                                }
+                                Text((if (nextUp) "Up next" else "At ${fmtClock(lastWatched.second.positionMs)}") + " · ${lastWatched.first.title}", color = Palette.dim, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp))
+                            }
+                            firstEpisode != null -> Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                 PillButton(
-                                    "Resume S${lastWatched.first.season} E${lastWatched.first.number}",
-                                    { play(lastWatched.first, lastWatched.second.positionMs) }, Modifier.focusRequester(playFocus),
+                                    "Watch Series", { play(firstEpisode, 0) }, Modifier.focusRequester(playFocus),
                                     icon = { Icon(Icons.Rounded.PlayArrow, null, tint = it, modifier = Modifier.size(20.dp)) }, primary = true,
                                 )
-                                Text("At ${fmtClock(lastWatched.second.positionMs)} · ${lastWatched.first.title}", color = Palette.dim, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp))
+                                LibraryButton(BrowseTitle.seriesKey(series.id), series.name)
                             }
-                            firstEpisode != null -> PillButton(
-                                "Watch Series", { play(firstEpisode, 0) }, Modifier.focusRequester(playFocus),
-                                icon = { Icon(Icons.Rounded.PlayArrow, null, tint = it, modifier = Modifier.size(20.dp)) }, primary = true,
-                            )
                         }
                         val plot = info?.plot ?: series.plot
                         if (!plot.isNullOrBlank()) Text(
@@ -367,7 +389,27 @@ private fun Episode.toRequest(series: Series, from: Long) = PlayRequest.Vod(
     url = url,
     startMs = from,
     subtitles = subtitles,
+    titleKey = BrowseTitle.seriesKey(series.id),
 )
+
+/**
+ * Adds the movie or series to the Library (the check badge on its poster), or removes it. A film saved under an older
+ * upload's key ([aliases]) shows as in the Library.
+ */
+@Composable
+internal fun LibraryButton(titleKey: String, name: String, modifier: Modifier = Modifier, aliases: List<String> = emptyList()) {
+    val saved by Repo.prefs.libraryFavorites.collectAsState()
+    val inLibrary = titleKey in saved || aliases.any { it in saved }
+    PillButton(
+        if (inLibrary) "In Library" else "Add to Library",
+        {
+            val added = Repo.prefs.toggleLibraryFavorite(titleKey, aliases)
+            Toasts.show(if (added) "$name added to your Library" else "$name removed from your Library")
+        },
+        modifier,
+        icon = { Icon(if (inLibrary) Icons.Rounded.Check else Icons.Rounded.Add, null, tint = it, modifier = Modifier.size(20.dp)) },
+    )
+}
 
 @Composable
 private fun WatchProgress(progress: Float, modifier: Modifier = Modifier) {

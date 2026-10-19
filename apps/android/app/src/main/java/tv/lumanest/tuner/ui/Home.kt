@@ -32,9 +32,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Explore
+import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.LiveTv
-import androidx.compose.material.icons.rounded.Movie
-import androidx.compose.material.icons.rounded.Tv
+import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.ViewWeek
@@ -61,6 +62,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import tv.lumanest.tuner.Edition
 import tv.lumanest.tuner.data.LoadStatus
 import tv.lumanest.tuner.data.Repo
 import tv.lumanest.tuner.player.TwoChannelPlayer
@@ -75,8 +77,9 @@ object Toasts {
     fun show(text: String) { message = text; id = ++seq }
 }
 
+/** The top-level sections. [store] is the store edition (see [Edition]): no streaming-service rows or lists. */
 @Composable
-fun HomeScreen(state: AppState) {
+fun HomeScreen(state: AppState, store: Boolean = Edition.STORE) {
     val multiViewActive by TwoChannelPlayer.active.collectAsState()
     val watchingMultiView = state.tab == Tab.MULTIVIEW && multiViewActive
     HomeNavigationBackHandler(state)
@@ -93,22 +96,32 @@ fun HomeScreen(state: AppState) {
             if (!watchingMultiView) FirstLoadBanner()
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (state.tab) {
+                    Tab.HOME -> BrowseHomeScreen(state, store)
                     Tab.GUIDE -> GuideScreen(state)
-                    Tab.MOVIES -> MoviesScreen(state)
-                    Tab.SERIES -> SeriesScreen(state)
+                    Tab.DISCOVER -> DiscoverScreen(state, store)
+                    Tab.LIBRARY -> LibraryScreen(state)
                     Tab.MULTIVIEW -> MultiViewScreen(state)
                     Tab.SEARCH -> SearchScreen(state)
-                    Tab.SETTINGS -> SettingsScreen(state)
+                    Tab.SETTINGS -> SettingsScreen(state, store)
                 }
             }
         }
     }
 }
 
+/**
+ * Back moves up one level: from a section to the top bar, then from the top bar to the section the app opens on. That
+ * section follows Settings > Start on as soon as it changes, not only at the next launch.
+ */
 @Composable
 internal fun HomeNavigationBackHandler(state: AppState) {
-    BackHandler(enabled = !state.navigationFocused || state.tab != Tab.GUIDE) {
-        if (state.navigationFocused) state.tab = Tab.GUIDE
+    val startOnLiveTv by Repo.prefs.startOnLiveTv.collectAsState()
+    val applied = remember { booleanArrayOf(startOnLiveTv) }
+    LaunchedEffect(startOnLiveTv) {
+        if (applied[0] != startOnLiveTv) { applied[0] = startOnLiveTv; state.startTab = if (startOnLiveTv) Tab.GUIDE else Tab.HOME }
+    }
+    BackHandler(enabled = !state.navigationFocused || state.tab != state.startTab) {
+        if (state.navigationFocused) state.tab = state.startTab
         state.requestNavigation()
     }
 }
@@ -204,11 +217,15 @@ private fun TopBar(state: AppState) {
                     onClick = {
                         if (state.tab == t) {
                             when (t) {
-                                Tab.MOVIES, Tab.SERIES -> state.restoreFocus = true
+                                Tab.HOME, Tab.DISCOVER, Tab.LIBRARY -> state.restoreFocus = true
                                 else -> focusManager.moveFocus(FocusDirection.Down)
                             }
                         }
-                        else { state.tab = t; state.restoreFocus = true }
+                        else {
+                            if (t == Tab.DISCOVER) state.discover.openedFrom = null
+                            if (t == Tab.LIBRARY) state.libraryOpenedFrom = null
+                            state.tab = t; state.restoreFocus = true
+                        }
                     },
                     modifier = Modifier.focusRequester(requesters.getValue(t)).semantics { this.selected = selected; contentDescription = t.title },
                     shape = RoundedCornerShape(10.dp),
@@ -220,9 +237,10 @@ private fun TopBar(state: AppState) {
                     val c = when { f -> Palette.onFocus; selected -> Palette.accent; else -> Palette.dim }
                     Row(Modifier.padding(horizontal = if (wide) 13.dp else 10.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                     Icon(when (t) {
+                        Tab.HOME -> Icons.Rounded.Home
                         Tab.GUIDE -> Icons.Rounded.LiveTv
-                        Tab.MOVIES -> Icons.Rounded.Movie
-                        Tab.SERIES -> Icons.Rounded.Tv
+                        Tab.DISCOVER -> Icons.Rounded.Explore
+                        Tab.LIBRARY -> Icons.Rounded.VideoLibrary
                         Tab.MULTIVIEW -> Icons.Rounded.ViewWeek
                         Tab.SEARCH -> Icons.Rounded.Search
                         Tab.SETTINGS -> Icons.Rounded.Settings

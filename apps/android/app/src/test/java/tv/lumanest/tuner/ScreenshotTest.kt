@@ -67,14 +67,21 @@ class ScreenshotTest {
         File(out, "$name.png").outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 
+    /** Home or Library with a poster focused, or Discover with its grid focused. */
     private fun awaitBrowse(state: AppState) {
-        val prefix = if (state.tab == Tab.MOVIES) "movies" else "series"
         rule.waitUntil(timeoutMillis = 5_000) {
             org.robolectric.shadows.ShadowLooper.idleMainLooper()
             rule.runOnIdle { androidx.compose.runtime.snapshots.Snapshot.sendApplyNotifications() }
             rule.mainClock.advanceTimeByFrame()
-            rule.onAllNodesWithTag("browse-content:$prefix").fetchSemanticsNodes().isNotEmpty() &&
-                !state.restoreFocus && state.lastFocusedKey?.startsWith("$prefix:") == true
+            when (state.tab) {
+                Tab.DISCOVER -> rule.onAllNodesWithTag("discover-grid").fetchSemanticsNodes().isNotEmpty() &&
+                    !state.restoreFocus && state.discover.focusedKey?.startsWith("discover:") == true
+                else -> {
+                    val prefix = if (state.tab == Tab.LIBRARY) "library" else "home"
+                    rule.onAllNodesWithTag("browse-content:$prefix").fetchSemanticsNodes().isNotEmpty() &&
+                        !state.restoreFocus && state.rowFocus[prefix] != null
+                }
+            }
         }
     }
 
@@ -95,6 +102,8 @@ class ScreenshotTest {
         Repo.prefs.setActive("s1")
         Repo.prefs.guidePreview = false
         Repo.prefs.lastChannelKey = null
+        Repo.prefs.setVodUsOnly(true)
+        Repo.catalogRows.value = tv.lumanest.tuner.data.CatalogRows.NONE
         tv.lumanest.tuner.ui.Toasts.message = null
         tv.lumanest.tuner.ui.Palette.theme = tv.lumanest.tuner.ui.Themes.Midnight
         Repo.trending.value = emptyList()
@@ -175,22 +184,43 @@ class ScreenshotTest {
         println("stackB=" + state.stack.size)
     }
 
-    @Test fun movies() {
-        val state = AppState().apply { tab = Tab.MOVIES }
-        rule.mainClock.autoAdvance = false
-        rule.setContent { KeyboardMode { TunerTheme { HomeScreen(state) } } }
-        rule.mainClock.advanceTimeBy(800)
-        awaitBrowse(state)
-        shot("06_movies")
+    @Test fun home() {
+        val state = AppState(Tab.HOME)
+        // One poster carries the Library check badge.
+        if (!Repo.prefs.isLibraryFavorite("movie:m:29")) Repo.prefs.toggleLibraryFavorite("movie:m:29")
+        try {
+            rule.mainClock.autoAdvance = false
+            rule.setContent { KeyboardMode { TunerTheme { HomeScreen(state, store = false) } } }
+            rule.mainClock.advanceTimeBy(800)
+            awaitBrowse(state)
+            shot("06_home")
+        } finally { Repo.prefs.toggleLibraryFavorite("movie:m:29") }
     }
 
-    @Test fun series() {
-        val state = AppState().apply { tab = Tab.SERIES }
+    @Test fun discover() {
+        val state = AppState(Tab.HOME).apply { openDiscover(tv.lumanest.tuner.data.VodType.SERIES) }
         rule.mainClock.autoAdvance = false
-        rule.setContent { KeyboardMode { TunerTheme { HomeScreen(state) } } }
+        rule.setContent { KeyboardMode { TunerTheme { HomeScreen(state, store = false) } } }
         rule.mainClock.advanceTimeBy(800)
         awaitBrowse(state)
-        shot("15_series")
+        shot("15_discover")
+    }
+
+    @Test fun library() {
+        val state = AppState(Tab.LIBRARY)
+        val now = System.currentTimeMillis()
+        listOf("movie:m:3", "series:2").forEach { if (!Repo.prefs.isLibraryFavorite(it)) Repo.prefs.toggleLibraryFavorite(it) }
+        Repo.prefs.saveProgress(tv.lumanest.tuner.data.Recent("m:5", "Movie Title 5", null, null, "http://h/movie/u/p/5.mp4", 1_200_000, 5_400_000, now, titleKey = "movie:m:5"))
+        try {
+            rule.mainClock.autoAdvance = false
+            rule.setContent { KeyboardMode { TunerTheme { HomeScreen(state, store = false) } } }
+            rule.mainClock.advanceTimeBy(800)
+            awaitBrowse(state)
+            shot("22_library")
+        } finally {
+            listOf("movie:m:3", "series:2").forEach { if (Repo.prefs.isLibraryFavorite(it)) Repo.prefs.toggleLibraryFavorite(it) }
+            Repo.prefs.saveProgress(tv.lumanest.tuner.data.Recent("m:5", "Movie Title 5", null, null, "http://h/movie/u/p/5.mp4", 5_400_000, 5_400_000, now))
+        }
     }
 
     @Config(sdk = [34], qualifiers = "w720dp-h405dp-land-xhdpi")
@@ -200,14 +230,14 @@ class ScreenshotTest {
         rule.setContent { KeyboardMode { TunerTheme { HomeScreen(state) } } }
         rule.mainClock.advanceTimeBy(800)
         shot("16_compact_guide")
-        rule.runOnIdle { state.tab = Tab.MOVIES; state.restoreFocus = true; androidx.compose.runtime.snapshots.Snapshot.sendApplyNotifications() }
+        rule.runOnIdle { state.tab = Tab.HOME; state.restoreFocus = true; androidx.compose.runtime.snapshots.Snapshot.sendApplyNotifications() }
         rule.mainClock.advanceTimeBy(800)
         awaitBrowse(state)
-        shot("17_compact_movies")
-        rule.runOnIdle { state.tab = Tab.SERIES; state.restoreFocus = true; androidx.compose.runtime.snapshots.Snapshot.sendApplyNotifications() }
+        shot("17_compact_home")
+        rule.runOnIdle { state.openDiscover(tv.lumanest.tuner.data.VodType.MOVIES); androidx.compose.runtime.snapshots.Snapshot.sendApplyNotifications() }
         rule.mainClock.advanceTimeBy(800)
         awaitBrowse(state)
-        shot("18_compact_series")
+        shot("18_compact_discover")
     }
 
     /** Passing across navigation must not mount each library or steal remote focus. */
@@ -216,20 +246,20 @@ class ScreenshotTest {
         rule.mainClock.autoAdvance = false
         rule.setContent { KeyboardMode { TunerTheme { HomeScreen(state) } } }
         rule.mainClock.advanceTimeBy(800)
-        rule.onNodeWithContentDescription("Movies").performSemanticsAction(SemanticsActions.RequestFocus) { it() }
+        rule.onNodeWithContentDescription("Live TV").performSemanticsAction(SemanticsActions.RequestFocus) { it() }
         rule.onRoot().performKeyInput { pressKey(Key.DirectionRight) }
         rule.mainClock.advanceTimeBy(300)
-        rule.onNodeWithContentDescription("Series").assertIsFocused()
+        rule.onNodeWithContentDescription("Discover").assertIsFocused()
         rule.runOnIdle { assertEquals(Tab.GUIDE, state.tab) }
         rule.onRoot().performKeyInput { pressKey(Key.Enter) }
         rule.mainClock.advanceTimeBy(800)
-        rule.runOnIdle { assertEquals(Tab.SERIES, state.tab) }
+        rule.runOnIdle { assertEquals(Tab.DISCOVER, state.tab) }
         awaitBrowse(state)
-        shot("19_navigation_series")
+        shot("19_navigation_discover")
     }
 
     @Test fun movieReturnRestoresRemoteFocus() {
-        val state = AppState().apply { tab = Tab.MOVIES }
+        val state = AppState(Tab.HOME)
         rule.mainClock.autoAdvance = false
         rule.setContent {
             KeyboardMode {
@@ -298,7 +328,7 @@ class ScreenshotTest {
         rule.onNodeWithContentDescription(Tab.GUIDE.title).assertIsFocused()
         rule.onRoot().performKeyInput { pressKey(Key.DirectionRight) }
         rule.mainClock.advanceTimeBy(300)
-        rule.onNodeWithContentDescription(Tab.MOVIES.title).assertIsFocused()
+        rule.onNodeWithContentDescription(Tab.DISCOVER.title).assertIsFocused()
         rule.runOnIdle {
             assertEquals(10, state.guide.row)
             assertEquals("Remote focus should leave the schedule on Back", 0L, state.guide.focusTime)
@@ -306,13 +336,13 @@ class ScreenshotTest {
     }
 
     @Config(sdk = [34], qualifiers = "w640dp-h360dp-land-xhdpi")
-    @Test fun smallLandscapeMovies() {
-        val state = AppState().apply { tab = Tab.MOVIES }
+    @Test fun smallLandscapeHome() {
+        val state = AppState(Tab.HOME)
         rule.mainClock.autoAdvance = false
         rule.setContent { KeyboardMode { TunerTheme { HomeScreen(state) } } }
         rule.mainClock.advanceTimeBy(800)
         awaitBrowse(state)
-        shot("21_small_movies")
+        shot("21_small_home")
     }
 
     @Test fun livePlayer() {
