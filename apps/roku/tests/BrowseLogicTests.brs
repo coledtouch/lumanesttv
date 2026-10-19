@@ -12,6 +12,8 @@ function runBrowseLogicTests() as object
     testTagChainTime(t, rx)
     testSpaceRunTime(t, rx)
     testProviderTmdbId(t, rx)
+    testM3uEntries(t, rx)
+    testM3uLineTime(t, rx)
     testAdultNames(t, rx)
     testCategoryServices(t, rx)
     testRowsPayload(t)
@@ -25,6 +27,7 @@ function runBrowseLogicTests() as object
     testCategoryGenres(t, rx)
     testPickTitles(t, rx)
     testCopies(t, rx)
+    testLetterCaseKeys(t, rx)
     testHomeRows(t, rx)
     testSearchTitles(t, rx)
     testDiscoverLists(t)
@@ -87,10 +90,12 @@ end function
 ' ------------------------------------------------------------------ tests
 
 ' The cases every Tuner app runs (docs/browse-cases.json): the category filter, normalized titles with the year
-' in the name, USA only through buildTitleSection, and the provider TMDB id of a row read with ParseJson.
+' in the name, USA only through buildTitleSection, the provider TMDB id of a row read with ParseJson, and the names
+' and groups of an M3U playlist's entries.
 sub testSharedCases(t as object, rx as object)
     cases = browseCases()
     expectTrue(t, cases.Count() > 0, "shared cases are loaded")
+    kinds = {}
     for each c in cases
         if c.kind = "category"
             expectEqual(t, isForeignCategory(c.name, rx), c.foreign, "shared category " + FormatJson(c.name))
@@ -102,11 +107,35 @@ sub testSharedCases(t as object, rx as object)
             expected = c.expect
             if expected = invalid then expected = ""
             expectEqual(t, sharedTmdbCase(c.json, rx), expected, "shared tmdb " + FormatJson(c.json))
+        else if c.kind = "m3u"
+            expected = []
+            for each entry in c.expect
+                expected.Push([entry.name, entry.group])
+            end for
+            expectEqual(t, sharedM3uCase(c.text, rx), expected, "shared m3u " + FormatJson(c.text))
         else
-            expectEqual(t, c.kind, "category, normalize, usa or tmdb", "shared case kind")
+            expectEqual(t, c.kind, "category, normalize, usa, tmdb or m3u", "shared case kind")
         end if
+        kinds[c.kind] = true
     end for
+    seen = []
+    for each kind in ["category", "normalize", "usa", "tmdb", "m3u"]
+        if kinds.DoesExist(kind) then seen.Push(kind)
+    end for
+    expectEqual(t, seen, ["category", "normalize", "usa", "tmdb", "m3u"], "shared cases of every kind are loaded")
 end sub
+
+' One m3u case as the catalog task reads it: the whole playlist through m3uEntries (m3uSections shows an entry
+' without a group in "Other"). Returns the entries in order as [name, group], or a text saying what went wrong.
+function sharedM3uCase(text as string, rx as object) as dynamic
+    entries = m3uEntries(text, rx)
+    if entries = invalid then return "m3uEntries found no #EXTM3U header"
+    result = []
+    for each entry in entries
+        result.Push([entry.name, entry.group])
+    end for
+    return result
+end function
 
 ' One tmdb case as the catalog task reads it: the row's JSON text through ParseJson (ApiTask), then providerTmdbId,
 ' and the hint titleFromXtream keeps for the row (with a stream id and a name added when the row has none). Returns
@@ -246,11 +275,15 @@ sub testTrimming(t as object, rx as object)
     expectEqual(t, [normalizeTitle(ascii + "- 1999" + ascii, rx), titleYearOf(ascii + " - 1999" + ascii, rx), titleYearOf(Chr(&h3000) + "- 1999", rx)], ["1999", "", ""], "a tag-only name is read with its ends trimmed")
     expectEqual(t, [titleYearOf("Heat - 1995" + Chr(13) + Chr(10), rx), titleYearOf(Chr(9) + "Heat | 1995 " + Chr(11), rx)], ["1995", "1995"], "a year before trimmed ends")
     expectEqual(t, [normalizeTitle(Chr(&h1F) + " - 1999", rx), titleYearOf(Chr(&h1F) + " - 1999", rx), titleYearOf(Chr(&h180E) + " - 1999", rx), titleYearOf(Chr(&h200B) + " - 1999", rx)], ["", "1999", "1999", "1999"], "characters that are not spaces are not trimmed")
-    expectEqual(t, trimEnds(" " + Chr(&h1C) + " Heat " + Chr(&h1F) + Chr(13)), Chr(&h1C) + " Heat " + Chr(&h1F), "trimEnds stops at U+001C and U+001F")
-    expectEqual(t, [trimEnds(""), trimEnds(ascii), trimEnds("Heat"), trimEnds(ascii + "H" + ascii), trimEnds(" A  B" + Chr(9))], ["", "", "Heat", "H", "A  B"], "trimEnds takes the ends only")
-    expectEqual(t, [trimField(""), trimField("Heat"), trimField(ascii), trimField(Chr(&h3000) + Chr(&hFEFF) + " Heat" + Chr(&hA0) + Chr(&h2029) + Chr(13))], ["", "Heat", "", "Heat"], "trimField takes spaces off the ends")
-    expectEqual(t, [trimField(Chr(&h1F) + " - 1999" + Chr(13)), trimField(Chr(&h180E) + "Heat" + Chr(&h200B) + " "), trimField(" " + Chr(&h1C) + "|EN" + Chr(&h1E))], [Chr(&h1F) + " - 1999", Chr(&h180E) + "Heat" + Chr(&h200B), Chr(&h1C) + "|EN" + Chr(&h1E)], "trimField keeps U+001C to U+001F, U+180E and U+200B")
-    expectEqual(t, titleFromM3u("movie", "m~1", trimField(Chr(&h1F) + " - 1999" + Chr(13)), "", "Movies", "u", rx).year, "1999", "an M3U title keeps U+001F")
+    expectEqual(t, trimEnds(" " + Chr(&h1C) + " Heat " + Chr(&h1F) + Chr(13), rx), Chr(&h1C) + " Heat " + Chr(&h1F), "trimEnds stops at U+001C and U+001F")
+    expectEqual(t, [trimEnds("", rx), trimEnds(ascii, rx), trimEnds("Heat", rx), trimEnds(ascii + "H" + ascii, rx), trimEnds(" A  B" + Chr(9), rx)], ["", "", "Heat", "H", "A  B"], "trimEnds takes the ends only")
+    expectEqual(t, [trimField("", rx), trimField("Heat", rx), trimField(ascii, rx), trimField(Chr(&h3000) + Chr(&hFEFF) + " Heat" + Chr(&hA0) + Chr(&h2029) + Chr(13), rx)], ["", "Heat", "", "Heat"], "trimField takes spaces off the ends")
+    expectEqual(t, [trimField(Chr(&h1F) + " - 1999" + Chr(13), rx), trimField(Chr(&h180E) + "Heat" + Chr(&h200B) + " ", rx), trimField(" " + Chr(&h1C) + "|EN" + Chr(&h1E), rx)], [Chr(&h1F) + " - 1999", Chr(&h180E) + "Heat" + Chr(&h200B), Chr(&h1C) + "|EN" + Chr(&h1E)], "trimField keeps U+001C to U+001F, U+180E and U+200B")
+    expectEqual(t, titleFromM3u("movie", "m~1", trimField(Chr(&h1F) + " - 1999" + Chr(13), rx), "", "Movies", "u", rx).year, "1999", "an M3U title keeps U+001F")
+    ' The runs at the ends are measured with patterns (rx.edgeLead, rx.edgeTrail): runs inside the text stay, and a
+    ' line feed ending the text goes with the rest of its run.
+    expectEqual(t, [trimEnds("A" + Chr(10), rx), trimEnds(" A " + ascii + "B " + Chr(13) + Chr(10), rx), trimEnds(Chr(&hA0) + " A " + Chr(&h3000), rx), trimEnds("  A", rx), trimEnds("A  ", rx)], ["A", "A " + ascii + "B", Chr(&hA0) + " A " + Chr(&h3000), "A", "A"], "trimEnds keeps the runs inside and the Unicode spaces")
+    expectEqual(t, [trimField(" " + Chr(&hA0) + Chr(9) + "A" + Chr(&h2003) + " " + Chr(&h85) + "B" + Chr(&h205F) + Chr(10) + Chr(&hFEFF), rx), trimField(Chr(&h3000) + Chr(&h2028) + Chr(&h2029), rx), trimField("A" + Chr(&hA0), rx), trimField(Chr(&h1680) + "A", rx)], ["A" + Chr(&h2003) + " " + Chr(&h85) + "B", "", "A", "A"], "trimField keeps the runs inside")
 end sub
 
 ' docs/browse.md, "Test cases": a name ending in 40 quality tags and a word that is not a tag. yearEnd tries the
@@ -272,20 +305,52 @@ end sub
 
 ' docs/browse.md, "Test cases" and "Trimming": a name with a long run of spaces inside it. A trim written as the pattern
 ' ^[ \t\n\x0B\f\r]+|[ \t\n\x0B\f\r]+$ tries its second half again at every space of the run, so its time grew with
-' the square of the run (over half a second here for 16,000 spaces). trimEnds reads the ends only. The run is timed
-' with spaces at the ends of the name too, since the old trim ran its pattern only then.
+' the square of the run (over half a second here for 16,000 spaces). The run is timed with spaces at the ends of the
+' name too, since the old trim ran its pattern only then, and a name between two runs of 16,000 spaces, which a loop
+' over the characters at the ends took seconds to trim. trimField, which M3U lines and values and TMDB id strings go
+' through, is timed on runs at the ends too, of spaces and of Unicode spaces. Each takes the fastest of three runs.
 sub testSpaceRunTime(t as object, rx as object)
     spaces = String(16000, " ")
-    for each name in ["A" + spaces + "B", " A" + spaces + "B" + Chr(13)]
-        timer = CreateObject("roTimespan")
-        timer.Mark()
-        result = [normalizeTitle(name, rx), titleYearOf(name, rx)]
-        elapsed = timer.TotalMilliseconds()
-        label = "16,000 spaces inside a name of " + Len(name).ToStr() + " characters"
-        expectEqual(t, result, ["a b", ""], label)
-        expectTrue(t, elapsed < 50, label + " take well under 50 ms (took " + elapsed.ToStr() + " ms)")
+    unicode = String(16000, Chr(&h3000))
+    shapes = [
+        {kind: "name", text: "A" + spaces + "B", expect: ["a b", ""], label: "16,000 spaces inside a name"},
+        {kind: "name", text: " A" + spaces + "B" + Chr(13), expect: ["a b", ""], label: "16,000 spaces inside a name with spaces at its ends"},
+        {kind: "name", text: spaces + "A" + spaces, expect: ["a", ""], label: "a name between two runs of 16,000 spaces"},
+        {kind: "name", text: spaces + "Dune - 2021" + spaces, expect: ["dune", "2021"], label: "a name with a year between two runs of 16,000 spaces"},
+        {kind: "field", text: spaces + "A" + spaces, expect: ["A", ""], label: "trimField between two runs of 16,000 spaces"},
+        {kind: "field", text: unicode + "A" + Chr(9) + unicode + spaces, expect: ["A", ""], label: "trimField between runs of Unicode spaces and spaces"},
+        {kind: "field", text: "A" + spaces + "B", expect: ["A" + spaces + "B", ""], label: "trimField of a field with 16,000 spaces inside"},
+        {kind: "field", text: spaces + "0123" + unicode, expect: ["0123", "123"], label: "a TMDB id string between two runs of 16,000 spaces"}
+    ]
+    for each shape in shapes
+        timing = fastestRun(shape.kind, shape.text, rx)
+        expectEqual(t, timing.result, shape.expect, shape.label)
+        expectTrue(t, timing.elapsed < 50, shape.label + " takes well under 50 ms (took " + timing.elapsed.ToStr() + " ms)")
     end for
 end sub
+
+' The fastest of three runs of timedRun: {result, elapsed} (ms). Taking the fastest leaves out pauses that are not the
+' code's own, such as the emulator collecting garbage; code whose time grows with the square of a run is slow every time.
+function fastestRun(kind as string, text as string, rx as object) as object
+    best = {result: invalid, elapsed: 2147483647}
+    for i = 1 to 3
+        timer = CreateObject("roTimespan")
+        timer.Mark()
+        result = timedRun(kind, text, rx)
+        elapsed = timer.TotalMilliseconds()
+        if elapsed < best.elapsed then best = {result: result, elapsed: elapsed}
+    end for
+    return best
+end function
+
+' One timed check: a name normalized and its year ("name"), a provider field trimmed and read as a TMDB id ("field"),
+' or an #EXTINF line's title and group ("extinf").
+function timedRun(kind as string, text as string, rx as object) as object
+    if kind = "name" then return [normalizeTitle(text, rx), titleYearOf(text, rx)]
+    if kind = "field" then return [trimField(text, rx), providerTmdbId({tmdb: text}, rx)]
+    info = m3uExtinf(text, rx)
+    return [info.title, info.group]
+end function
 
 sub testProviderTmdbId(t as object, rx as object)
     expectEqual(t, providerTmdbId({tmdb: "603"}, rx), "603", "tmdb field")
@@ -317,6 +382,113 @@ sub testProviderTmdbId(t as object, rx as object)
     boxed = CreateObject("roString")
     boxed.SetString(" 0123 ")
     expectEqual(t, [providerTmdbId({tmdb: boxed}, rx), providerTmdbId({tmdb: CreateObject("roInt")}, rx)], ["123", ""], "boxed values")
+    ' Keys match exactly, letter case included (Matching step 1). ParseJson without the "i" flag, as the catalog task
+    ' calls it, keeps TMDB and tmdb apart and looks keys up case-sensitively; providerTmdbId reads them with brackets,
+    ' since a dot lookup (row.tmdb) finds TMDB too in the emulator.
+    upper = ParseJson("{""TMDB"":""5""}")
+    expectEqual(t, [upper["tmdb"], upper["TMDB"], upper.Lookup("tmdb")], [invalid, "5", invalid], "ParseJson keeps the letter case of keys")
+    both = ParseJson("{""TMDB"":""5"",""tmdb"":""6""}")
+    expectEqual(t, [both["TMDB"], both["tmdb"], both.Count()], ["5", "6", 2], "ParseJson keeps keys that differ in letter case apart")
+    expectEqual(t, [providerTmdbId(upper, rx), providerTmdbId(both, rx), providerTmdbId(ParseJson("{""tmdb"":""6"",""TMDB"":""5""}"), rx)], ["", "6", "6"], "TMDB is another key")
+    expectEqual(t, [providerTmdbId(ParseJson("{""Tmdb_Id"":""5"",""INFO"":{""tmdb"":""7""}}"), rx), providerTmdbId(ParseJson("{""INFO"":{""tmdb"":""5""},""info"":{""TMDB"":""7"",""tmdb_id"":""8""}}"), rx)], ["", "8"], "Tmdb_Id, INFO and info.TMDB are other keys")
+end sub
+
+' docs/browse.md, "M3U playlists": the reader every M3U line goes through (m3uEntries, m3uExtinf); the shared m3u
+' cases cover the names and groups. Here: the header, the icon and the URL, the count behind "Channel N", and line ends.
+sub testM3uEntries(t as object, rx as object)
+    lf = Chr(10)
+    cr = Chr(13)
+    ' The header starts the first line left once lines are trimmed (a byte order mark too) and empty ones skipped, in
+    ' any ASCII letter case; without it there is no playlist.
+    for each body in ["", " " + cr + lf, "http://m3u.invalid/live/1.ts", "#EXTINF:-1,Heat" + lf + "#EXTM3U" + lf + "http://m3u.invalid/live/1.ts", "#EXTM3" + lf + "#EXTINF:-1,Heat" + lf + "http://m3u.invalid/live/1.ts", "#EXT" + Chr(&h1C) + "M3U" + lf + "http://m3u.invalid/live/1.ts", Chr(&h1F) + "#EXTM3U" + lf + "http://m3u.invalid/live/1.ts"]
+        expectEqual(t, m3uEntries(body, rx), invalid, "no M3U header in " + FormatJson(body))
+    end for
+    expectEqual(t, m3uEntries("#EXTM3U", rx), [], "a header alone is an empty playlist")
+    expectEqual(t, m3uNames(m3uEntries(Chr(&hFEFF) + cr + lf + " " + Chr(&hA0) + cr + Chr(9) + "#extM3u x-tvg-url=""a""" + cr + "#EXTINF:-1,Heat" + cr + "http://m3u.invalid/live/1.ts", rx)), ["Heat"], "a header after empty lines and a byte order mark, in any letter case")
+    ' Each entry keeps its icon (the tvg-logo value, read as the other values are) and its URL line, trimmed.
+    body = "#EXTM3U" + lf + "#EXTINF:-1 tvg-logo = 'http://img.invalid/a,b.png' TVG-LOGO=""http://img.invalid/c.png"" group-title=""Kids"",Up" + lf
+    body = body + Chr(9) + "http://m3u.invalid/movie/1.mp4" + Chr(&hA0) + " " + lf
+    body = body + "#EXTINF:-1 tvg-logo="" http://img.invalid/d.png "",Heat" + lf + "http://m3u.invalid/live/2.ts" + lf
+    body = body + "http://m3u.invalid/live/3.ts" + lf
+    entries = m3uEntries(body, rx)
+    fields = []
+    for each entry in entries
+        fields.Push([entry.name, entry.group, entry.icon, entry.url])
+    end for
+    expectEqual(t, fields, [["Up", "Kids", "http://img.invalid/a,b.png", "http://m3u.invalid/movie/1.mp4"], ["Heat", "", "http://img.invalid/d.png", "http://m3u.invalid/live/2.ts"], ["Channel 3", "", "", "http://m3u.invalid/live/3.ts"]], "names, groups, icons and URLs")
+    ' Lines are trimmed as provider fields: Unicode spaces go (U+0085 too, which some Trims keep), U+001F stays, so
+    ' that line is a URL.
+    body = "#EXTM3U" + lf + Chr(&h85) + "#EXTINF:-1,Heat" + Chr(&h85) + lf + Chr(&h2028) + "http://m3u.invalid/live/1.ts" + Chr(&h85) + Chr(&h3000) + lf
+    body = body + Chr(&h1F) + "#EXTINF:-1,Up" + lf
+    expectEqual(t, m3uUrls(m3uEntries(body, rx)), [["Heat", "http://m3u.invalid/live/1.ts"], ["Channel 2", Chr(&h1F) + "#EXTINF:-1,Up"]], "lines trimmed as provider fields")
+    ' N in "Channel N" counts every URL line, named or not.
+    body = "#EXTM3U" + lf + "#EXTINF:-1,One" + lf + "http://m3u.invalid/live/1.ts" + lf + "http://m3u.invalid/live/2.ts" + lf + "#EXTINF:-1 tvg-name="" "",  " + lf + "http://m3u.invalid/live/3.ts" + lf + "#EXTINF:-1,Four" + lf + "http://m3u.invalid/live/4.ts" + lf + "http://m3u.invalid/live/5.ts"
+    expectEqual(t, m3uNames(m3uEntries(body, rx)), ["One", "Channel 2", "Channel 3", "Four", "Channel 5"], "Channel N counts every URL line")
+    ' Lines end at CR LF, CR (old Mac files) or LF, and nowhere else: U+0085, U+2028 and U+2029 are Unicode spaces.
+    for each ends in [[lf, "LF"], [cr + lf, "CR LF"], [cr, "CR"]]
+        body = "#EXTM3U" + ends[0] + "#EXTINF:-1 group-title=""News"",One, Two" + ends[0] + "http://m3u.invalid/live/1.ts" + ends[0] + "#EXTINF:-1,Three" + ends[0] + "#EXTGRP:Kids" + ends[0] + "http://m3u.invalid/live/2.ts" + ends[0]
+        expectEqual(t, m3uPairs(m3uEntries(body, rx)), [["One, Two", "News"], ["Three", "Kids"]], "lines that end in " + ends[1])
+    end for
+    body = "#EXTM3U" + cr + "#EXTINF:-1,Up" + Chr(&h85) + "Town" + Chr(&h2028) + "x" + Chr(&h2029) + cr + lf + lf + cr + "http://m3u.invalid/live/1.ts" + cr + cr + "http://m3u.invalid/live/2.ts"
+    expectEqual(t, m3uNames(m3uEntries(body, rx)), ["Up" + Chr(&h85) + "Town" + Chr(&h2028) + "x", "Channel 2"], "U+0085, U+2028 and U+2029 end no line")
+    ' One #EXTINF line: the first comma outside a value is the name comma; values in either quote, the first of a key.
+    info = m3uExtinf("#EXTINF:-1 tvg-name='A' TVG-NAME=""B"" group-title=""x,y"" tvg-logo='l',Crazy, Stupid, Love (2011)", rx)
+    expectEqual(t, [info.title, info.tvgName, info.group, info.icon], ["Crazy, Stupid, Love (2011)", "A", "x,y", "l"], "an #EXTINF line")
+    info = m3uExtinf("#EXTINF:-1 tvg-name=""Heat,Heat group-title='Kids'", rx)
+    expectEqual(t, [info.title, info.tvgName, info.group, info.icon], ["Heat group-title='Kids'", "", "", ""], "a quote without a partner starts no value")
+    info = m3uExtinf("#EXTINF:-1 a= =""x"" b ='y' c= z=""w""", rx)
+    expectEqual(t, [info.title, info.tvgName, info.group, info.icon], ["", "", "", ""], "no name comma")
+end sub
+
+' The names of m3uEntries' entries, or what it gave instead.
+function m3uNames(entries as dynamic) as dynamic
+    if type(entries) <> "roArray" then return entries
+    names = []
+    for each entry in entries
+        names.Push(entry.name)
+    end for
+    return names
+end function
+
+' The [name, url] of m3uEntries' entries, or what it gave instead.
+function m3uUrls(entries as dynamic) as dynamic
+    if type(entries) <> "roArray" then return entries
+    pairs = []
+    for each entry in entries
+        pairs.Push([entry.name, entry.url])
+    end for
+    return pairs
+end function
+
+' The [name, group] of m3uEntries' entries, or what it gave instead.
+function m3uPairs(entries as dynamic) as dynamic
+    if type(entries) <> "roArray" then return entries
+    pairs = []
+    for each entry in entries
+        pairs.Push([entry.name, entry.group])
+    end for
+    return pairs
+end function
+
+' docs/browse.md, "M3U playlists": an #EXTINF line is read once, in time that grows in proportion to it. Long lines of
+' values with commas and quotes inside, of keys without values, a long title, and a quote without a partner before a
+' long text; a loop over every character of the line, as the reader before this one had, takes seconds for some.
+sub testM3uLineTime(t as object, rx as object)
+    many = "#EXTINF:-1"
+    for i = 1 to 2000
+        many = many + " tvg-id=""a,b='c'"""
+    end for
+    shapes = [
+        {text: many + " group-title='Kids',Heat", expect: ["Heat", "Kids"], label: "an #EXTINF line with 2,000 values"},
+        {text: "#EXTINF:-1 " + String(5000, "a=") + "b,Heat", expect: ["Heat", ""], label: "an #EXTINF line with 5,000 keys without values"},
+        {text: "#EXTINF:-1 group-title=""Kids""," + String(100000, "a"), expect: [String(100000, "a"), "Kids"], label: "an #EXTINF line with a title of 100,000 characters"},
+        {text: "#EXTINF:-1 group-title=""" + String(100000, "a") + ",Heat", expect: ["Heat", ""], label: "an #EXTINF line with a quote without a partner before 100,000 characters"}
+    ]
+    for each shape in shapes
+        timing = fastestRun("extinf", shape.text, rx)
+        expectEqual(t, timing.result, shape.expect, shape.label)
+        expectTrue(t, timing.elapsed < 1000, shape.label + " takes well under a second (took " + timing.elapsed.ToStr() + " ms)")
+    end for
 end sub
 
 sub testAdultNames(t as object, rx as object)
@@ -479,6 +651,110 @@ sub testCopies(t as object, rx as object)
     expectEqual(t, namesOf(section, pickTitles(section, section.lists.az, {usOnly: true, adultOk: false, genre: "", seen: {}}, 0, 20).picked), ["Heat (1995) [4K]", "Other Film"], "A-Z")
     expectEqual(t, namesOf(section, searchTitles(section, "fr]", {usOnly: false, adultOk: false, genre: "", seen: {}}, 10)), ["Heat (1995) [4K]"], "search opens the best copy")
 end sub
+
+' Provider text that differs only in letter case is never one key: M3U group names, Xtream category ids and stream
+' ids (title keys). An associative array made with {} ignores letter case, so each check here fails when the array
+' behind it does. The screen reads byCat and byKey from a copy that may ignore letter case; plain {} copies stand in.
+sub testLetterCaseKeys(t as object, rx as object)
+    ' M3U: "it | movies" passes USA only and "IT | Movies" is foreign (category rule 2), as in every other app.
+    text = "#EXTM3U" + Chr(10)
+    for each entry in [["it | movies", "Dune (2021)", "movie/1.mkv"], ["IT | Movies", "Dune (2021)", "movie/2.mkv"], ["News", "One", "live/1.ts"], ["NEWS", "Two", "live/2.ts"], ["News", "Three", "live/3.ts"], ["", "Four", "live/4.ts"], ["news", "Five", "live/5.ts"]]
+        text = text + "#EXTINF:-1 group-title=" + Chr(34) + entry[0] + Chr(34) + "," + entry[1] + Chr(10) + "http://m3u.invalid/" + entry[2] + Chr(10)
+    end for
+    parts = m3uSections(m3uEntries(text, rx), rx)
+    expectEqual(t, categoryNames(parts.cats.movies), ["it | movies", "IT | Movies"], "M3U groups in another letter case are other categories")
+    payload = rowsPayloadWith({popular: [tmdbItem(438631, "Dune", "2021", ["US"], [878])]}, {})
+    movies = buildTitleSection(parts.lists.movies, parts.cats.movies, payload.movie, payload.genres.movie, rx)
+    expectEqual(t, [movies.items[0].tmdb, movies.items[0].us, movies.items[1].tmdb, movies.items[1].us], ["438631", true, "438631", false], "USA only: Dune in it | movies passes, in IT | Movies it does not")
+    expectEqual(t, liveGroups(grouped(parts.cats.live, parts.lists.live)), [["News", "NEWS", "Other", "news"], [["One", "Three"], ["Two"], ["Four"], ["Five"]]], "M3U live channels stay in their own group")
+    expectTrue(t, distinctIgnoringCase(categoryIds(parts.cats.live)) and distinctIgnoringCase(categoryIds(parts.cats.movies)), "M3U category ids differ in more than letter case")
+
+    ' Xtream live categories: "a" and "A" are two, and none is the Other of channels without a category.
+    cats = [{id: "a", name: "Alpha", adult: false}, {id: "A", name: "Upper A", adult: true}, {id: "__other", name: "Provider Other", adult: false}, {id: "b", name: "Empty", adult: false}]
+    channels = [{name: "One", cat: "a"}, {name: "Two", cat: "A"}, {name: "Three", cat: ""}, {name: "Four", cat: "__other"}, {name: "Five", cat: "zz"}, {name: "Six", cat: "a"}, {name: "Seven", cat: "__OTHER"}]
+    live = grouped(cats, channels)
+    expectEqual(t, liveGroups(live), [["Alpha", "Upper A", "Provider Other", "Other"], [["One", "Six"], ["Two"], ["Four"], ["Three"]]], "Xtream live channels by category id, letter case included")
+    expectEqual(t, [live.categories[0].adult, live.categories[1].adult], [false, true], "a live category keeps its fields")
+
+    ' Xtream titles: category ids "a" and "A", and stream ids "x1" and "X1", "y1" and "Y1", are different.
+    categories = [{id: "a", name: "US | Movies", adult: false}, {id: "A", name: "FR | Films", adult: false}, {id: "7", name: "DE | Filme", adult: false}, {id: "8", name: "Movies", adult: false}]
+    rows = [
+        movieRow("x1", "First", "a", {added: "1700000100"}),
+        movieRow("X1", "Second", "A", {added: "1700000200"}),
+        movieRow("y1", "Third", "7", {added: "1700000300"}),
+        movieRow("Y1", "Fourth", "8", {added: "1700000400"}),
+        movieRow("z1", "Fifth", "8", {added: "1700000500"})
+    ]
+    none = parseRowsPayload(FormatJson({v: 1, source: "none", movie: {}, tv: {}, genres: {}}))
+    section = buildTitleSection(sectionTitles(rows, "movie", rx), categories, none.movie, none.genres.movie, rx)
+    us = []
+    for each item in section.items
+        us.Push(item.us)
+    end for
+    expectEqual(t, us, [true, false, false, true, true], "USA only: each category id and each stream id on its own")
+    expectEqual(t, [section.byKey["mx1"], section.byKey["mX1"], section.byKey["my1"], section.byKey["mY1"]], [0, 1, 2, 3], "byKey keeps the letter case of stream ids")
+    copy = {}
+    for each key in section.byKey
+        copy[key] = section.byKey[key]
+    end for
+    found = []
+    for each key in ["mx1", "mX1", "my1", "mY1", "mz1", "mZ1"]
+        found.Push([titleIndexOf(section, key), titleIndexOf({items: section.items, byKey: copy}, key)])
+    end for
+    expectEqual(t, found, [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4], [-1, -1]], "titleIndexOf, also through a copy of byKey that ignores letter case")
+    opts = {usOnly: false, adultOk: false, genre: "", seen: exactKeys()}
+    expectEqual(t, namesOf(section, pickTitles(section, section.lists.recent, opts, 0, 20).picked), ["Fifth", "Fourth", "Third", "Second", "First"], "a row shows titles whose keys differ in letter case only")
+    home = []
+    for each row in buildHomeRows({movies: section, series: buildTitleSection([], [], none.tv, none.genres.tv, rx)}, false, {usOnly: false, adultOk: false}, [])
+        home.Push([row.id, row.refs.Count()])
+    end for
+    expectEqual(t, home, [["movies:recent", 5]], "Home rows tell title keys apart by letter case")
+    refs = libraryRefs(["mX1", "mx1", "mZ1", "mY1"], {movies: {items: section.items, byKey: copy}}, {usOnly: false, adultOk: false, genre: ""})
+    expectEqual(t, refs, [{type: "movies", idx: 1}, {type: "movies", idx: 0}, {type: "movies", idx: 3}], "Library keys find the title with that letter case")
+end sub
+
+function categoryNames(categories as object) as object
+    names = []
+    for each cat in categories
+        names.Push(cat.name)
+    end for
+    return names
+end function
+
+function categoryIds(categories as object) as object
+    ids = []
+    for each cat in categories
+        ids.Push(cat.id)
+    end for
+    return ids
+end function
+
+' Whether no two of these texts are one key in an associative array that ignores letter case.
+function distinctIgnoringCase(texts as object) as boolean
+    keys = {}
+    for each text in texts
+        if keys.DoesExist(text) then return false
+        keys[text] = true
+    end for
+    return true
+end function
+
+' A grouped live section as [category names, the channel names of each], read through a copy of byCat made with {}.
+function liveGroups(live as object) as object
+    copy = {}
+    for each key in live.byCat
+        copy[key] = live.byCat[key]
+    end for
+    lists = []
+    for each cat in live.categories
+        names = []
+        for each item in arrayOrEmpty(copy[cat.id])
+            names.Push(item.name)
+        end for
+        lists.Push(names)
+    end for
+    return [categoryNames(live.categories), lists]
+end function
 
 ' Unmatched titles reach genre filters through categories named after a genre.
 sub testCategoryGenres(t as object, rx as object)

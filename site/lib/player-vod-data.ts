@@ -4,7 +4,7 @@
 // directly.
 import {createHmac, hkdfSync} from 'node:crypto';
 import {sealStable, type TokenPurpose} from './player-crypto.ts';
-import {asText} from './browse.ts';
+import {asText, cutText} from './browse.ts';
 import {safeHTTPHost, type PlayerSession} from './player-data.ts';
 
 export const VOD_LIMITS = {
@@ -667,7 +667,8 @@ export type SeriesInfo = {id: string; name: string; plot: string; year: string; 
 export type MovieInfo = {id: string; plot: string; duration: number; genre: string; cast: string; director: string; released: string; rating: number; tmdb: string};
 
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
-const clip = (value: unknown, max: number) => asText(value).trim().slice(0, max);
+/** Provider text for the details screen, trimmed and cut to max UTF-16 units, never inside a surrogate pair. */
+const clip = (value: unknown, max: number) => cutText(asText(value).trim(), max);
 
 /** Seconds from duration_secs, or from "HH:MM:SS" / "MM:SS". */
 export function durationOf(info: Record<string, unknown>) {

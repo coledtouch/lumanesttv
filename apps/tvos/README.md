@@ -68,7 +68,7 @@ cd apps/tvos/TunerCore && swift test     # TunerCore, on the Mac (or Linux)
 
 and Product → Test (⌘U) in Xcode for the app's tests on the Simulator. The Keychain test is skipped on unsigned builds.
 
-TunerCore's tests run every case in [`docs/browse-cases.json`](../../docs/browse-cases.json), the Movies & Series cases all Tuner apps share (category filter, title normalization, USA only and the provider TMDB id, each `tmdb` row read by the catalogue's own JSON reader), from a copy in `TunerCore/Tests/TunerCoreTests/Fixtures/browse-cases.json`. A test fails when the copy differs from the repository's file, or when a case has a kind `BrowseCasesTests` doesn't run, so after changing the cases, copy them again:
+TunerCore's tests run every case in [`docs/browse-cases.json`](../../docs/browse-cases.json), the Movies & Series cases all Tuner apps share (category filter, title normalization, USA only, the provider TMDB id, each `tmdb` row read by the catalogue's own JSON reader, and the name and group of every M3U playlist entry, each `m3u` playlist read by `M3UParser`), from a copy in `TunerCore/Tests/TunerCoreTests/Fixtures/browse-cases.json`. A test fails when the copy differs from the repository's file, or when a case has a kind `BrowseCasesTests` doesn't run, so after changing the cases, copy them again:
 
 ```sh
 cp docs/browse-cases.json apps/tvos/TunerCore/Tests/TunerCoreTests/Fixtures/browse-cases.json

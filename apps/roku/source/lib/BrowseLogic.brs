@@ -41,6 +41,18 @@ function arrayOrEmpty(v as dynamic) as object
     return []
 end function
 
+' An associative array that tells keys apart by letter case. One made with {} or CreateObject("roAssociativeArray")
+' alone ignores the case of its keys, so the groups "it | movies" and "IT | Movies", or the stream ids "ab1" and "AB1",
+' would be one key there. Every array keyed by provider text (category ids, group names, stream ids) is made with this
+' and read with brackets (aa[key]): the emulator (brs-cli) answers a dot lookup ignoring case even here. The screen
+' gets the catalogue as a copy through a node field, which is not counted on to keep this mode, so what it looks up
+' there is kept under ids made here (m3uSections, grouped) or checked against the title itself (titleIndexOf).
+function exactKeys() as object
+    aa = CreateObject("roAssociativeArray")
+    aa.SetModeCaseSensitive()
+    return aa
+end function
+
 function numberOf(v as dynamic) as float
     t = asText(v).Trim()
     if t = "" then return 0
@@ -117,6 +129,19 @@ function browseRx() as object
         country: CreateObject("roRegex", "^\s*([A-Za-z]{2})\s*$", ""),
         ' Matching step 1 (TMDB_ID): a provider TMDB id given as a string, once trimmed as a provider field (group 1).
         tmdbId: CreateObject("roRegex", "^([0-9]{1,12})(\.0)?$", ""),
+        ' Trimming (trimEnds, trimField): the run of [ \t\n\x0B\f\r] that starts a text, and the one that ends it. The
+        ' second starts only where a run starts (not after one of these characters), so a run inside the text is tried
+        ' once, from its start, and each pattern takes time in proportion to the text, never to the square of a run.
+        edgeLead: CreateObject("roRegex", "^[ \t\n\x0B\f\r]+", ""),
+        edgeTrail: CreateObject("roRegex", "(?<![ \t\n\x0B\f\r])[ \t\n\x0B\f\r]+$", ""),
+        ' An M3U key (m3uExtinf): a run of ASCII letters, digits, "_" and "-", taken whole (group 1), then spaces (U+0020)
+        ' to the end of the text. A match starts only where a run starts, so each run is tried once. (?![\s\S]) is the
+        ' very end of the text: $ also matches before a final line end, and which characters end a line in PCRE depends
+        ' on how it was built.
+        m3uKey: CreateObject("roRegex", "(?<![A-Za-z0-9_-])([A-Za-z0-9_-]+) *(?![\s\S])", ""),
+        ' The M3U tags m3uEntries reads at the start of a line, in any ASCII letter case (group 1): #EXTM3U, #EXTINF
+        ' (with or without its colon) and #EXTGRP:.
+        m3uTag: CreateObject("roRegex", "^#[Ee][Xx][Tt]([Mm]3[Uu]|[Ii][Nn][Ff]|[Gg][Rr][Pp]:)", ""),
         nonWord: CreateObject("roRegex", "[^a-z0-9]+", ""),
         nonAscii: CreateObject("roRegex", "[^\x00-\x7F]", ""),
         upperAscii: CreateObject("roRegex", "[A-Z]", ""),
@@ -214,7 +239,7 @@ end function
 ' the second key a provider title is looked up under ("CSI: Miami" is tried as "miami", then as "csi miami").
 function normalizeKey(name as string, stripTags as boolean, rx as object) as string
     ' The Instr checks skip patterns that cannot match, which keeps a 20,000-title catalogue quick.
-    s = trimEnds(unicodeSpaces(name, rx))
+    s = trimEnds(unicodeSpaces(name, rx), rx)
     if Instr(1, s, "[") > 0 or Instr(1, s, "{") > 0 or Instr(1, s, "(") > 0 then s = rx.brackets.ReplaceAll(s, " ")
     ' Step 3: trailing tags go before the tags between pipes, so "Dune | 4K | EN" loses " | EN", then " | 4K".
     if stripTags then s = stripEndTags(s, rx)
@@ -275,19 +300,27 @@ end function
 ' ends, so " - 1999" is read as "- 1999" whether or not the provider trimmed it. Trim is not used: it may also remove
 ' other characters, such as U+001C to U+001F or U+180E. Nor is a pattern such as ^[ \t\n\x0B\f\r]+|[ \t\n\x0B\f\r]+$:
 ' it tries the second half again at every space of a run inside the name, so its time grows with the square of the
-' run (docs/browse.md, "Trimming"). The loop reads the ends only, and most names have nothing to trim.
-function trimEnds(s as string) as string
+' run (docs/browse.md, "Trimming"). Nor a loop over the characters, which takes seconds for a name between two runs
+' of 16,000 spaces. Most names have nothing to trim, which the first check finds.
+function trimEnds(s as string, rx as object) as string
     if s = "" then return s
     if Asc(s) > 32 and Asc(Right(s, 1)) > 32 then return s
-    last = Len(s)
+    return cutEdges(s, s, rx)
+end function
+
+' s without the characters at its ends that are [ \t\n\x0B\f\r] in measured, a text of the same length (s itself, or
+' a copy of s with its Unicode spaces replaced). rx.edgeLead and rx.edgeTrail measure the two runs, each in time that
+' grows in proportion to the text.
+function cutEdges(s as string, measured as string, rx as object) as string
+    size = Len(measured)
     first = 1
-    while first <= last and isEdgeSpace(Asc(Mid(s, first, 1)))
-        first = first + 1
-    end while
-    while last >= first and isEdgeSpace(Asc(Mid(s, last, 1)))
-        last = last - 1
-    end while
-    if first = 1 and last = Len(s) then return s
+    found = rx.edgeLead.Match(measured)
+    if found.Count() > 0 then first = Len(found[0]) + 1
+    if first > size then return ""
+    last = size
+    found = rx.edgeTrail.Match(measured)
+    if found.Count() > 0 then last = size - Len(found[0])
+    if first = 1 and last = size then return s
     return Mid(s, first, last - first + 1)
 end function
 
@@ -296,22 +329,15 @@ function isEdgeSpace(code as integer) as boolean
     return code = 32 or (code >= 9 and code <= 13)
 end function
 
-' A provider field as the catalogue reads it (an M3U line and title, a TMDB id string): space, tab, line feed,
+' A provider field as the catalogue reads it (an M3U line, title and value, a TMDB id string): space, tab, line feed,
 ' vertical tab, form feed, carriage return and the Unicode spaces of unicodeSpaces off both ends, and nothing else.
 ' Trim is not used: it may also remove other characters, and a name such as U+001F followed by " - 1999" would
-' change.
-function trimField(s as string) as string
-    last = Len(s)
-    if last = 0 then return s
-    first = 1
-    while first <= last and isFieldSpace(Asc(Mid(s, first, 1)))
-        first = first + 1
-    end while
-    while last >= first and isFieldSpace(Asc(Mid(s, last, 1)))
-        last = last - 1
-    end while
-    if first = 1 and last = Len(s) then return s
-    return Mid(s, first, last - first + 1)
+' change. The ends are measured on a copy with the Unicode spaces replaced (one character each, so the lengths
+' agree), the same way as in trimEnds.
+function trimField(s as string, rx as object) as string
+    if s = "" then return s
+    if not isFieldSpace(Asc(s)) and not isFieldSpace(Asc(Right(s, 1))) then return s
+    return cutEdges(s, unicodeSpaces(s, rx), rx)
 end function
 
 ' Space, tab, line feed, vertical tab, form feed, carriage return, or one of the Unicode spaces (docs/browse.md).
@@ -354,7 +380,7 @@ end function
 ' "Heat - 1995 - 4K", "2012 | 1999 | EN" -> "1999"). A bare number ending a name is part of the title
 ' ("Blade Runner 2049"), and so is one with no space before its dash (" - 1999" is read as "- 1999").
 function titleYearOf(name as string, rx as object) as string
-    s = trimEnds(unicodeSpaces(name, rx))
+    s = trimEnds(unicodeSpaces(name, rx), rx)
     if Instr(1, s, "(") > 0 or Instr(1, s, "[") > 0
         found = rx.yearBrackets.Match(s)
         if found.Count() > 1 then return found[1]
@@ -377,9 +403,14 @@ end function
 
 ' The provider's TMDB id (docs/browse.md, Matching step 1): the first of tmdb, tmdb_id, info.tmdb_id and info.tmdb
 ' (the last two only when info is an object) whose value gives an id (tmdbIdOf), without leading zeros; or "".
+' Keys match exactly, letter case included: TMDB and Tmdb_Id are other keys. ParseJson (without the "i" flag, as
+' ApiTask calls it) gives arrays that keep each key's case and look keys up case-sensitively, so the keys are read
+' with brackets on the row as ParseJson gave it. Not with dot lookups (row.tmdb), which the emulator answers ignoring
+' case, so that {"TMDB":"5"} would give 5 there and none on a Roku.
 function providerTmdbId(row as object, rx as object) as string
-    values = [row.tmdb, row.tmdb_id]
-    if isAssoc(row.info) then values.Append([row.info.tmdb_id, row.info.tmdb])
+    values = [row["tmdb"], row["tmdb_id"]]
+    info = row["info"]
+    if isAssoc(info) then values.Append([info["tmdb_id"], info["tmdb"]])
     for each v in values
         id = tmdbIdOf(v, rx)
         if id <> "" then return id
@@ -397,7 +428,7 @@ end function
 function tmdbIdOf(v as dynamic, rx as object) as string
     t = type(v)
     if t = "roString" or t = "String"
-        found = rx.tmdbId.Match(trimField(v))
+        found = rx.tmdbId.Match(trimField(v, rx))
         if found.Count() < 2 then return ""
         id = found[1]
         while Len(id) > 1 and Left(id, 1) = "0"
@@ -471,10 +502,222 @@ function titleFromXtream(kind as string, row as object, rx as object) as dynamic
     return title
 end function
 
-' One M3U entry as a catalogue title; its category is its group-title. key is a stable id made from the
-' stream URL by the caller.
-function titleFromM3u(kind as string, key as string, name as string, icon as string, group as string, url as string, rx as object) as object
-    return {kind: kind, key: key, id: "", name: name, cats: [group], adult: false, year: titleYearOf(name, rx), rating: 0, hint: "", genre: "", icon: icon, url: url, added: 0}
+' One M3U entry as a catalogue title; its category is catId, the id m3uSections gave its group-title. key is a
+' stable id made from the stream URL (m3uKey).
+function titleFromM3u(kind as string, key as string, name as string, icon as string, catId as string, url as string, rx as object) as object
+    return {kind: kind, key: key, id: "", name: name, cats: [catId], adult: false, year: titleYearOf(name, rx), rating: 0, hint: "", genre: "", icon: icon, url: url, added: 0}
+end function
+
+' ------------------------------------------------------------------ M3U playlists
+
+' The entries of an M3U playlist (docs/browse.md, "M3U playlists") in playlist order, each {name, group, icon, url}
+' with group "" when it has none, or invalid when the playlist has no #EXTM3U header. m3uSections sorts them into live
+' channels, movies and episodes for the catalog task (ApiTask).
+' - Lines end at CR LF, CR or LF, whichever the file uses, and nowhere else (not at U+0085, U+2028 or U+2029):
+'   Tokenize splits at every CR and every LF and drops the empty pieces, such as the one inside a CR LF. Each line is
+'   trimmed as a provider field, which also takes a byte order mark off the start of the file, and the lines left
+'   empty are skipped. The first line left must start with #EXTM3U.
+' - A line that starts with #EXTINF (colon or not) replaces the pending #EXTINF line and clears the pending group line;
+'   one that starts with #EXTGRP: becomes the pending group line; any other line that starts with # is skipped. Every
+'   other line is a URL: it makes an entry of the pending lines and clears them.
+' - The name is the title after the name comma (m3uExtinf), else the tvg-name value, else "Channel N", where N counts
+'   every URL line from 1. The group is the group-title value, else the text after #EXTGRP:.
+' Tags ignore the case of A to Z only (rx.m3uTag): LCase, UCase and the "i" flag may fold other letters, and "#EXT" +
+' Chr(&h131) + "NF" (a dotless i) starts no #EXTINF line.
+function m3uEntries(body as string, rx as object) as dynamic
+    entries = []
+    header = false
+    info = invalid
+    groupLine = ""
+    for each raw in body.Tokenize(Chr(13) + Chr(10))
+        line = trimField(raw, rx)
+        if line <> ""
+            ' "m" for #EXTM3U, "i" for #EXTINF, "g" for #EXTGRP:, "" for any other line.
+            tag = ""
+            if Left(line, 1) = "#"
+                found = rx.m3uTag.Match(line)
+                if found.Count() > 1 then tag = LCase(Left(found[1], 1))
+            end if
+            if not header
+                if tag <> "m" then return invalid
+                header = true
+            else if tag = "i"
+                info = m3uExtinf(line, rx)
+                groupLine = ""
+            else if tag = "g"
+                groupLine = trimField(Mid(line, 9), rx)
+            else if Left(line, 1) <> "#"
+                entry = {name: "", group: "", icon: "", url: line}
+                if info <> invalid
+                    entry.name = info.title
+                    if entry.name = "" then entry.name = info.tvgName
+                    entry.group = info.group
+                    entry.icon = info.icon
+                end if
+                if entry.group = "" then entry.group = groupLine
+                number = entries.Count() + 1
+                if entry.name = "" then entry.name = "Channel " + number.ToStr()
+                entries.Push(entry)
+                info = invalid
+                groupLine = ""
+            end if
+        end if
+    end for
+    if not header then return invalid
+    return entries
+end function
+
+' One #EXTINF line, read from its start (docs/browse.md, "M3U playlists"): {title, tvgName, group, icon}, the title and
+' the tvg-name, group-title and tvg-logo values, each trimmed as a provider field ("" when there is none).
+' - A key is a run of ASCII letters, digits, "_" and "-", taken whole. When spaces (U+0020 only), "=", spaces and a
+'   quote (" or ') follow it, and the same quote comes again later on the line, the text between the two quotes is the
+'   key's value (a comma or a quote of the other kind inside it is part of it), and reading goes on after the closing
+'   quote. Keys ignore ASCII letter case, and a key given twice keeps its first value.
+' - The first comma reached outside a value is the name comma: the text after it is the title, and nothing after it is
+'   a value. Any other character is passed over, a quote that starts no value too.
+' A value needs an "=", so the reading jumps from one "=" to the next with Instr, reads the key that ends at each "="
+' with rx.m3uKey in the text since the last stop, and stops at the first comma before the next "=". Each search starts
+' past the text the one before it read, so the line is read once, in time that grows in proportion to it: no loop over
+' all its characters (slow in BrightScript), and no pattern run over the whole line (which would also find
+' group-title="..." written after the name comma).
+function m3uExtinf(line as string, rx as object) as object
+    values = {}
+    title = ""
+    size = Len(line)
+    i = 1
+    ' The next comma and "=" at or after i, kept until i passes them; 0 when none is left.
+    comma = -1
+    equals = -1
+    while i <= size
+        if comma <> 0 and comma < i then comma = Instr(i, line, ",")
+        if equals <> 0 and equals < i then equals = Instr(i, line, "=")
+        if comma > 0 and (equals = 0 or comma < equals)
+            title = trimField(Mid(line, comma + 1), rx)
+            exit while
+        end if
+        if equals = 0 then exit while
+        ' The key: the run of key characters before the spaces before "=", in the text read since i (the start of the
+        ' line, or just after an "=" or a closing quote, so no run goes on before i).
+        key = ""
+        if equals > i
+            found = rx.m3uKey.Match(Mid(line, i, equals - i))
+            if found.Count() > 1 then key = found[1]
+        end if
+        i = equals + 1
+        if key <> ""
+            opening = equals + 1
+            while opening <= size and Mid(line, opening, 1) = " "
+                opening = opening + 1
+            end while
+            quote = Mid(line, opening, 1)
+            if quote = Chr(34) or quote = "'"
+                closing = Instr(opening + 1, line, quote)
+                if closing > 0
+                    key = LCase(key)
+                    if not values.DoesExist(key) then values[key] = Mid(line, opening + 1, closing - opening - 1)
+                    i = closing + 1
+                end if
+            end if
+        end if
+    end while
+    return {title: title, tvgName: m3uValue(values, "tvg-name", rx), group: m3uValue(values, "group-title", rx), icon: m3uValue(values, "tvg-logo", rx)}
+end function
+
+' A value m3uExtinf read (keys in lower case, ASCII only), trimmed as a provider field; "" when there is none.
+function m3uValue(values as object, key as string, rx as object) as string
+    value = values[key]
+    if value = invalid then return ""
+    return trimField(value, rx)
+end function
+
+' A short stable key for an M3U entry, from its URL ("m~" movies, "s~" series).
+function m3uKey(prefix as string, url as string) as string
+    bytes = CreateObject("roByteArray")
+    bytes.FromAsciiString(url)
+    digest = CreateObject("roEVPDigest")
+    digest.Setup("md5")
+    return prefix + "~" + Left(LCase(digest.Process(bytes)), 12)
+end function
+
+' The entries of a playlist (m3uEntries) as the catalog task lists them: {lists, cats}, each {live, movies, series},
+' with the live channels, movies and episodes in playlist order and each section's categories in order of first use.
+' An entry is a movie when its URL, in lower case, has /movie/ or ends in .mp4 or .mkv, else an episode (one that
+' plays on its own) when it has /series/, else a live channel. Its category is its group, "Other" when it has none.
+' Group names are told apart by letter case, "it | movies" (not foreign) from "IT | Movies" (foreign), so the map
+' from a name to its category is made with exactKeys. Each category gets an id made here ("live:g0", "movies:g1"...),
+' never the name, so the arrays the catalogue goes through next (catInfo in buildTitleSection, byCat in grouped, and
+' their copies on the screen) keep the groups apart however they treat letter case.
+function m3uSections(entries as object, rx as object) as object
+    lists = {live: [], movies: [], series: []}
+    cats = {live: [], movies: [], series: []}
+    ids = {live: exactKeys(), movies: exactKeys(), series: exactKeys()}
+    for each entry in entries
+        url = entry.url
+        lower = LCase(url)
+        section = "live"
+        if lower.InStr("/movie/") >= 0 or Right(lower, 4) = ".mp4" or Right(lower, 4) = ".mkv"
+            section = "movies"
+        else if lower.InStr("/series/") >= 0
+            section = "series"
+        end if
+        group = entry.group
+        if group = "" then group = "Other"
+        id = ids[section][group]
+        if id = invalid
+            id = section + ":g" + cats[section].Count().ToStr()
+            ids[section][group] = id
+            cats[section].Push({id: id, name: group, adult: false})
+        end if
+        if section = "live"
+            lists.live.Push({kind: "live", name: entry.name, icon: entry.icon, cat: id, adult: false, url: url})
+        else if section = "movies"
+            lists.movies.Push(titleFromM3u("movie", m3uKey("m", url), entry.name, entry.icon, id, url, rx))
+        else
+            lists.series.Push(titleFromM3u("episode", m3uKey("s", url), entry.name, entry.icon, id, url, rx))
+        end if
+    end for
+    return {lists: lists, cats: cats}
+end function
+
+' ------------------------------------------------------------------ live channels
+
+' Live channels by category, so the screen never filters a 17,000-item list on the render thread: {categories, byCat}.
+' items are {cat, ...}, cat "" for a channel without a category. categories are those with at least one channel, in
+' the provider's order, then "Other" when some channel has no category; a channel whose category is not in the list is
+' left out. Category ids are provider text (Xtream's category_id), told apart by letter case with exactKeys. The lists
+' are kept under keys made here ("c0", "c1"... and "other"), each one the id of its category in categories, because
+' the screen reads byCat from a copy that may ignore letter case, and so that no category id ("__other", say) can
+' stand for the channels without one.
+function grouped(categories as object, items as object) as object
+    keys = exactKeys()
+    for each cat in categories
+        if keys[cat.id] = invalid then keys[cat.id] = "c" + keys.Count().ToStr()
+    end for
+    byCat = {}
+    for each item in items
+        key = "other"
+        if item.cat <> "" then key = keys[item.cat]
+        if key <> invalid
+            list = byCat[key]
+            if list = invalid
+                list = []
+                byCat[key] = list
+            end if
+            list.Push(item)
+        end if
+    end for
+    used = []
+    for each cat in categories
+        key = keys[cat.id]
+        if byCat[key] <> invalid
+            shown = {}
+            shown.Append(cat)
+            shown.id = key
+            used.Push(shown)
+        end if
+    end for
+    if byCat["other"] <> invalid then used.Push({id: "other", name: "Other", adult: false})
+    return {categories: used, byCat: byCat}
 end function
 
 ' ------------------------------------------------------------------ USA only and adult rules
@@ -742,19 +985,21 @@ end function
 
 ' Turns one type's titles into what the screen browses: the titles with their USA, adult, TMDB and
 ' genre facts worked out, every list Home and Discover need as arrays of title indices, and the
-' copies of each TMDB title with more than one, best first.
+' copies of each TMDB title with more than one, best first. byKey gives the first title with each key; the screen
+' reads it with titleIndexOf.
 '   titles: from titleFromXtream / titleFromM3u. categories: [{id, name, adult}].
 '   section: parseRowsPayload(...).movie or .tv. rawGenres: parseRowsPayload(...).genres.movie or .tv.
 function buildTitleSection(titles as object, categories as object, section as object, rawGenres as object, rx as object) as object
     index = tmdbIndex(section, rx)
     genres = genreTable(rawGenres)
-    catInfo = {}
+    ' Category ids and title keys are provider text: "a" and "A" are two categories, "m1a" and "m1A" two titles.
+    catInfo = exactKeys()
     for each cat in categories
         catInfo[cat.id] = {foreign: isForeignCategory(cat.name, rx), adult: isFlagOn(cat.adult) or isAdultName(cat.name, rx), services: categoryServices(cat.name, rx), g: categoryGenreKeys(cat.name, genres, rx)}
     end for
     ' USA only judges a title by the categories of every row with its id; ids missing from the category
     ' list are left out. Per id: 0 no category left, 1 only foreign ones, 2 at least one that passes.
-    usaCats = {}
+    usaCats = exactKeys()
     for each title in titles
         state = usaCats[title.key]
         if state = invalid then state = 0
@@ -772,7 +1017,7 @@ function buildTitleSection(titles as object, categories as object, section as ob
     end for
     usedGenres = {}
     items = []
-    byKey = {}
+    byKey = exactKeys()
     byTmdb = {}
     byService = {}
     for each service in browseServices()
@@ -951,7 +1196,8 @@ end function
 
 ' ------------------------------------------------------------------ picking titles for the screen
 
-' opts: {usOnly, adultOk, genre ("" for all), seen ({} shared by one row or one Discover grid)}.
+' opts: {usOnly, adultOk, genre ("" for all), seen (exactKeys(), shared by one row or one Discover grid: title keys
+' that differ only in letter case are different titles)}.
 function titleVisible(item as object, opts as object) as boolean
     if not opts.adultOk and item.adult then return false
     if opts.usOnly and not item.us then return false
@@ -1067,7 +1313,7 @@ function buildHomeRows(catalog as object, withTmdb as boolean, opts as object, c
     end if
     for each spec in homeRowSpecs(withTmdb)
         section = catalog[spec.type]
-        rowOpts = {usOnly: opts.usOnly, adultOk: opts.adultOk, genre: "", seen: {}}
+        rowOpts = {usOnly: opts.usOnly, adultOk: opts.adultOk, genre: "", seen: exactKeys()}
         result = pickTitles(section, section.lists[spec.list], rowOpts, 0, 20)
         if result.picked.Count() >= 5
             refs = []
@@ -1186,12 +1432,26 @@ function libraryRefs(keys as object, catalog as object, opts as object) as objec
     for each key in keys
         kind = libraryTypeOf(key)
         section = catalog[kind]
-        if section <> invalid and section.byKey.DoesExist(key)
-            i = section.byKey[key]
-            if titleVisible(section.items[i], opts) then refs.Push({type: kind, idx: i})
+        if section <> invalid
+            i = titleIndexOf(section, key)
+            if i >= 0 and titleVisible(section.items[i], opts) then refs.Push({type: kind, idx: i})
         end if
     end for
     return refs
+end function
+
+' The index of the first title whose key is key, letter case included, in a section from buildTitleSection, or -1.
+' byKey finds it, and the title it gives is checked: the screen's copy of byKey may ignore letter case (see exactKeys)
+' and give a title whose key differs in letter case only, and then the title is looked for in the list itself.
+function titleIndexOf(section as object, key as string) as integer
+    i = section.byKey[key]
+    if i = invalid then return -1
+    items = section.items
+    if items[i].key = key then return i
+    for j = 0 to items.Count() - 1
+        if items[j].key = key then return j
+    end for
+    return -1
 end function
 
 function libraryKeys(entries as object) as object

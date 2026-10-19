@@ -10,13 +10,17 @@ export type LocalSeries = {key: string; seasons: SeasonInfo[]; episodes: Episode
 /** A playlist movie or series entry (a channel of kind movie or series, with a token). */
 export type PlaylistEntry = {id: string; name: string; group: string; logo: string; ext: string};
 
-const EPISODE_NAME = /^(.*?)[\s._|:-]*\bS(\d{1,3})[\s._-]*E(\d{1,4})(?![0-9])[\s._|:-]*(.*)$/i;
+// The show ends at a character that is not a separator, and the separators after the episode number are read to
+// their end before the title, so each run of spaces is tried once, from its start: the time grows with the name, never
+// with the square of a run. It matches what /^(.*?)[\s._|:-]*\bS(\d{1,3})[\s._-]*E(\d{1,4})(?![0-9])[\s._|:-]*(.*)$/i
+// matched, show less its trailing separators, which took a quarter of a second on a name with 16,000 spaces inside.
+const EPISODE_NAME = /^(?:(.*?[^\s._|:-]))??[\s._|:-]*\bS(\d{1,3})[\s._-]*E(\d{1,4})(?![0-9])[\s._|:-]*(?![\s._|:-])(.*)$/i;
 
 /** "Show S01E02 Title" -> {show: "Show", season: 1, episode: 2, title: "Title"}, or null when the name has no SxxEyy. */
 export function parseEpisodeName(name: string): {show: string; season: number; episode: number; title: string} | null {
   const match = EPISODE_NAME.exec(name.trim());
   if (!match) return null;
-  const show = match[1].replace(/[\s._|:-]+$/, '').trim();
+  const show = (match[1] ?? '').trim();
   if (!show) return null;
   return {show, season: Number(match[2]), episode: Number(match[3]), title: match[4].trim()};
 }

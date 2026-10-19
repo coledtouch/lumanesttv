@@ -63,6 +63,15 @@ function line(c) {
     // the id, or invalid for none (null).
     if (c.expect !== null && !/^[1-9][0-9]{0,11}$/.test(c.expect)) throw new Error('expected an id or null, got ' + JSON.stringify(c.expect));
     fields.push(['json', str(c.json, true)], ['expect', c.expect === null ? 'invalid' : str(c.expect)]);
+  } else if (c.kind === 'm3u') {
+    // text is a whole playlist, which the test hands to m3uEntries as the catalog task does; expect lists its entries
+    // in playlist order, each with its name and its group ("" for none).
+    if (!Array.isArray(c.expect)) throw new Error('expected an array of entries, got ' + JSON.stringify(c.expect));
+    const entries = c.expect.map(e => {
+      if (!e || typeof e !== 'object' || Object.keys(e).sort().join() !== 'group,name') throw new Error('expected {name, group}, got ' + JSON.stringify(e));
+      return '{"name": ' + str(e.name) + ', "group": ' + str(e.group) + '}';
+    });
+    fields.push(['text', str(c.text)], ['expect', '[' + entries.join(', ') + ']']);
   } else {
     throw new Error('unknown case kind ' + JSON.stringify(c.kind));
   }

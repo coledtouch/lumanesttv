@@ -287,6 +287,76 @@ final class XtreamParserTests: XCTestCase {
         XCTAssertEqual(info.plot, "P")
     }
 
+    /// Provider ids are told apart byte for byte, as the other apps tell them apart (docs/browse.md, USA only: a title's
+    /// categories are the ids its rows give). Swift's `String` equality takes ids that are only canonically equivalent
+    /// ("\u{E9}" and "e\u{301}") as one: the second category was dropped and its titles read the first one's name, two
+    /// streams became one, and so did two episodes and two country values.
+    func testIdsThatAreOnlyCanonicallyEquivalentStayApart() throws {
+        let nfc = "\u{E9}", nfd = "e\u{301}"
+        func bytes(_ text: String?) -> [UInt8] { Array((text ?? "<nil>").utf8) }
+        let categories = try XtreamParser.categories(Data(#"""
+            [{"category_id":"\u00e9","category_name":"French Movies"},{"category_id":"e\u0301","category_name":"Movies"},
+             {"category_id":"7","category_name":"Kids"},{"category_id":"e\u0301","category_name":"Again"}]
+            """#.utf8))
+        XCTAssertEqual(categories.map(\.name), ["French Movies", "Movies", "Kids"], "an id given again is still left out")
+        XCTAssertEqual(categories.map(\.id), [ExactText.key(nfc), ExactText.key(nfd), "7"], "ASCII ids are kept as they are")
+        guard categories.count == 3 else { return }
+        let byID = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
+
+        let movies = try XtreamParser.movies(Data(#"""
+            [{"stream_id":"\u00e9","name":"Heat","category_id":"\u00e9","country":"\u00e9"},
+             {"stream_id":"e\u0301","name":"Dune","category_id":"e\u0301","category_ids":["7"],"country":"e\u0301","country_code":"\u00e9"},
+             {"stream_id":"\u00e9","name":"Heat again","category_id":"\u00e9","country":"e\u0301"}]
+            """#.utf8), login: demoLogin)
+        XCTAssertEqual(movies.map(\.name), ["Heat", "Dune"])
+        guard movies.count == 2 else { return }
+        XCTAssertEqual(movies.map(\.id), ["m:" + ExactText.key(nfc), "m:" + ExactText.key(nfd)])
+        XCTAssertEqual(movies.map(\.categoryIDs), [[categories[0].id], [categories[1].id, "7"]])
+        XCTAssertFalse(TitleRegion.isUSA(match: nil, categoryIDs: movies[0].categoryIDs, categoriesByID: byID), "French Movies")
+        XCTAssertTrue(TitleRegion.isUSA(match: nil, categoryIDs: movies[1].categoryIDs, categoriesByID: byID), "Movies and Kids")
+        XCTAssertEqual(bytes(movies[0].country), bytes(nfc + ";" + nfd), "a duplicate row's country is joined")
+        XCTAssertEqual(bytes(movies[1].country), bytes(nfd + ";" + nfc), "both country fields are kept")
+        // Requests and stream URLs use the provider's own id.
+        XCTAssertTrue(movies[0].url.absoluteString.hasSuffix("/%C3%A9.mp4"), movies[0].url.absoluteString)
+        XCTAssertTrue(movies[1].url.absoluteString.hasSuffix("/e%CC%81.mp4"), movies[1].url.absoluteString)
+        XCTAssertEqual(bytes(ExactText.text(fromKey: String(movies[1].id.dropFirst(2)))), bytes(nfd))
+        XCTAssertEqual(ExactText.text(fromKey: "900"), "900")
+        XCTAssertEqual(ContentPolicy.movies(movies, categories: categories).items.count, 2)
+
+        let channels = try XtreamParser.live(Data(#"""
+            [{"stream_id":"\u00e9","name":"One","category_id":"\u00e9"},{"stream_id":"e\u0301","name":"Two","category_id":"e\u0301"}]
+            """#.utf8), login: demoLogin)
+        XCTAssertEqual(channels.map(\.name), ["One", "Two"])
+        XCTAssertEqual(channels.map(\.key), ["x:" + ExactText.key(nfc), "x:" + ExactText.key(nfd)])
+        XCTAssertEqual(channels.map { bytes($0.streamID) }, [bytes(nfc), bytes(nfd)])
+        XCTAssertEqual(ContentPolicy.live(channels, categories: categories, usOnly: false).items.map(\.name), ["One", "Two"])
+
+        let shows = try XtreamParser.series(Data(#"[{"series_id":"\u00e9","name":"A"},{"series_id":"e\u0301","name":"B"}]"#.utf8))
+        XCTAssertEqual(shows.map(\.id), ["s:" + ExactText.key(nfc), "s:" + ExactText.key(nfd)])
+        XCTAssertEqual(shows.map { bytes($0.seriesID) }, [bytes(nfc), bytes(nfd)])
+
+        let info = try XtreamParser.seriesInfo(Data(#"""
+            {"episodes":{"1":[{"id":"\u00e9","episode_num":1},{"id":"e\u0301","episode_num":2},{"id":"e\u0301","episode_num":3}]}}
+            """#.utf8), login: demoLogin)
+        XCTAssertEqual(info.seasons[1]?.map(\.id), ["e:" + ExactText.key(nfc), "e:" + ExactText.key(nfd)], "an id given again is left out")
+        XCTAssertEqual(info.seasons[1]?.map { $0.url.absoluteString.hasSuffix("/series/demo/s3cret%20pass/" + ["%C3%A9", "e%CC%81"][$0.number - 1] + ".mp4") },
+                       [true, true])
+    }
+
+    /// The JSON reader keeps keys apart as JavaScript and Kotlin do: a key spelled again with the same bytes keeps its last
+    /// value, and keys that are only canonically equivalent ("\u{E9}" and "e\u{301}", "K" and the Kelvin sign) are two
+    /// keys, so a season map keeps the episodes of both.
+    func testObjectKeysThatAreOnlyCanonicallyEquivalentStayApart() throws {
+        let object = try JSONValue.parse(Data(#"{"\u00e9":1,"e\u0301":2,"e\u0301":3,"K":4,"\u212a":5,"K":6}"#.utf8))
+        XCTAssertEqual(object.elements.compactMap(\.int).sorted(), [1, 3, 5, 6])
+        XCTAssertEqual(object["K"]?.int, 6)
+        XCTAssertEqual(object["\u{E9}"]?.int, 1)
+        let info = try XtreamParser.seriesInfo(Data(#"""
+            {"episodes":{"\u00e9":[{"id":"1","episode_num":1,"season":1}],"e\u0301":[{"id":"2","episode_num":2,"season":1}]}}
+            """#.utf8), login: demoLogin)
+        XCTAssertEqual(info.seasons[1]?.map(\.id), ["e:1", "e:2"])
+    }
+
     func testShortEPG() throws {
         let programs = try XtreamParser.shortEPG(Fixture.data("xtream/short_epg.json"))
         XCTAssertEqual(programs.map(\.title), ["Plain Title", "News Night", "Late"])
@@ -367,7 +437,9 @@ final class M3UParserTests: XCTestCase {
     func testPlaylistParsing() throws {
         let playlist = M3UParser.parse(Fixture.data("playlist.m3u"))
         XCTAssertEqual(playlist.guideURL?.absoluteString, "http://epg.example.com/guide.xml.gz")
-        XCTAssertEqual(playlist.channels.map(\.name), ["US: CNN HD", "BBC One HD", "Sky News, Live", "Late", "Channel 5", "Fallback Name"])
+        // "Channel 11": the fallback numbers the entry in the whole playlist, movies and episodes included
+        // (docs/browse.md "M3U playlists", Name).
+        XCTAssertEqual(playlist.channels.map(\.name), ["US: CNN HD", "BBC One HD", "Sky News, Live", "Late", "Channel 11", "Fallback Name"])
         let cnn = playlist.channels[0]
         XCTAssertEqual(playlist.channels.map(\.number), Array(1...6), "only half carry tvg-chno: renumbered in order")
         XCTAssertEqual(cnn.epgID, "CNN.us")
@@ -450,8 +522,9 @@ final class M3UParserTests: XCTestCase {
     /// The name after the comma, "#EXTGRP:" and "#" comments are found scalar by scalar: a combining mark (U+0301) or
     /// U+200D after them makes one `Character` with them.
     func testTagsAndCommasFollowedByCombiningMarks() {
-        XCTAssertEqual(M3UParser.nameAfterComma("#EXTINF:-1 tvg-name=\"T\",\u{0301}Name"), "\u{0301}Name")
-        XCTAssertEqual(M3UParser.nameAfterComma("#EXTINF:-1 tvg-name=\"T\u{0301}\",\u{200D}Name"), "\u{200D}Name")
+        XCTAssertEqual(M3UParser.read("#EXTINF:-1 tvg-name=\"T\",\u{0301}Name").title, "\u{0301}Name")
+        XCTAssertEqual(M3UParser.read("#EXTINF:-1 tvg-name=\"T\u{0301}\",\u{200D}Name").title, "\u{200D}Name")
+        XCTAssertEqual(M3UParser.read("#EXTINF:-1 tvg-name=\"T\u{0301}\",\u{200D}Name").attributes, ["tvg-name": "T\u{0301}"])
         let playlist = M3UParser.parse(Data("""
         #EXTM3U
         #EXTINF:-1 tvg-name="Fallback",\u{0301}Accent
@@ -463,18 +536,92 @@ final class M3UParserTests: XCTestCase {
         XCTAssertEqual(playlist.liveCategories.map(\.name), ["\u{0301}Group"])
     }
 
+    /// docs/browse.md "M3U playlists", Group: groups are told apart byte for byte, as in the other apps. Swift's `String`
+    /// equality takes names that are only canonically equivalent as one, which made "Espan\u{303}ol" (not foreign) and
+    /// "Espa\u{F1}ol" (foreign) one category: a title filed under the second passed USA only on Apple TV alone.
+    func testGroupsThatAreOnlyCanonicallyEquivalentStayApart() {
+        let nfd = "Espan\u{303}ol", nfc = "Espa\u{F1}ol"
+        XCTAssertFalse(TitleRegion.isForeignCategory(nfd))
+        XCTAssertTrue(TitleRegion.isForeignCategory(nfc))
+        for (first, second) in [(nfd, nfc), (nfc, nfd)] {
+            let text = "#EXTM3U\n"
+                + "#EXTINF:-1 group-title=\"\(first)\",Heat\nhttp://s/movie/u/p/1.mp4\n#EXTINF:-1 group-title=\"\(second)\",Dune\nhttp://s/movie/u/p/2.mp4\n"
+                + "#EXTINF:-1 group-title=\"\(first)\",One\nhttp://s/live/1.ts\n#EXTINF:-1 group-title=\"\(second)\",Two\nhttp://s/live/2.ts\n"
+                + "#EXTINF:-1 group-title=\"\(first)\",Show S01E01\nhttp://s/series/u/p/3.mp4\n"
+                + "#EXTINF:-1 group-title=\"\(second)\",Show S01E02\nhttp://s/series/u/p/4.mp4\n"
+            let playlist = M3UParser.parse(Data(text.utf8))
+            let names = { (categories: [TunerCore.Category]) in categories.map { Array($0.name.utf8) } }
+            XCTAssertEqual(names(playlist.movieCategories), [Array(first.utf8), Array(second.utf8)])
+            XCTAssertEqual(names(playlist.liveCategories), [Array(first.utf8), Array(second.utf8)])
+            XCTAssertEqual(names(playlist.seriesCategories), [Array(first.utf8), Array(second.utf8)])
+            XCTAssertEqual(playlist.movies.map(\.categoryID), ["movies:g0", "movies:g1"])
+            XCTAssertEqual(playlist.channels.map(\.categoryID), ["live:g0", "live:g1"])
+            XCTAssertEqual(playlist.series.map(\.categoryIDs), [["series:g0", "series:g1"]])
+            let byID = Dictionary(uniqueKeysWithValues: playlist.movieCategories.map { ($0.id, $0) })
+            let usa = playlist.movies.map { TitleRegion.isUSA(match: nil, categoryIDs: $0.categoryIDs, categoriesByID: byID) }
+            XCTAssertEqual(usa, [first, second].map { Array($0.utf8) == Array(nfd.utf8) }, "only the title under \"Espan\\u{303}ol\" passes")
+        }
+    }
+
+    /// The episode-name pattern takes time in proportion to a run of spaces inside a name. With `(.*?)` before `\s+` it
+    /// tried the run again from each of its spaces: about a second for 16,000 spaces, after which ICU gave up and found
+    /// no episode (from about 10,000 spaces on, "A", the run, "B S01E02" was a movie).
+    func testEpisodeNamesWithLongRunsOfSpacesTakeLinearTime() {
+        let run = String(repeating: " ", count: 16_000)
+        let clock = ContinuousClock()
+        // Each playlist holds one entry, a name with the run inside it, timed alone.
+        for (name, series, title) in [("A\(run)B S01E02 Pilot", "A\(run)B", "Pilot"), ("A\(run)B", nil, nil), ("Show\(run)S01x", nil, nil)] {
+            let text = "#EXTM3U\n#EXTINF:-1,\(name)\nhttp://s/series/u/p/1.mp4\n"
+            var playlist = M3UPlaylist()
+            let elapsed = clock.measure { playlist = M3UParser.parse(Data(text.utf8)) }
+            XCTAssertEqual(playlist.series.map(\.name), series.map { [$0] } ?? [], name.suffix(20).debugDescription)
+            XCTAssertEqual(playlist.series.first.flatMap { playlist.episodes[$0.id] }?.map(\.title), title.map { [$0] })
+            XCTAssertEqual(playlist.movies.map(\.name), series == nil ? [name] : [])
+            XCTAssertLessThan(elapsed, .milliseconds(50), "\(name.suffix(20).debugDescription): \(elapsed)")
+        }
+    }
+
     func testEmptyAndGarbageInput() {
         XCTAssertEqual(M3UParser.parse(Data()), M3UPlaylist())
         XCTAssertEqual(M3UParser.parse(Data("<html>nope</html>".utf8)).channels, [])
     }
 
+    /// docs/browse.md "M3U playlists", Values and title: one pass from the start of the line.
     func testAttributeParsing() {
-        let attributes = M3UParser.parseAttributes(#"#EXTINF:-1 tvg-id = "a,b" TVG-NAME='Q "x"' group-title="",Name"#)
-        XCTAssertEqual(attributes["tvg-id"], "a,b")
-        XCTAssertEqual(attributes["tvg-name"], #"Q "x""#)
-        XCTAssertEqual(attributes["group-title"], "")
-        XCTAssertEqual(M3UParser.nameAfterComma(#"#EXTINF:-1 group-title="A, B",The Name, Part 2"#), "The Name, Part 2")
-        XCTAssertNil(M3UParser.nameAfterComma("#EXTINF:-1 tvg-id=\"x\""))
+        let line = M3UParser.read(#"#EXTINF:-1 tvg-id = "a,b" TVG-NAME='Q "x"' group-title="",Name"#)
+        XCTAssertEqual(line.attributes, ["tvg-id": "a,b", "tvg-name": #"Q "x""#, "group-title": ""])
+        XCTAssertEqual(line.title, "Name")
+        XCTAssertEqual(M3UParser.read(#"#EXTINF:-1 group-title="A, B",The Name, Part 2"#).title, "The Name, Part 2")
+        XCTAssertEqual(M3UParser.read("#EXTINF:-1 tvg-id=\"x\"").title, "", "no name comma")
+        // The first value of a key is kept, and nothing after the name comma is a value.
+        let twice = M3UParser.read(#"#EXTINF:-1 group-title="First" GROUP-TITLE="Second",Heat group-title="Third""#)
+        XCTAssertEqual(twice.attributes, ["group-title": "First"])
+        XCTAssertEqual(twice.title, #"Heat group-title="Third""#)
+        // A quote that starts no value is passed over: "Bob's" has no "=", and the "\"" after tvg-name has no partner.
+        XCTAssertEqual(M3UParser.read("#EXTINF:-1 tvg-id=Bob's,Heat").title, "Heat")
+        XCTAssertEqual(M3UParser.read(#"#EXTINF:-1 tvg-name="Heat,Heat"#).title, "Heat")
+        XCTAssertEqual(M3UParser.read(#"#EXTINF:-1 tvg-name="Heat,Heat"#).attributes, [:])
+        // A value ends at the first quote of its own kind; a key never starts inside a run of key characters.
+        XCTAssertEqual(M3UParser.read("#EXTINF:-1 tvg-name='Bob's Burgers',").attributes, ["tvg-name": "Bob"])
+        XCTAssertEqual(M3UParser.read(#"#EXTINF:-1 xtvg-name="X" tvg-id="1"tvg-name="Heat",Up"#).attributes, ["xtvg-name": "X", "tvg-id": "1", "tvg-name": "Heat"])
+        // The #EXTM3U header has no title: its commas are passed over.
+        XCTAssertEqual(M3UParser.read(#"#EXTM3U x, url-tvg="http://e/a.xml,http://e/b.xml""#, stopsAtComma: false).attributes,
+                       ["url-tvg": "http://e/a.xml,http://e/b.xml"])
+    }
+
+    /// One pass over the line: long lines of every shape read in time that grows with the line, not with its square.
+    func testLongExtinfLinesReadInOnePass() {
+        let count = 50_000
+        let shapes = [
+            "#EXTINF:-1 " + String(repeating: "a=\"", count: 1) + String(repeating: "b='x ", count: count) + ",Name",
+            "#EXTINF:-1 " + String(repeating: "k=v ", count: count) + ",Name",
+            "#EXTINF:-1 " + String(repeating: "key = 'v' ", count: count) + ",Name",
+            "#EXTINF:-1 " + String(repeating: "x", count: count * 4) + ",Name",
+            "#EXTINF:-1 tvg-name=\"" + String(repeating: "'a=' ", count: count) + ",Name",
+        ]
+        let start = Date()
+        for line in shapes { XCTAssertFalse(M3UParser.read(line).title.isEmpty) }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 10, "five lines of about 200,000 characters")
     }
 
     /// A gzip member with stored blocks (enough for tests; the parser must not care how it was compressed).

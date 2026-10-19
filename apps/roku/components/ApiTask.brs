@@ -83,6 +83,8 @@ function http(url as string, body as dynamic) as object
     return {code: -1, body: ""}
 end function
 
+' Without the "i" flag: the arrays ParseJson gives keep each key's letter case and look keys up case-sensitively,
+' so a row's "TMDB" is not its "tmdb" (providerTmdbId, docs/browse.md Matching step 1).
 function jsonOf(r as object) as dynamic
     if r.body = invalid or r.body = "" then return invalid
     return ParseJson(r.body)
@@ -121,25 +123,6 @@ function categoriesOf(rows as dynamic) as object
     return result
 end function
 
-' Groups live channels by category so the screen never filters a 17,000-item list on the render thread.
-function grouped(categories as object, items as object) as object
-    byCat = {}
-    for each item in items
-        list = byCat[item.cat]
-        if list = invalid
-            list = []
-            byCat[item.cat] = list
-        end if
-        list.Push(item)
-    end for
-    used = []
-    for each cat in categories
-        if byCat[cat.id] <> invalid then used.Push(cat)
-    end for
-    if byCat["__other"] <> invalid then used.Push({id: "__other", name: "Other", adult: false})
-    return {categories: used, byCat: byCat}
-end function
-
 function xtreamCatalog(account as object, rowsJob as object) as dynamic
     base = xtreamBase(account)
     liveRows = xtreamGet(base, "get_live_streams")
@@ -148,8 +131,8 @@ function xtreamCatalog(account as object, rowsJob as object) as dynamic
     for each s in liveRows
         id = asText(s.stream_id)
         if id <> ""
+            ' grouped (BrowseLogic) lists a channel without a category (cat "") under Other.
             cat = asText(s.category_id)
-            if cat = "" then cat = "__other"
             live.Push({kind: "live", name: asText(s.name), icon: asText(s.stream_icon), cat: cat, adult: isFlagOn(s.is_adult), url: base.server + "/live/" + base.user + "/" + base.pass + "/" + id + ".m3u8"})
         end if
     end for
@@ -214,73 +197,19 @@ end function
 
 ' ------------------------------------------------------------------ M3U
 
-' A short stable key for an M3U entry, from its URL ("m~" movies, "s~" series).
-function m3uKey(prefix as string, url as string) as string
-    bytes = CreateObject("roByteArray")
-    bytes.FromAsciiString(url)
-    digest = CreateObject("roEVPDigest")
-    digest.Setup("md5")
-    return prefix + "~" + Left(LCase(digest.Process(bytes)), 12)
-end function
-
 function m3uCatalog(account as object, rowsJob as object) as dynamic
     r = http(account.m3uUrl, invalid)
-    if r.code < 200 or r.code >= 300 or Left(r.body.Trim(), 7) <> "#EXTM3U" then return invalid
+    if r.code < 200 or r.code >= 300 then return invalid
     rx = browseRx()
-    groupRe = CreateObject("roRegex", "group-title=" + Chr(34) + "([^" + Chr(34) + "]*)" + Chr(34), "i")
-    logoRe = CreateObject("roRegex", "tvg-logo=" + Chr(34) + "([^" + Chr(34) + "]*)" + Chr(34), "i")
-    lists = {live: [], movies: [], series: []}
-    cats = {live: [], movies: [], series: []}
-    seen = {live: {}, movies: {}, series: {}}
-    pending = invalid
-    for each raw in r.body.Tokenize(Chr(10))
-        ' trimField, not Trim, which may remove more than spaces from the ends of a title (docs/browse.md, "Trimming").
-        line = trimField(raw)
-        if Left(line, 7) = "#EXTINF"
-            ' The title follows the last comma outside quoted attributes.
-            lastComma = 0
-            inQuote = false
-            for i = 1 to Len(line)
-                ch = Mid(line, i, 1)
-                if ch = Chr(34)
-                    inQuote = not inQuote
-                else if ch = "," and not inQuote
-                    lastComma = i
-                end if
-            end for
-            name = Mid(line, lastComma + 1)
-            group = ""
-            m1 = groupRe.Match(line)
-            if m1.Count() > 1 then group = m1[1]
-            logo = ""
-            m2 = logoRe.Match(line)
-            if m2.Count() > 1 then logo = m2[1]
-            pending = {name: trimField(name), group: group, icon: logo}
-        else if line <> "" and Left(line, 1) <> "#" and pending <> invalid
-            lower = LCase(line)
-            section = "live"
-            if lower.InStr("/movie/") >= 0 or Right(lower, 4) = ".mp4" or Right(lower, 4) = ".mkv"
-                section = "movies"
-            else if lower.InStr("/series/") >= 0
-                section = "series"
-            end if
-            group = pending.group
-            if group = "" then group = "Other"
-            if not seen[section].DoesExist(group)
-                seen[section][group] = true
-                cats[section].Push({id: group, name: group, adult: false})
-            end if
-            if section = "live"
-                lists.live.Push({kind: "live", name: pending.name, icon: pending.icon, cat: group, adult: false, url: line})
-            else if section = "movies"
-                lists.movies.Push(titleFromM3u("movie", m3uKey("m", line), pending.name, pending.icon, group, line, rx))
-            else
-                ' An M3U series entry is one episode that plays on its own.
-                lists.series.Push(titleFromM3u("episode", m3uKey("s", line), pending.name, pending.icon, group, line, rx))
-            end if
-            pending = invalid
-        end if
-    end for
+    ' Names, groups and lines as in docs/browse.md, "M3U playlists"; invalid without the #EXTM3U header.
+    entries = m3uEntries(r.body, rx)
+    r = invalid
+    if entries = invalid then return invalid
+    ' Live channels, movies and episodes, each group (letter case included) one category (BrowseLogic, m3uSections).
+    parts = m3uSections(entries, rx)
+    entries = invalid
+    lists = parts.lists
+    cats = parts.cats
     rows = rowsFinish(rowsJob)
     return {
         live: grouped(cats.live, lists.live),

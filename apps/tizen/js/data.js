@@ -135,21 +135,70 @@
         return items.map(function (item, index) { item.number = index + 1; return item; });
     }
     function mergeIds(items) { var byId = Object.create(null), result = []; items.forEach(function (item) { var existing = byId[item.id]; if (!existing) { byId[item.id] = item; result.push(item); return; } existing.categoryIds = unique(existing.categoryIds.concat(item.categoryIds)); existing.country = unique([existing.country, item.country].filter(Boolean)).join(';'); existing.backups = unique((existing.backups || []).concat(item.url !== existing.url ? [item.url] : [], item.backups || [])); if (!existing.epgId) existing.epgId = item.epgId; if (!existing.image) existing.image = item.image; }); return result; }
+    // docs/browse.md, M3U playlists. A key character: an ASCII letter, digit, "_" or "-".
+    function m3uKeyCode(c) { return (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 95 || c === 45; }
+    // line starts with tag (written in upper case), ignoring the case of ASCII letters only: toUpperCase() would also
+    // read "#EXTINF" with a dotless i (U+0131) in place of the I as "#EXTINF".
+    function m3uTag(line, tag) {
+        var i, c;
+        if (line.length < tag.length) return false;
+        for (i = 0; i < tag.length; i++) { c = line.charCodeAt(i); if ((c >= 97 && c <= 122 ? c - 32 : c) !== tag.charCodeAt(i)) return false; }
+        return true;
+    }
+    // An #EXTINF line (or, with header, the #EXTM3U line) read in one pass from its start, by character codes: a key
+    // (a whole run of key characters) followed by "=" (spaces around it) and a quote whose partner comes later on the
+    // line has the text between the quotes as its value (keys in ASCII lower case, the first value of a key kept),
+    // and reading goes on after the closing quote; otherwise after the key. The first comma met is the name comma:
+    // the rest of the line, trimmed as a provider field, is the title. Any other character, a quote that starts no
+    // value too, is passed over. Not a pattern over the whole line: that also finds group-title="..." after the name
+    // comma. Each character is read a bounded number of times, so the time grows with the line, not its square.
+    function m3uLine(line, header) {
+        var values = Object.create(null), n = line.length, i = 0, j, k, close, key, c;
+        while (i < n) {
+            c = line.charCodeAt(i);
+            if (c === 44 && !header) return { values: values, title: text(line.substring(i + 1)) };
+            if (!m3uKeyCode(c)) { i++; continue; }
+            j = i + 1;
+            while (j < n && m3uKeyCode(line.charCodeAt(j))) j++;
+            k = j;
+            while (k < n && line.charCodeAt(k) === 32) k++;
+            if (k < n && line.charCodeAt(k) === 61) {
+                k++;
+                while (k < n && line.charCodeAt(k) === 32) k++;
+                c = k < n ? line.charCodeAt(k) : 0;
+                close = c === 34 || c === 39 ? line.indexOf(line.charAt(k), k + 1) : -1;
+                if (close > k) {
+                    key = line.substring(i, j).toLowerCase();
+                    if (values[key] === undefined) values[key] = line.substring(k + 1, close);
+                    i = close + 1;
+                    continue;
+                }
+            }
+            i = j;
+        }
+        return { values: values, title: '' };
+    }
     function parseM3u(input, source) {
-        var result = { live: [], movies: [], series: [], liveCategories: [], movieCategories: [], seriesCategories: [], epgUrl: '' }, attrs = {}, title = '', groupOverride = '', key = sourceKey(source), seriesByName = Object.create(null);
+        var result = { live: [], movies: [], series: [], liveCategories: [], movieCategories: [], seriesCategories: [], epgUrl: '' }, attrs = Object.create(null), title = '', groupOverride = '', entry = 0, key = sourceKey(source), seriesByName = Object.create(null);
         function category(kind, group) { var list = result[kind === 'live' ? 'liveCategories' : kind === 'movies' ? 'movieCategories' : 'seriesCategories'], found = list.filter(function (cat) { return cat.name === group; })[0]; if (!found) { found = { id: kind + ':g' + list.length, name: group }; list.push(found); } return found; }
-        function attributes(line) { var values = {}, match, re = /([a-z0-9_-]+)\s*=\s*["']([^"']*)["']/ig; while ((match = re.exec(line))) values[match[1].toLowerCase()] = match[2]; return values; }
-        text(input).split(/\r?\n/).forEach(function (raw) {
-            var line = text(raw), inQuote, i, cat, item, url, name, group, isVod, episodeMatch, season, episode, show;
+        // Lines end at CR LF, CR (old Mac playlists) or LF, and nowhere else; each is trimmed as a provider field.
+        text(input).split(/\r\n|\r|\n/).forEach(function (raw) {
+            var line = text(raw), read, cat, item, url, name, group, isVod, episodeMatch, season, episode, show;
             if (!line) return;
-            if (/^#EXTM3U/i.test(line)) { var header = attributes(line); result.epgUrl = safeUrl(first(header['url-tvg'] || header['x-tvg-url']).split(',')[0]); return; }
-            if (/^#EXTINF/i.test(line)) { attrs = attributes(line); title = ''; groupOverride = ''; inQuote = ''; for (i = 0; i < line.length; i++) { if (line[i] === '"' || line[i] === "'") { if (!inQuote) inQuote = line[i]; else if (inQuote === line[i]) inQuote = ''; } else if (line[i] === ',' && !inQuote) { title = text(line.substring(i + 1)); break; } } return; }
-            if (/^#EXTGRP:/i.test(line)) { groupOverride = text(line.substring(8)); return; }
-            if (line[0] === '#') return;
-            url = safeUrl(line); if (!url) { attrs = {}; title = ''; groupOverride = ''; return; }
-            name = title || attrs['tvg-name'] || 'Channel ' + (result.live.length + 1); group = attrs['group-title'] || groupOverride || 'Uncategorized';
+            if (m3uTag(line, '#EXTM3U')) { var header = m3uLine(line, true).values; result.epgUrl = safeUrl(first(header['url-tvg'] || header['x-tvg-url']).split(',')[0]); return; }
+            if (m3uTag(line, '#EXTINF')) { read = m3uLine(line, false); attrs = read.values; title = read.title; groupOverride = ''; return; }
+            if (m3uTag(line, '#EXTGRP:')) { groupOverride = text(line.substring(8)); return; }
+            if (line.charCodeAt(0) === 35) return;
+            // Every other line is a URL and an entry: N in "Channel N" counts the ones left out below too.
+            entry++;
+            url = safeUrl(line); if (!url) { attrs = Object.create(null); title = ''; groupOverride = ''; return; }
+            name = title || text(attrs['tvg-name']) || 'Channel ' + entry; group = text(attrs['group-title']) || groupOverride || 'Uncategorized';
             isVod = /\/(movie|series)\//i.test(url) || /\.(mp4|mkv|avi)(?:\?|$)/i.test(url);
-            episodeMatch = /^(.*?)\s+[Ss](\d{1,2})[ ._-]*[Ee](\d{1,3})\b(.*)$/.exec(name);
+            // "Show S01E02". The show name is empty or ends in a non-space, so \s+ starts only where a run of spaces
+            // starts: written ^(.*?)\s+, \s+ ran again from every space of a run to its end, and the time grew with the
+            // square of the run (a second for 32,000 spaces). The shortest show name that ^(.*?) found never ends in a
+            // space, so the matches are the same, also where \s takes U+180E (which a provider field keeps at its start).
+            episodeMatch = /^(|.*?\S)\s+[Ss](\d{1,2})[ ._-]*[Ee](\d{1,3})\b(.*)$/.exec(name);
             season = Number(attrs.season) || (episodeMatch ? Number(episodeMatch[2]) : 0); episode = Number(attrs.episode) || (episodeMatch ? Number(episodeMatch[3]) : 0);
             item = { id: (isVod ? 'mu:' : 'u:') + fingerprint(url), sourceKey: key, name: name, url: url, backups: [], image: safeUrl(attrs['tvg-logo']), epgId: attrs['tvg-id'] || attrs['tvg-name'] || '', categoryId: '', categoryIds: [], number: Number(attrs['tvg-chno']) || 0, year: '', plot: '', rating: '', country: attrs['tvg-country'] || attrs.country || '', language: attrs['tvg-language'] || attrs.language || '' };
             if (isVod && season && episode && (episodeMatch || attrs['series-name'])) {
@@ -157,7 +206,7 @@
                 if (!show) { show = copy(item); show.id = 'ms:' + fingerprint(showName); show.name = showName; show.url = ''; show._episodes = []; show.categoryId = cat.id; show.categoryIds = [cat.id]; result.series.push(show); seriesByName[showName] = show; }
                 show.categoryIds = unique(show.categoryIds.concat([cat.id])); show._episodes.push({ id: 'me:' + fingerprint(url), name: name, url: url, image: item.image, season: season, episode: episode, duration: 0, sourceKey: key });
             } else { cat = category(isVod ? 'movies' : 'live', group); item.categoryId = cat.id; item.categoryIds = [cat.id]; result[isVod ? 'movies' : 'live'].push(item); }
-            attrs = {}; title = ''; groupOverride = '';
+            attrs = Object.create(null); title = ''; groupOverride = '';
         });
         result.live = renumber(mergeIds(result.live)); result.movies = mergeIds(result.movies); return result;
     }
@@ -187,7 +236,10 @@
             if (valid) { flags.us = flags.us || local.us; flags.foreign = flags.foreign || local.foreign; }
         }
         while ((match = marker.exec(name))) include(match[1] || match[2] || match[3]);
-        prefix = /^\s*([^:|]+?)\s*[:|]\s*|^\s*([a-z]{2,3})\s*-\s*/i.exec(name); if (prefix) include(prefix[1] || prefix[2]); return flags;
+        // The text before the first ":" or "|", up to its last non-space (or the one space just before a leading ":" or
+        // "|"). Not ([^:|]+?)\s*[:|]: at each character added to the lazy group, \s* ran again to the end of the run of
+        // spaces after it, so the time grew with the square of a run (and its cube after leading spaces).
+        prefix = /^\s*([^:|\s](?:[^:|]*[^:|\s])?|\s(?=[:|]))\s*[:|]\s*|^\s*([a-z]{2,3})\s*-\s*/i.exec(name); if (prefix) include(prefix[1] || prefix[2]); return flags;
     }
     function usPolicy(items, categories) {
         var byCat = Object.create(null); categories.forEach(function (cat) { byCat[cat.id] = categoryLabels(cat.name); });
@@ -236,10 +288,27 @@
         });
         return { items: items, categories: usedCategories(items, catalog.categories, '__tuner_local_news', 'Local news') };
     }
+    // displayName's patterns \s*X, where X never starts with a space, are written \s*X|\s\s+ and replace with one space:
+    // a run of two spaces or more that X does not follow is matched once, whole, and the search goes on after it. As
+    // \s*X alone, the engine tried \s*X again at every space of the run and \s* ran to its end each time, so the time
+    // grew with the square of the run (half a second for 16,000 spaces). Such a run becomes one space: up to the \s+
+    // that makes every run one space, each pattern takes a whole run or none of it and no pattern tells runs apart, so
+    // the name is the same. \s+USA?\s*$ (tried only on names with US in them) keeps such a run, with (\s\s+).
+    // The ends lose spaces, ":", "|" and dashes in one pass from each end: ^[...]+|[...]+$ tried its second half again
+    // at every character of a run inside the name.
+    var nameEdge = /[\s:|\-–]/;
+    function trimNameEdges(value) {
+        var start = 0, end = value.length;
+        while (start < end && nameEdge.test(value.charAt(start))) start++;
+        while (end > start && nameEdge.test(value.charAt(end - 1))) end--;
+        return value.substring(start, end);
+    }
     function displayName(raw) {
         var name = text(raw).replace(/\u00a0/g, ' '), previous, i;
         for (i = 0; i < 6; i++) { previous = name; name = name.replace(/^\s*\(\s*(PLUTO|STV|SAMSUNG|ROKU|TUBI|PLEX|XUMO)\s+USA?\s*\)\s*/i, '').replace(/^\s*(?:[([]\s*USA?\s*[)\]|]|\|USA?\||USA?\s*[:|]|USA?\s*[-–]\s*|US\s+(?!Open\b|Weekly\b|Marshals\b|Navy\b|Army\b)|USA\s+(?!Network\b|Today\b|Hockey\b|Rugby\b|Swimming\b|Gymnastics\b|Wrestling\b|Track\b|Softball\b|Baseball\b))\s*/, ''); if (name !== previous) name = name.replace(/^\s*\(\s*(?:[A-Z0-9+]{1,5}|Prime|Tubi|Meo)\s*\)\s*/, ''); if (name === previous) break; }
-        name = name.replace(/\s*\([^()]*@\s*[\d.]+\s*Mbps[^()]*\)|\s*\((?:F?HD|UHD|SD)\s*@[^)]*\)/ig, ' ').replace(/\b(FHD|HD|UHD|4K|HEVC|H\.?265|1080[PI]?|720P|60\s*FPS|50\s*FPS)\b/ig, ' ').replace(/\s*[(\[]?\bback\s*up\b[)\]]?/ig, ' ').replace(/\s*\((?:[A-Z]|HX|FEED|Feed)\)(?=\s*(?:\(|$))/g, ' ').replace(/\s+USA?\s*$/, '').replace(/\(\)|\[\]/g, ' ').replace(/\s+/g, ' ').replace(/^[\s:|\-–]+|[\s:|\-–]+$/g, ''); return text(name) || text(raw);
+        name = name.replace(/\s*\([^()]*@\s*[\d.]+\s*Mbps[^()]*\)|\s*\((?:F?HD|UHD|SD)\s*@[^)]*\)|\s\s+/ig, ' ').replace(/\b(FHD|HD|UHD|4K|HEVC|H\.?265|1080[PI]?|720P|60\s*FPS|50\s*FPS)\b/ig, ' ').replace(/\s*[(\[]?\bback\s*up\b[)\]]?|\s\s+/ig, ' ').replace(/\s*\((?:[A-Z]|HX|FEED|Feed)\)(?=\s*(?:\(|$))|\s\s+/g, ' ');
+        if (name.indexOf('US') >= 0) name = name.replace(/\s+USA?\s*$|(\s\s+)/g, '$1');
+        name = name.replace(/\(\)|\[\]/g, ' ').replace(/\s+/g, ' '); return text(trimNameEdges(name)) || text(raw);
     }
     function idleEvent(name) { return !text(name) || /\b(?:no\s+(?:scheduled\s+)?(?:events?|games?|matches|streams?)(?:\s+(?:scheduled|today|available))?|no\s+live\s+(?:courts?|events?|games?|matches)|offline|off\s*air|not\s+live|coming\s+soon)\b/i.test(name) || /^:|[:|]\s*$|\(\s*209\d\s+\d{2}\s+\d{2}/.test(name) || /(?:^|\s)[|:]\s*(?:event\s*)?\d{1,3}\s*$/i.test(name) || /^(?:PPV|UFC|EVENT|LIVE\s*EVENT|ESPN\s*\+|ESPN\s*PLUS|ESPNPLUS|PEACOCK|PARAMOUNT\s*\+?|MAX\s*US|MILB|NCAA[FB]?|NFL|NBA|WNBA|NHL|MLB|MLS|FLO\s*\w+|TENNIS\s*TV|WTA|ATP)\s*(?:EVENT\s*)?\d{1,3}$/i.test(text(name)); }
     function easternTime(month, day, clock, minute, ap, now) {
@@ -931,7 +1000,9 @@
     // words such as Movies, EN or 4K are dropped, so "Comedy Central" or "Netflix" never count.
     function categoryGenreTokens(name) {
         var out = [];
-        text(name).split(/[,\/|&;:()\[\]]+|\s+-\s+|–/).forEach(function (part) {
+        // Runs of spaces become one space first (the words of each part stay the same): split tries \s+-\s+ at every
+        // space of a run, and \s+ runs to the end of the run each time, so on long runs the time grew with their square.
+        text(name).replace(/\s+/g, ' ').split(/[,\/|&;:()\[\]]+|\s+-\s+|–/).forEach(function (part) {
             var words = part.toLowerCase().split(/[^a-z0-9]+/).filter(function (word) { return word && !GENRE_NOISE[word]; }), token = genreToken(words.join(' '));
             if (token && out.indexOf(token) < 0) out.push(token);
         });

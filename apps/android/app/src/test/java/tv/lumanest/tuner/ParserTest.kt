@@ -89,6 +89,44 @@ class ParserTest {
     }
 
     /**
+     * docs/browse.md "M3U playlists", Name: `Channel N` counts every entry of the playlist, movies too, and a line that
+     * is only a control character is not an empty line (Kotlin's isBlank() takes U+001C to U+001F for spaces), so it is
+     * a URL and an entry. Each `#EXTINF` line replaces the pending one, and a URL line clears it. Escapes, so the test
+     * holds no invisible characters.
+     */
+    @Test fun m3uChannelNumbersCountEveryEntry() {
+        val r = M3u.parse(tmp(
+            "#EXTM3U\n" +
+                "#EXTINF:-1,Dune\nhttp://h/movie/u/p/1.mp4\n" +
+                "#EXTINF:-1,Unit Separator\n\u001F\n" +
+                "#EXTINF:-1 group-title=\"News\",\nhttp://h/live/3.ts\n" +
+                "http://h/live/4.ts\n",
+        ))
+        assertEquals("Dune", r.movies.single().name)
+        assertEquals(listOf("Unit Separator", "Channel 3", "Channel 4"), r.channels.map { it.name })
+        assertEquals(listOf("Uncategorized", "News", "Uncategorized"), r.channels.map { c -> r.liveCategories.single { it.id == c.categoryId }.name })
+    }
+
+    /**
+     * docs/browse.md "M3U playlists": an `#EXTINF` line is read in one pass, in time that grows in proportion to the line,
+     * here about 190,000 characters: a key of 80,000 letters, 20,000 `a=` that start no value, a value with spaces
+     * around its `=`, 50,000 spaces and a quote without a partner. Reading a key from each of its letters again, or a
+     * pattern tried at each of them, takes seconds.
+     */
+    @Test fun aLongExtinfLineIsReadInTimeProportionalToTheLine() {
+        val line = "#EXTINF:-1 " + "k".repeat(80_000) + " " + "a=".repeat(20_000) + "tvg-name = 'Heat, the movie' " +
+            " ".repeat(50_000) + "group-title=\"Movies\" x='" + " ".repeat(20_000) + ",Heat"
+        // Warms the JIT, so the timing is the reading alone.
+        repeat(20) { M3u.readExtinf("#EXTINF:-1 a=a=\"b\" c = 'd' e=' ,f", title = true) }
+        val started = System.nanoTime()
+        val read = M3u.readExtinf(line, title = true)
+        val ms = (System.nanoTime() - started) / 1e6
+        assertTrue("Reading an #EXTINF line of ${line.length} characters took $ms ms", ms < 50)
+        assertEquals("Heat", read.title)
+        assertEquals(mapOf("tvg-name" to "Heat, the movie", "group-title" to "Movies"), read.values)
+    }
+
+    /**
      * Every "tmdb" case of docs/browse-cases.json (docs/browse.md, Matching step 1). The row is read by the reader the
      * catalogue goes through (the Android framework's JsonReader, hence Robolectric), then its id by [Xtream.tmdbOf], and
      * by the movie and series parsers, which read only the fields they need: `{"tmdb":1e3}` is a number (1000) and

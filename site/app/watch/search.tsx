@@ -5,7 +5,7 @@ import {cardsFor} from './browse-cards';
 import {CatalogueError} from './home';
 import {PosterRow, type OpenTitle} from './poster';
 import type {Channel} from './use-catalogue';
-import type {PosterSources} from './poster-choice';
+import {channelBadge, type PosterSources} from './poster-choice';
 
 /** Search: movies and series (names starting with the text first) and live channels, from 2 letters, ignoring accents. */
 export default function Search({query, catalog, library, posters, opts, channels, error, onRetry, onQuery, onOpen, onChannel}: {
@@ -47,7 +47,7 @@ export default function Search({query, catalog, library, posters, opts, channels
     {live.length > 0 && <section className="search-channels" aria-labelledby="search-channels">
       <div className="poster-row-head"><h2 id="search-channels">Channels</h2></div>
       <ul>{live.map(channel => <li key={channel.id}><button type="button" className="channel-choice" data-focus-key={'channel:' + channel.id} disabled={!channel.token} onClick={() => onChannel(channel)}>
-        <span className="channel-icon" aria-hidden="true">{channel.name.slice(0, 2).toUpperCase()}</span><span><strong>{channel.name}</strong><small>{channel.token ? channel.group : 'Stream unavailable'}</small></span>
+        <span className="channel-icon" aria-hidden="true">{channelBadge(channel.name)}</span><span><strong>{channel.name}</strong><small>{channel.token ? channel.group : 'Stream unavailable'}</small></span>
       </button></li>)}</ul>
     </section>}
   </div>;

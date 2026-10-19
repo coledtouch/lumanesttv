@@ -517,7 +517,8 @@ struct JSONParser {
             if let fields, !fields.contains(key) {
                 try skipValue(depth: depth)
             } else {
-                members[key] = try parseValue(depth: depth)
+                let value = try parseValue(depth: depth)
+                if let earlier = members.updateValue(value, forKey: key) { JSONParser.repeated(key, value, earlier, in: &members) }
             }
             skipWhitespace()
             guard index < bytes.count else { throw TunerError.invalidResponse }
@@ -525,6 +526,19 @@ struct JSONParser {
             if bytes[index] == UInt8(ascii: "}") { index += 1; return .object(members) }
             throw TunerError.invalidResponse
         }
+    }
+
+    /// A member whose key the object already had: the last value wins, as in JavaScript and Kotlin, when the key is
+    /// spelled with the same bytes. Swift's `String` equality also finds a key that is only canonically equivalent
+    /// ("e\u{301}" after "\u{E9}"), which is another key in the other apps: the earlier value goes back under its key
+    /// and this one is kept under `ExactText.spelled(key)`, so an object read as a list (a season map) keeps both. No
+    /// key the apps look up has a canonically equivalent spelling (only "K", ";" and "`" have one among ASCII text).
+    private static func repeated(_ key: String, _ value: JSONValue, _ earlier: JSONValue, in members: inout [String: JSONValue]) {
+        guard let index = members.index(forKey: key) else { return }
+        let stored = members.keys[index]
+        guard !ExactText.same(stored, key) else { return }
+        members[stored] = earlier
+        members[ExactText.spelled(key)] = value
     }
 
     private mutating func skipValue(depth: Int) throws {

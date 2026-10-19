@@ -1,3 +1,8 @@
+/**
+ * One playlist entry. name and group are whole, never shortened: the browser reads a movie's or series' year and
+ * matching keys from its name, and USA only reads the group (docs/browse.md, "Long names" and "M3U playlists"). The
+ * playlist is at most 8 MB (limitedText in lib/player.ts). group is "Other" when the entry has none.
+ */
 export type PlaylistChannel = {name: string; group: string; url: string; format: 'hls' | 'mpegts' | 'file'; logo?: string};
 export type PlayerSession = {username: string; password: string; exp: number; sid: string};
 export type PlayerMedia = {url: string; bind: string; exp: number; root?: 1};
@@ -26,40 +31,122 @@ export function validMedia(value: unknown, binding: string, now = Date.now()): v
     typeof item.exp === 'number' && Number.isFinite(item.exp) && item.exp > now;
 }
 
+// ------------------------------------------------------------------ M3U playlists (docs/browse.md, "M3U playlists")
+
+/**
+ * The ends of a provider field (docs/browse.md, "Trimming"): tab, line feed, vertical tab, form feed, carriage return,
+ * space and the Unicode spaces (U+0085, U+00A0, U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F, U+3000 and
+ * U+FEFF), nothing else. Not trim(), which keeps U+0085. Character codes, so no editor turns them into the characters.
+ */
+const isFieldEdge = (code: number) => code === 32 || (code >= 9 && code <= 13) || code === 0x85 || code === 0xa0 || code === 0x1680 ||
+  (code >= 0x2000 && code <= 0x200a) || code === 0x2028 || code === 0x2029 || code === 0x202f || code === 0x205f || code === 0x3000 || code === 0xfeff;
+
+/** A provider field with its ends trimmed (see isFieldEdge); the characters inside it stay as they are. */
+export function trimField(text: string) {
+  let start = 0, end = text.length;
+  while (start < end && isFieldEdge(text.charCodeAt(start))) start++;
+  while (end > start && isFieldEdge(text.charCodeAt(end - 1))) end--;
+  return start === 0 && end === text.length ? text : text.slice(start, end);
+}
+
+/** True when line starts with tag (written in upper case), ignoring the case of ASCII letters only (U+0131 is no "I"). */
+function startsWithTag(line: string, tag: string) {
+  if (line.length < tag.length) return false;
+  for (let i = 0; i < tag.length; i++) {
+    const code = line.charCodeAt(i);
+    if ((code >= 97 && code <= 122 ? code - 32 : code) !== tag.charCodeAt(i)) return false;
+  }
+  return true;
+}
+
+/** A character of a key: an ASCII letter or digit, "_" or "-". */
+const isKeyCode = (code: number) => (code >= 97 && code <= 122) || (code >= 65 && code <= 90) || (code >= 48 && code <= 57) || code === 95 || code === 45;
+
+/** The values of an #EXTINF line by key (ASCII lower case), and its title. */
+export type ExtinfLine = {values: Map<string, string>; title: string};
+
+/**
+ * One #EXTINF line, read once from its start (docs/browse.md, "Values and title"):
+ * - a key is a whole run of key characters; followed by "=" (spaces, U+0020, around it allowed) and by " or ' whose
+ *   partner comes later on the line, the text between the quotes is its value and reading goes on after the closing
+ *   quote; otherwise reading goes on after the key;
+ * - the first "," met otherwise is the name comma: the rest of the line, trimmed as a provider field, is the title, and
+ *   nothing after it is a value;
+ * - any other character, a quote that opens no value too, is passed over.
+ * A key given twice keeps its first value. Linear in the line: a closing quote is looked for only when that quote comes
+ * again later (its last place on the line is known), and reading then goes on past it.
+ */
+export function readExtinf(line: string): ExtinfLine {
+  const values = new Map<string, string>();
+  const lastDouble = line.lastIndexOf('"'), lastSingle = line.lastIndexOf("'");
+  let i = 0;
+  while (i < line.length) {
+    const code = line.charCodeAt(i);
+    if (code === 44) return {values, title: trimField(line.slice(i + 1))};
+    if (!isKeyCode(code)) {i++; continue;}
+    let end = i + 1;
+    while (end < line.length && isKeyCode(line.charCodeAt(end))) end++;
+    let at = end;
+    while (line.charCodeAt(at) === 32) at++;
+    if (line.charCodeAt(at) === 61) {
+      at++;
+      while (line.charCodeAt(at) === 32) at++;
+      const quote = line.charCodeAt(at);
+      if ((quote === 34 && at < lastDouble) || (quote === 39 && at < lastSingle)) {
+        const close = line.indexOf(quote === 34 ? '"' : "'", at + 1);
+        const key = line.slice(i, end).toLowerCase();
+        if (!values.has(key)) values.set(key, line.slice(at + 1, close));
+        i = close + 1;
+        continue;
+      }
+    }
+    i = end;
+  }
+  return {values, title: ''};
+}
+
+/** A value of an #EXTINF line, trimmed as a provider field ("" when the line has none). */
+const valueOf = (info: ExtinfLine | null, key: string) => trimField(info?.values.get(key) ?? '');
+
+/**
+ * The channels of an M3U playlist, named and grouped as docs/browse.md, "M3U playlists" says:
+ * - lines end at CR LF, CR or LF, and are trimmed as provider fields; empty lines are skipped. The first line left
+ *   starts with #EXTM3U, in any ASCII letter case, or the playlist is refused;
+ * - an #EXTINF line (any ASCII letter case) is the next entry's, replacing one before it and its #EXTGRP: line; an
+ *   #EXTGRP: line is the next entry's group line; other lines starting with # are skipped; any other line is a URL,
+ *   which makes an entry, numbered from 1 whether or not it is kept (only http and https URLs are, once each);
+ * - name: the title, else tvg-name, else "Channel N"; group: group-title, else the #EXTGRP: text, else "Other".
+ * At most 50,000 channels.
+ */
 export function parseM3U(text: string, portal?: string): PlaylistChannel[] {
-  if (!text.trimStart().startsWith('#EXTM3U')) throw new Error('The line login did not return a valid playlist.');
+  const lines = text.split(/\r\n|\r|\n/);
+  let at = 0;
+  while (at < lines.length && !trimField(lines[at])) at++;
+  if (at === lines.length || !startsWithTag(trimField(lines[at]), '#EXTM3U')) throw new Error('The line login did not return a valid playlist.');
   const result: PlaylistChannel[] = [];
   const seen = new Set<string>();
-  let info = '', group = 'Other';
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (line.startsWith('#EXTINF:')) info = line;
-    else if (line.startsWith('#EXTGRP:')) group = line.slice(8).trim();
-    else if (line && !line.startsWith('#') && info) {
-      let quoted = false, comma = -1;
-      for (let i = 0; i < info.length; i++) {
-        if (info[i] === '"') quoted = !quoted;
-        else if (info[i] === ',' && !quoted) {comma = i; break;}
-      }
-      const title = comma >= 0 ? info.slice(comma + 1).trim() : '';
-      const attribute = (key: string) => info.match(new RegExp('(?:^|\\s)' + key + '="([^"\\r\\n]*)"'))?.[1];
-      try {
-        const url = normalizeProviderURL(line, portal);
-        if (['http:', 'https:'].includes(url.protocol) && !seen.has(url.href)) {
-          seen.add(url.href);
-          result.push({
-            name: (attribute('tvg-name') || title || 'Channel ' + (result.length + 1)).slice(0, 150),
-            group: (attribute('group-title') || group || 'Other').slice(0, 100),
-            url: url.href,
-            format: /\.m3u8$/i.test(url.pathname) ? 'hls' : /\.(mp4|m4v|webm)$/i.test(url.pathname) ? 'file' : 'mpegts',
-          });
-          const logo = attribute('tvg-logo')?.trim();
-          if (logo && logo.length <= 1024) result[result.length - 1].logo = logo;
-        }
-      } catch {}
-      info = ''; group = 'Other';
-      if (result.length >= 50000) break;
-    }
+  let info: ExtinfLine | null = null, groupLine = '', entry = 0;
+  for (; at < lines.length && result.length < 50000; at++) {
+    const line = trimField(lines[at]);
+    if (!line) continue;
+    if (startsWithTag(line, '#EXTINF')) {info = readExtinf(line); groupLine = ''; continue;}
+    if (startsWithTag(line, '#EXTGRP:')) {groupLine = trimField(line.slice(8)); continue;}
+    if (line.charCodeAt(0) === 35) continue;
+    entry++;
+    const name = info?.title || valueOf(info, 'tvg-name') || 'Channel ' + entry;
+    const group = valueOf(info, 'group-title') || groupLine || 'Other';
+    const logo = valueOf(info, 'tvg-logo');
+    info = null; groupLine = '';
+    let url: URL;
+    try {url = normalizeProviderURL(line, portal);} catch {continue;}
+    if ((url.protocol !== 'http:' && url.protocol !== 'https:') || seen.has(url.href)) continue;
+    seen.add(url.href);
+    const channel: PlaylistChannel = {
+      name, group, url: url.href,
+      format: /\.m3u8$/i.test(url.pathname) ? 'hls' : /\.(mp4|m4v|webm)$/i.test(url.pathname) ? 'file' : 'mpegts',
+    };
+    if (logo && logo.length <= 1024) channel.logo = logo;
+    result.push(channel);
   }
   if (!result.length) throw new Error('No channels are available for this line. Check that the subscription is active.');
   return result;

@@ -5,7 +5,8 @@ import XCTest
 /// Runs every case in docs/browse-cases.json, the file all Tuner apps share (docs/browse.md, "Test cases"): the category
 /// filter, title normalization with the year read from the name, "Movies & Series: USA only" for one title, both on
 /// its own (`TitleRegion.isUSA`) and as a whole catalogue title in a `BrowseIndex` (movie and series), and the provider
-/// TMDB id of one row read by the catalogue's JSON reader.
+/// TMDB id of one row read by the catalogue's JSON reader, and the name and group of every entry of an M3U playlist
+/// read by `M3UParser`.
 ///
 /// The package reads its copy, Fixtures/browse-cases.json (the package may be built outside the repository);
 /// `testFixtureIsTheRepositoryCopy` fails when that copy differs from the repository's docs/browse-cases.json.
@@ -76,7 +77,7 @@ final class BrowseCasesTests: XCTestCase {
     func testEveryCaseHasAKnownKind() throws {
         let root = try JSONDecoder().decode(JSONValue.self, from: Fixture.data(BrowseCasesTests.fixture))
         let kinds = Set(root.elements.compactMap { $0["kind"]?.text })
-        XCTAssertEqual(kinds, ["category", "normalize", "tmdb", "usa"])
+        XCTAssertEqual(kinds, ["category", "m3u", "normalize", "tmdb", "usa"])
     }
 
     func testCategoryCases() throws {
@@ -155,6 +156,37 @@ final class BrowseCasesTests: XCTestCase {
             }
         }
         XCTAssertTrue(failures.isEmpty, "TMDB id cases that fail:\n" + failures.joined(separator: "\n"))
+    }
+
+    /// docs/browse.md "M3U playlists": `text` is a whole playlist, `expect` its entries in order, each a name and a group
+    /// ("" for none). Every URL in the cases is a live channel, so the entries are the channels `M3UParser.parse` reads,
+    /// each with the name of its live category as its group ("Uncategorized", this app's label for no group, reads as "").
+    /// Names and groups are compared scalar by scalar: `==` on Swift strings ignores canonical differences.
+    func testM3UCases() throws {
+        var failures: [String] = []
+        func shown(_ text: String) -> String {
+            "\"" + text.unicodeScalars.map { $0.isASCII && $0.value >= 0x20 && $0.value < 0x7F ? String($0) : String(format: "\\u{%04X}", $0.value) }.joined() + "\""
+        }
+        for entry in try cases("m3u") {
+            guard let text = entry.string("text"), case .array(let items)? = entry.fields["expect"] else { failures.append("bad case \(entry.fields)"); continue }
+            let expected = items.compactMap { item -> [String]? in
+                guard case .string(let name)? = item["name"], case .string(let group)? = item["group"] else { return nil }
+                return [name, group]
+            }
+            guard expected.count == items.count else { failures.append("bad case \(entry.fields)"); continue }
+            let playlist = M3UParser.parse(Data(text.utf8))
+            var groups: [String: String] = [:]
+            for category in playlist.liveCategories { groups[category.id] = category.name == "Uncategorized" ? "" : category.name }
+            let actual = playlist.channels.map { [$0.name, groups[$0.categoryID] ?? "(no category \($0.categoryID))"] }
+            let same = actual.count == expected.count
+                && zip(actual, expected).allSatisfy { pair in zip(pair.0, pair.1).allSatisfy { Array($0.unicodeScalars) == Array($1.unicodeScalars) } }
+            if !same || !playlist.movies.isEmpty || !playlist.series.isEmpty {
+                let list = { (entries: [[String]]) in entries.map { "\(shown($0[0])) in \(shown($0[1]))" }.joined(separator: ", ") }
+                failures.append("\(shown(text)):\n  read    [\(list(actual))] (\(playlist.movies.count) movies, \(playlist.series.count) series)"
+                                + "\n  expect  [\(list(expected))]")
+            }
+        }
+        XCTAssertTrue(failures.isEmpty, "M3U cases that fail:\n" + failures.joined(separator: "\n"))
     }
 
     // `TunerCore.Category` (here and in `byID` above): on Apple platforms Foundation also brings in the Objective-C

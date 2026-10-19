@@ -3,7 +3,7 @@ import {useRef, useState, type Ref} from 'react';
 import {ChevronLeft, ChevronRight, Check} from 'lucide-react';
 import type {IndexedTitle} from '../../lib/browse';
 import {posterFocusKey} from './watch-route';
-import {posterFailed, shownPoster} from './poster-choice';
+import {initials, posterFailed, shownPoster} from './poster-choice';
 export {providerPosterSrc as posterSrc} from './poster-choice';
 
 // Posters, rows of posters and poster grids for the web player's browsing. Every poster is a plain button, so a
@@ -11,11 +11,6 @@ export {providerPosterSrc as posterSrc} from './poster-choice';
 
 /** srcs: the pictures to try, best first (poster-choice.ts posterChoices); none shows the initials card. */
 export type CardItem = {title: IndexedTitle; srcs: string[]; favorite: boolean; progress: number; subtitle?: string};
-
-function initials(name: string) {
-  const words = name.replace(/\([^)]*\)|\[[^\]]*\]/g, ' ').split(/\s+/).filter(word => /^[\p{L}\p{N}]/u.test(word));
-  return (words.slice(0, 2).map(word => word[0]).join('') || name.slice(0, 2)).toUpperCase();
-}
 
 /** Shown when a title has no poster or its poster fails to load. */
 export function TitleCard({name}: {name: string}) {

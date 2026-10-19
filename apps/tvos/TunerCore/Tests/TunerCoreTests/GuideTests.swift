@@ -159,6 +159,29 @@ final class XMLTVTests: XCTestCase {
         XCTAssertEqual(later.icons["x:cnn"]?.lastPathComponent, "cnn.png")
     }
 
+    /// Guide channel ids are told apart byte for byte, as Android tells them apart: two guide channels whose ids are only
+    /// canonically equivalent keep their own programmes (Swift's `String` equality made them one list, so both channels
+    /// showed the first one's programme).
+    func testGuideIDsThatAreOnlyCanonicallyEquivalentStayApart() throws {
+        let xml = """
+        <tv><channel id="T&#233;l&#233;.fr"><display-name>One</display-name></channel>
+        <channel id="Te&#769;le&#769;.fr"><display-name>Two</display-name></channel>
+        <programme channel="T&#233;l&#233;.fr" start="20261012220000 +0000" stop="20261012230000 +0000"><title>First</title></programme>
+        <programme channel="Te&#769;le&#769;.fr" start="20261012220000 +0000" stop="20261012230000 +0000"><title>Second</title></programme>
+        </tv>
+        """
+        let channels = [channel("x:1", "One", epg: "T\u{E9}l\u{E9}.fr"), channel("x:2", "Two", epg: "Te\u{301}le\u{301}.fr")]
+        let wanted = XMLTV.Wanted(channels: channels)
+        XCTAssertEqual(wanted.ids.count, 2)
+        let result = try XMLTV.parse(data: Data(xml.utf8), window: window, wanted: wanted)
+        XCTAssertEqual(result.programs.count, 2)
+        let schedule = XMLTV.assign(result, to: channels, now: now)
+        XCTAssertEqual(schedule.programs["x:1"]?.map(\.title), ["First"])
+        XCTAssertEqual(schedule.programs["x:2"]?.map(\.title), ["Second"])
+        let unwanted = try XMLTV.parse(data: Data(xml.utf8), window: window, wanted: XMLTV.Wanted(ids: [], keys: []))
+        XCTAssertEqual(unwanted.programs.count, 2, "every channel kept")
+    }
+
     func testLogoIndex() throws {
         let index = try LogoIndex(json: Fixture.data("logos.json"))
         let cnn = channel("x:1", "CNN")
