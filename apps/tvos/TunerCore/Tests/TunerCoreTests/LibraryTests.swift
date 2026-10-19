@@ -43,7 +43,9 @@ final class SourceStoreTests: XCTestCase {
     func testUserDefaultsStorePrefixesKeys() throws {
         let suite = "tuner-tests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        // Capture only the (Sendable) suite name: XCTest runs teardown blocks on the main actor, and Apple's
+        // UserDefaults isn't Sendable, so capturing `defaults` is a data-race error in Swift 6 mode on macOS.
+        addTeardownBlock { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
         let store = UserDefaultsKeyValueStore(defaults: defaults)
         store.set(Data("x".utf8), forKey: "settings")
         XCTAssertEqual(defaults.data(forKey: "tuner.settings"), Data("x".utf8))
