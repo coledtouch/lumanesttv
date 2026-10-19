@@ -24,12 +24,12 @@ function replaceRange(source, start, end, to, label) {
 }
 
 function portApp(source, version) {
-    source = replaceOnce(source, '"Settings",\n    "Multi View",\n  ];', '"Settings",\n  ];', "tabs");
+    source = replaceOnce(source, "var tabOrder = [HOME, LIVE, DISCOVER, LIBRARY, SEARCH, SETTINGS, MULTI];", "var tabOrder = [HOME, LIVE, DISCOVER, LIBRARY, SEARCH, SETTINGS];", "tabs");
     source = replaceRange(source, "  function renderMultiView() {", "  function pickDualChannel(", [
         "  function renderMultiView() {",
         '    main.textContent = "";',
         '    main.appendChild(el("h1", "page-title", "Single-screen playback"));',
-        '    main.appendChild(el("p", "multiview-subtitle", "This LG build plays one stream at a time. Choose Live TV, Movies or Series to watch."));',
+        '    main.appendChild(el("p", "multiview-subtitle", "This LG build plays one stream at a time. Choose Live TV, Discover or Library to watch."));',
         "  }",
         ""
     ].join("\n"), "Multi View");

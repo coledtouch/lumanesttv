@@ -78,7 +78,8 @@ function harness(options = {}) {
   const channels = ['ESPN', 'NFL Network', 'CBS Sports'].map((name, index) => ({
     id: 'live:' + index, name, number: index + 1, categoryIds: [], url: 'https://fixture.invalid/' + index + '.ts', backups: []
   }));
-  const settings = { source: { type: 'xtream', server: 'https://fixture.invalid', username: 'fixture', password: 'fixture' }, theme: 'black', zip: '' };
+  // An existing customer who opens on Live TV (the setting Tuner keeps for people who watch channels).
+  const settings = { source: { type: 'xtream', server: 'https://fixture.invalid', username: 'fixture', password: 'fixture' }, theme: 'black', zip: '', startOn: 'live' };
   let historyWrites = 0, settingsWrites = 0;
   const store = {
     settings, lastWatched() { return null; }, favourites() { return []; }, isFavourite() { return false; }, mostWatched() { return []; },

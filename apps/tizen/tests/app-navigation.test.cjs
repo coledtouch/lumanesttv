@@ -92,17 +92,36 @@ function harness(options = {}) {
         ['ESPN2', 'sports'], ['FS1', 'sports'], ['NBC Sports', 'sports'], ['Fox News', 'news'], ['Sky News', 'news']].map(([name, cat], index) => ({
         id: 'live:' + index, name, number: index + 1, categoryId: cat, categoryIds: [cat], url: 'https://fixture.invalid/' + index + '.m3u8', backups: []
     }));
-    const movies = [{ id: 'm:1', name: 'Movie night', categoryIds: ['films'], url: 'https://fixture.invalid/m1.mp4', backups: [] }];
+    const movies = options.movies || [{ id: 'm:1', name: 'Movie night', categoryIds: ['films'], url: 'https://fixture.invalid/m1.mp4', backups: [] }];
+    const movieCats = options.movieCats || [{ id: 'films', name: 'Films' }];
+    // By default an existing customer who opens on Live TV; startOn: 'home' (or null: decide at launch) for Home.
     const settings = { source: options.noSource ? null : { type: 'xtream', server: 'https://fixture.invalid', username: 'fixture', password: 'fixture' }, theme: '', zip: '' };
-    const favourites = new Set();
+    if (options.startOn !== null) settings.startOn = options.startOn || 'live';
+    Object.assign(settings, options.settings || {});
+    const favourites = new Set(options.favourites || []);
+    const seen = [], recents = options.recents || [], upNext = options.upNext || [];
     const store = {
         settings, lastError: '', lastWatched() { return options.lastWatched || null; },
         favourites() { return [...favourites]; }, isFavourite(id) { return favourites.has(id); },
         toggleFavourite(id) { if (favourites.has(id)) favourites.delete(id); else favourites.add(id); },
-        mostWatched() { return []; }, recents() { return []; }, recordWatched() {}, saveRecent() {},
+        mostWatched() { return options.mostWatched || []; }, recents() { return recents.slice(); }, recordWatched() {}, saveRecent() {},
+        upNext() { return upNext.slice(); }, seen() { return seen.slice(); },
+        clearUpNext(id) { for (let i = upNext.length - 1; i >= 0; i--) if (upNext[i].seriesId === id) upNext.splice(i, 1); return true; },
+        recordSeen(id) { const at = seen.findIndex(entry => entry.id === id); if (at >= 0) seen.splice(at, 1); seen.unshift({ id, updated: now }); },
         saveSettings(change) { Object.assign(settings, change); return true; },
         adultLock: real.data.createPasscodeLock(real.storage, () => now)
     };
+    // The catalog rows endpoint: options.rows is the saved copy (no network in these tests). With
+    // options.rowsLater the app's one refresh waits for h.deliverRows(rows).
+    let rowsAnswer = null, rowsAsked = false;
+    const browse = Object.assign({}, real.data.browse, {
+        createRowsClient() {
+            return {
+                peek() { return options.rows ? real.data.browse.parseRows(options.rows) : null; },
+                refresh(onRows) { if (!options.rowsLater || rowsAsked) return false; rowsAsked = true; rowsAnswer = onRows; return true; }
+            };
+        }
+    });
     const calls = [], guideRequests = [];
     let playerOptions, clientOptions, loads = 0;
     const tracks = { audio: options.audio || [], subtitles: options.subtitles || [] };
@@ -130,14 +149,14 @@ function harness(options = {}) {
         innerWidth: 1920, innerHeight: 1080, webapis: { avplay: {} },
         TunerData: {
             createStore() { return store; }, catalogIdentity() { return 'fixture'; },
-            adultFilter: real.data.adultFilter, categoryItems: real.data.categoryItems,
+            adultFilter: real.data.adultFilter, categoryItems: real.data.categoryItems, browse,
             createClient(source, value) {
                 clientOptions = value;
                 return {
                     catalogIdentity: 'fixture', cancel() {},
                     guide(channel) { return { then(ok) { guideRequests.push({ channel, ok }); } }; },
                     movieInfo() { return { then() {} }; },
-                    seriesInfo() { return { then(ok) { if (options.series) ok(options.series.info); } }; },
+                    seriesInfo(item) { return { then(ok) { const info = options.seriesInfo ? options.seriesInfo(item) : options.series && options.series.info; if (info) ok(info); } }; },
                     load() {
                         loads++;
                         clientOptions.onStatus('live', { state: 'loading' });
@@ -154,8 +173,9 @@ function harness(options = {}) {
     function failLoad(message) { clientOptions.onStatus('live', { state: 'error', message }); }
     function finishLoad() {
         clientOptions.onCatalog('live', channels, liveCats); clientOptions.onStatus('live', { state: 'ready' });
-        clientOptions.onCatalog('movies', movies, [{ id: 'films', name: 'Films' }]);
-        if (options.series) clientOptions.onCatalog('series', [options.series.item], [{ id: 'shows', name: 'Shows' }]);
+        clientOptions.onCatalog('movies', movies, movieCats); clientOptions.onStatus('movies', { state: 'ready' });
+        clientOptions.onCatalog('series', options.seriesList || (options.series ? [options.series.item] : []), options.seriesCats || [{ id: 'shows', name: 'Shows' }]);
+        clientOptions.onStatus('series', { state: 'ready' });
     }
     class FixtureDate extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } }
     vm.runInNewContext(appSource, {
@@ -181,7 +201,7 @@ function harness(options = {}) {
         now = end;
     }
     const h = {
-        document, node, calls, settings, single, advance, finishLoad, failLoad, channels,
+        document, node, calls, settings, single, advance, finishLoad, failLoad, channels, favourites, seen, store,
         key(code, times = 1) { for (let i = 0; i < times; i++) { emit('keydown', typeof code === 'string' ? KEY[code] : code); emit('keyup', typeof code === 'string' ? KEY[code] : code); } },
         // OK held down: the remote repeats keydown until the key is released.
         holdOk() { emit('keydown', 13); advance(700); emit('keydown', 13, { repeat: true }); emit('keyup', 13); },
@@ -200,7 +220,12 @@ function harness(options = {}) {
         get selectedRow() { const cell = node('main').querySelectorAll('.channel-cell').filter(n => /\bselected\b/.test(n.className))[0]; return cell ? cell.querySelector('.channel-name').textContent : null; },
         get activeChip() { const chip = node('main').querySelectorAll('button').filter(n => /^live-cat-/.test(n.id) && /\bactive\b/.test(n.className))[0]; return chip ? chip.textContent : null; },
         text(id) { return node(id).textContent; },
-        now() { return now; }
+        now() { return now; },
+        deliverRows(rows) { assert.ok(rowsAnswer, 'the app asked for the rows'); const answer = rowsAnswer; rowsAnswer = null; answer(real.data.browse.parseRows(rows)); },
+        // Runs the queued timers (index slices) until test() holds, at most 50 rounds of 1 ms.
+        until(test) { for (let i = 0; i < 50 && !test(); i++) advance(1); return test(); },
+        // Ids that occur more than once on the page (a page drawn twice into itself).
+        duplicateIds() { const ids = node('app').querySelectorAll('button').map(n => n.id).filter(Boolean); return ids.filter((id, i) => ids.indexOf(id) !== i); }
     };
     return h;
 }
@@ -584,7 +609,8 @@ test('series details: Up from the episodes lands on the chosen season, Up from a
     const episodes = n => [1, 2].map(e => ({ id: 'e' + n + e, episode: e, name: 'Episode ' + e, url: 'https://fixture.invalid/e.mp4' }));
     const h = harness({ series: { item: { id: 's:1', name: 'Quiz Show', categoryIds: ['shows'] },
         info: { seasons: [1, 2, 3].map(number => ({ number, episodes: episodes(number) })) } } });
-    h.node('tab-2').click(); h.node('card-0').click();
+    // A series poster in Discover (Type: Series) opens the details.
+    h.node('tab-1').click(); h.node('discover-type').click(); h.node('dialog-1').click(); h.node('card-0').click();
     h.layout('detail-back', 476, 447, 240, 65); h.layout('.chip-row', 476, 547, 1300, 65);
     [0, 1, 2].forEach(i => h.layout('season-' + i, 480 + i * 189, 547, 171, 65));
     [0, 1].forEach(i => h.layout('episode-' + i, 476, 668 + i * 124, 1300, 106));
@@ -700,4 +726,386 @@ test('focus left on a hidden element is restored on the next key, and focus neve
     h.document.documentElement.scrollTop = 120;
     h.key('back'); assert.equal(h.focused, 'tab-4');
     assert.equal(h.document.documentElement.scrollTop, 0);
+});
+
+// ---------------------------------------------------------------- Movies & Series (docs/browse.md)
+// English, Netflix and French movies, six series, and catalog rows whose Popular list matches eight films.
+function vod(extra = {}) {
+    const film = (i, cat) => ({ id: 'm:' + cat + i, name: (cat === 'fr' ? 'Film francais ' : cat === 'nf' ? 'Netflix film ' : 'Film ') + String(i).padStart(2, '0'),
+        categoryIds: [cat], year: '2020', rating: String(5 + (i % 5)), added: 1000 + i + (cat === 'nf' ? 100 : 0), plot: 'The plot of film ' + i + '.',
+        url: 'https://fixture.invalid/' + cat + i + '.mp4', backups: [], image: 'https://fixture.invalid/p/' + cat + i + '.jpg' });
+    const movies = [...Array.from({ length: 12 }, (_, i) => film(i + 1, 'en')), ...Array.from({ length: 6 }, (_, i) => film(i + 1, 'nf')), ...Array.from({ length: 3 }, (_, i) => film(i + 1, 'fr'))];
+    const seriesList = Array.from({ length: 6 }, (_, i) => ({ id: 's:' + (i + 1), name: 'Show ' + (i + 1), categoryIds: ['shows'], year: '2019', rating: '7', added: 500 + i, url: '', backups: [], image: '' }));
+    const rows = { v: 1, source: 'tmdb', movie: { popular: movies.slice(0, 8).map((m, i) => ({ id: 100 + i, title: m.name, year: '2020', origin: ['US'], genres: [28] }))
+        .concat([{ id: 300, title: 'Film francais 01', year: '2020', origin: ['FR'], genres: [18] }]) }, tv: {}, genres: { movie: [{ id: 28, name: 'Action' }, { id: 18, name: 'Drama' }], tv: [] } };
+    return { movies, movieCats: [{ id: 'en', name: 'EN | Movies' }, { id: 'nf', name: 'NETFLIX Movies' }, { id: 'fr', name: 'FR | Films' }],
+        seriesList, seriesCats: [{ id: 'shows', name: 'Shows' }], rows, startOn: 'home', ...extra };
+}
+function shelfTitles(h) { return h.node('main').querySelectorAll('.shelf-title').map(n => n.textContent); }
+function gridNames(h) { return h.node('main').querySelectorAll('.poster-title').filter(n => /^card-/.test(n.parentNode.id)).map(n => n.textContent); }
+
+test('the start section: Home for new customers, Live TV for customers who watch channels; decided once and kept', () => {
+    const fresh = harness(vod({ startOn: null }));
+    assert.equal(fresh.settings.startOn, 'home'); assert.match(fresh.node('tab-6').className, /active/);
+    assert.deepEqual(fresh.node('topbar').querySelectorAll('button').map(n => n.textContent), ['Home', 'Live TV', 'Discover', 'Library', 'Search', 'Settings', 'Multi View']);
+    const watcher = harness(vod({ startOn: null, lastWatched: 'live:3' }));
+    assert.equal(watcher.settings.startOn, 'live'); assert.match(watcher.node('tab-0').className, /active/);
+    assert.equal(watcher.selectedRow, 'BBC News', 'the guide opens as before');
+    const h = harness(vod());
+    h.key('back'); assert.equal(h.focused, 'tab-6');
+    h.key('back'); assert.ok(h.dialogOpen, 'Back on the start section asks to close Tuner');
+    h.key('back'); h.key('right'); h.key('down'); h.key('back', 2); assert.equal(h.focused, 'tab-0');
+    h.key('back'); assert.equal(h.focused, 'tab-6', 'Back from another section\'s tab returns to Home');
+});
+
+test('Home: poster rows of docs/browse.md; arrows move along a row and to the same screen column of the next; only near rows are drawn', () => {
+    const h = harness(vod());
+    assert.deepEqual(shelfTitles(h), ['Popular – Movies', 'Netflix – Movies'], 'the focused row and the one below are drawn');
+    assert.equal(h.focused, 'home-0-0');
+    assert.equal(h.text('shelf-eyebrow'), 'Popular – Movies'); assert.equal(h.text('shelf-name'), 'Film 01');
+    assert.match(h.text('shelf-meta'), /Movie {2}· {2}2020/); assert.equal(h.text('shelf-plot'), 'The plot of film 1.');
+    h.key('right', 3); assert.equal(h.focused, 'home-0-3'); assert.equal(h.text('shelf-name'), 'Film 04');
+    h.key('down'); assert.equal(h.focused, 'home-1-3', 'the poster below in the same column');
+    assert.deepEqual(shelfTitles(h), ['Netflix – Movies', 'Recently added – Movies'], 'the focused row heads the window');
+    assert.equal(h.document.getElementById('home-0-0'), null, 'rows above are not in the DOM');
+    h.key('down', 3); assert.equal(h.focused, 'home-4-3');
+    h.key('down', 3); assert.equal(h.focused, 'home-5-3', 'Down on the last row stays');
+    assert.equal(h.text('shelf-eyebrow'), 'Top rated – Series');
+    h.key('up', 5); assert.equal(h.focused, 'home-0-3');
+    h.key('left', 5); assert.equal(h.focused, 'home-0-0', 'no wrapping');
+    h.key('up'); assert.equal(h.focused, 'tab-6');
+    h.key('down'); assert.equal(h.focused, 'home-0-0', 'entering again restores the tile');
+    h.key('chDown'); assert.equal(h.focused, 'home-2-0', 'CH- pages two rows down');
+    h.key('chUp'); assert.equal(h.focused, 'home-0-0');
+});
+
+test('Home rows scroll sideways keeping the column, and posters load only near view', () => {
+    const h = harness(vod());
+    h.key('down', 2); assert.equal(h.text('shelf-eyebrow'), 'Recently added – Movies');
+    const src = id => h.node(id).querySelector('img').src;
+    assert.ok(src('home-2-9'), 'posters in and just beyond view are loaded');
+    assert.equal(src('home-2-12'), undefined, 'posters further along wait');
+    h.key('right', 9); assert.equal(h.focused, 'home-2-9');
+    assert.equal(h.node('home-2-0').parentNode.style.transform, 'translateX(-630px)', 'the row scrolled three posters');
+    assert.ok(src('home-2-12'));
+    h.key('up'); assert.equal(h.focused, 'home-1-6', 'the same screen column (the Netflix row\'s See all)');
+    h.key('down'); assert.equal(h.focused, 'home-2-9', 'the row kept its place');
+});
+
+test('See all opens Discover on the row\'s type and list; Back returns to the same tile', () => {
+    const h = harness(vod());
+    h.key('right', 8); assert.equal(h.focused, 'home-0-8'); assert.equal(h.text('shelf-name'), 'See all');
+    h.key('ok');
+    assert.match(h.node('tab-1').className, /active/);
+    assert.equal(h.text('discover-type'), 'Type: Movies'); assert.equal(h.text('discover-list'), 'List: Popular'); assert.equal(h.text('discover-genre'), 'Genre: All');
+    assert.equal(h.focused, 'card-0');
+    assert.deepEqual(gridNames(h), ['Film 01', 'Film 02', 'Film 03', 'Film 04', 'Film 05', 'Film 06', 'Film 07', 'Film 08'], 'the French film is not shown (USA only)');
+    assert.equal(h.text('brand-hint'), 'Back Home');
+    h.key('down'); h.key('up'); assert.equal(h.focused, 'discover-list');
+    h.key('back');
+    assert.match(h.node('tab-6').className, /active/); assert.equal(h.focused, 'home-0-8');
+    h.key('down'); h.key('right', 20); assert.equal(h.focused, 'home-1-6');
+    h.key('ok'); assert.equal(h.text('discover-list'), 'List: Netflix');
+    assert.equal(gridNames(h)[0], 'Netflix film 06');
+});
+
+test('Discover: Up from the grid reaches the filters; OK opens a chooser on the current choice; the choice returns to its filter', () => {
+    const h = harness(vod());
+    h.node('tab-1').click();
+    assert.equal(h.focused, 'card-0'); assert.equal(h.text('discover-list'), 'List: Popular');
+    assert.equal(h.text('discover-count'), '1 / 8 titles');
+    h.key('up'); assert.equal(h.focused, 'discover-list'); assert.equal(h.text('brand-hint'), 'Back Tabs');
+    h.key('ok'); assert.ok(h.dialogOpen);
+    assert.equal(h.focused, 'dialog-0'); assert.equal(h.text('dialog-0'), '✓ Popular');
+    assert.deepEqual(h.node('dialog-layer').querySelectorAll('button').map(n => n.textContent).slice(0, 6), ['✓ Popular', 'Featured', 'Top rated', 'Recently added', 'A–Z', 'Netflix']);
+    h.key('down', 4); h.key('ok');
+    assert.equal(h.dialogOpen, false); assert.equal(h.focused, 'discover-list'); assert.equal(h.text('discover-list'), 'List: A–Z');
+    assert.equal(gridNames(h)[0], 'Film 01'); assert.equal(h.text('discover-count'), '1 / 18 titles');
+    h.key('right'); h.key('ok');
+    assert.deepEqual(h.node('dialog-layer').querySelectorAll('button').map(n => n.textContent), ['✓ All', 'Action', 'Close'], 'Drama is only on a title USA only hides');
+    h.key('down'); h.key('ok');
+    assert.equal(h.text('discover-genre'), 'Genre: Action'); assert.equal(gridNames(h).length, 8, 'only titles TMDB files under Action');
+    h.key('left', 2); h.key('ok'); h.key('down'); h.key('ok');
+    assert.equal(h.text('discover-type'), 'Type: Series'); assert.equal(h.text('discover-genre'), 'Genre: All', 'a new type starts on all genres');
+    assert.deepEqual(gridNames(h), ['Show 1', 'Show 2', 'Show 3', 'Show 4', 'Show 5', 'Show 6']);
+    h.key('down'); assert.equal(h.focused, 'card-0');
+    h.key('back'); assert.equal(h.focused, 'discover-type', 'Back from the grid: its filters');
+    h.key('back'); assert.equal(h.focused, 'tab-1');
+});
+
+test('Discover grid: moves by poster without wrapping, pages with CH, computes more titles as it scrolls, keeps three rows in the DOM', () => {
+    const many = Array.from({ length: 300 }, (_, i) => ({ id: 'm:' + i, name: 'Title ' + String(i).padStart(3, '0'), categoryIds: ['en'], added: 5000 - i, url: 'https://fixture.invalid/' + i + '.mp4', backups: [] }));
+    const h = harness(vod({ movies: many, rows: null }));
+    h.node('tab-1').click();
+    assert.equal(h.text('discover-list'), 'List: Recently added', 'without TMDB data Discover opens on Recently added');
+    assert.equal(h.text('discover-count'), '1 / 96+ titles');
+    h.key('left'); assert.equal(h.focused, 'card-0');
+    h.key('right', 9); assert.equal(h.focused, 'card-7', 'no wrapping to the next row');
+    h.key('down'); assert.equal(h.focused, 'card-15');
+    h.key('down'); assert.equal(h.focused, 'card-23');
+    assert.equal(h.document.getElementById('card-0'), null, 'the first row left the DOM');
+    assert.equal(h.node('main').querySelectorAll('.poster').length, 24);
+    for (let i = 0; i < 12; i++) h.key('chDown');
+    assert.equal(h.focused, 'card-215'); assert.match(h.text('discover-count'), /^216 \/ (288\+|300) titles$/);
+    for (let i = 0; i < 20; i++) h.key('chDown');
+    assert.equal(h.focused, 'card-299', 'CH- stops on the last poster'); assert.equal(h.text('discover-count'), '300 / 300 titles');
+    h.key('down'); assert.equal(h.focused, 'card-299');
+    h.key('chUp'); assert.equal(h.focused, 'card-283');
+});
+
+test('details round trip: OK on a poster opens its details; Back returns to the same poster on Home, Discover and Library', () => {
+    const h = harness(vod({ favourites: ['m:en2'] }));
+    h.key('down', 2); h.key('right', 2); assert.equal(h.focused, 'home-2-2');
+    h.key('ok');
+    assert.equal(h.focused, 'detail-play'); assert.equal(h.text('detail-back'), '← Back to Home'); assert.equal(h.text('brand-hint'), 'Back Home');
+    h.key('back'); assert.equal(h.focused, 'home-2-2'); assert.equal(h.text('shelf-eyebrow'), 'Recently added – Movies');
+    h.node('tab-1').click(); h.key('right', 5); h.key('ok');
+    assert.equal(h.text('detail-back'), '← Back to Discover');
+    h.key('back'); assert.equal(h.focused, 'card-5');
+    h.node('tab-2').click(); assert.equal(h.focused, 'lib-0-0');
+    h.key('ok'); assert.equal(h.text('detail-back'), '← Back to Library'); assert.equal(h.text('detail-fav'), '✓ In Library');
+    h.key('back'); assert.equal(h.focused, 'lib-0-0');
+});
+
+test('Library: Continue watching, favorites with check badges, Recently watched; + Add to Library and Hold OK save titles', () => {
+    const recents = [{ id: 'm:en5', name: 'Film 05', position: 1500000, duration: 6000000, updated: 50 }];
+    const h = harness(vod({ favourites: ['m:en2', 's:3'], recents }));
+    h.node('tab-2').click();
+    assert.deepEqual(shelfTitles(h), ['Continue watching', 'Favorite movies']);
+    assert.equal(h.focused, 'lib-0-0'); assert.equal(h.text('shelf-name'), 'Film 05'); assert.match(h.text('shelf-meta'), /In progress/);
+    assert.equal(h.node('lib-0-0').querySelector('.poster-progress').children[0].style.width, '25%');
+    assert.ok(h.node('lib-1-0').querySelector('.poster-check'), 'favorites carry the check badge');
+    h.key('down'); assert.equal(h.text('lib-2-0'), 'Show 3✓Show 3'); h.key('up');
+    // Playing a title adds it to Recently watched.
+    h.key('ok'); h.node('detail-play').click(); h.key('back'); h.key('back');
+    assert.equal(h.focused, 'lib-0-0'); assert.deepEqual(shelfTitles(h), ['Continue watching', 'Favorite movies']);
+    h.key('down', 3); assert.equal(h.text('shelf-eyebrow'), 'Recently watched'); assert.equal(h.text('shelf-name'), 'Film 05');
+    // + Add to Library on the details, and Hold OK on a poster.
+    h.node('tab-1').click(); h.key('ok');
+    assert.equal(h.text('detail-fav'), '+ Add to Library');
+    h.node('detail-fav').focus(); h.key('ok');
+    assert.equal(h.text('detail-fav'), '✓ In Library'); assert.equal(h.focused, 'detail-fav'); assert.match(h.text('toast'), /Film 01 added to your Library/);
+    h.key('back'); assert.ok(h.node('card-0').querySelector('.poster-check'));
+    h.key('right'); h.holdOk();
+    assert.match(h.text('toast'), /Film 02 removed from your Library/); assert.equal(h.focused, 'card-1');
+    assert.equal(h.node('card-1').querySelector('.poster-check'), null);
+    assert.equal(h.dialogOpen, false); assert.equal(h.text('brand-hint'), 'Back Filters', 'a held OK does not open the details');
+    assert.deepEqual([...h.favourites].sort(), ['m:en1', 's:3']);
+});
+
+test('Continue watching on Home (5 titles or more): a series opens on the episode in progress or the next one; See all opens the Library', () => {
+    const episodes = season => [1, 2, 3].map(e => ({ id: 'e:' + season + e, episode: e, name: 'Episode ' + e, url: 'https://fixture.invalid/e.mp4' }));
+    const info = { seasons: [1, 2].map(number => ({ number, episodes: episodes(number) })) };
+    const recents = [{ id: 'e:12', seriesId: 's:1', season: 1, episode: 2, position: 600000, duration: 2400000, updated: 90 },
+        ...[1, 2, 3].map(i => ({ id: 'm:en' + i, position: 600000, duration: 6000000, updated: 80 - i }))];
+    const h = harness(vod({ recents, upNext: [{ seriesId: 's:2', season: 1, episode: 3, updated: 85 }], seriesInfo: () => info }));
+    assert.deepEqual(shelfTitles(h), ['Continue watching', 'Popular – Movies']);
+    assert.equal(h.text('shelf-name'), 'Show 1');
+    h.key('ok'); assert.equal(h.focused, 'episode-1', 'Show 1 resumes episode 2');
+    h.key('back'); h.key('right'); assert.equal(h.text('shelf-name'), 'Show 2'); assert.match(h.text('shelf-meta'), /Next episode ready/);
+    h.key('ok'); assert.match(h.node('season-1').className, /active/); assert.equal(h.focused, 'episode-0', 'after S1 E3 comes S2 E1');
+    h.key('back'); h.key('right', 4); assert.equal(h.focused, 'home-0-5'); h.key('ok');
+    assert.match(h.node('tab-2').className, /active/); assert.equal(h.text('shelf-eyebrow'), 'Continue watching'); assert.equal(h.focused, 'lib-0-0');
+    h.key('back'); assert.match(h.node('tab-6').className, /active/); assert.equal(h.focused, 'home-0-5');
+});
+
+test('Settings: Movies & Series USA only / All changes Home and Discover; Open on picks the start section', () => {
+    const h = harness(vod());
+    h.node('tab-4').click();
+    assert.equal(h.text('vod-region-setting'), 'Movies & Series: USA only'); assert.equal(h.text('lineup-setting'), 'Channels: All', 'separate from the channels switch');
+    h.node('vod-region-setting').focus(); h.key('ok');
+    assert.equal(h.text('vod-region-setting'), 'Movies & Series: All'); assert.equal(h.settings.vodUsOnly, false); assert.equal(h.focused, 'vod-region-setting');
+    assert.equal(h.settings.usOnly, undefined);
+    h.node('tab-1').click(); h.key('up'); h.key('ok'); h.key('down', 4); h.key('ok');
+    assert.ok(gridNames(h).includes('Film francais 01'), 'All shows the French films');
+    h.node('tab-4').click(); h.node('vod-region-setting').click();
+    h.node('tab-1').click(); assert.ok(!gridNames(h).includes('Film francais 01'));
+    h.node('tab-4').click(); assert.equal(h.text('start-setting'), 'Open on: Home');
+    h.node('start-setting').focus(); h.key('ok');
+    assert.equal(h.text('start-setting'), 'Open on: Live TV'); assert.equal(h.settings.startOn, 'live');
+    h.key('back'); h.key('back'); assert.equal(h.focused, 'tab-0', 'Back now returns to Live TV');
+});
+
+test('About shows the TMDB notice only while TMDB data is in use', () => {
+    const h = harness(vod());
+    h.node('tab-4').click(); h.node('about-tuner').click();
+    assert.match(h.text('dialog-layer'), /This product uses the TMDB API but is not endorsed or certified by TMDB\./);
+    const none = harness(vod({ rows: { v: 1, source: 'none', movie: {}, tv: {}, genres: {} } }));
+    assert.deepEqual(shelfTitles(none).slice(0, 2), ['Netflix – Movies', 'Recently added – Movies'], 'without TMDB: no Popular row');
+    none.node('tab-4').click(); none.node('about-tuner').click();
+    assert.doesNotMatch(none.text('dialog-layer'), /TMDB/);
+});
+
+test('a large catalogue is prepared in slices: the arrows keep working and the rows appear when it is ready', () => {
+    const many = Array.from({ length: 7000 }, (_, i) => ({ id: 'm:' + i, name: 'Title ' + i, categoryIds: ['en'], added: 9000 - i, rating: '7', url: 'https://fixture.invalid/' + i + '.mp4', backups: [] }));
+    const h = harness(vod({ movies: many }));
+    assert.match(h.text('main'), /Preparing your movies and series/);
+    h.key('up'); assert.equal(h.focused, 'tab-6', 'keys work while preparing');
+    for (let i = 0; i < 20 && /Preparing/.test(h.text('main')); i++) h.advance(1);
+    assert.deepEqual(shelfTitles(h), ['Recently added – Movies', 'Recently added – Series']);
+    assert.equal(h.focused, 'tab-6', 'focus stays on the tabs');
+    h.key('down'); assert.equal(h.text('shelf-name'), 'Title 0');
+});
+
+test('locking adult content again hides adult titles at once, also on a catalogue indexed in slices', () => {
+    const base = vod();
+    const adult = { id: 'm:x', name: 'Late Film', categoryIds: ['xxx'], added: 99999, url: 'https://fixture.invalid/x.mp4', backups: [] };
+    const h = harness({ ...base, movies: manyMovies(7000).concat([adult]), movieCats: base.movieCats.concat([{ id: 'xxx', name: 'XXX' }]), rows: null });
+    assert.ok(h.until(() => shelfTitles(h).length));
+    h.node('tab-4').click(); h.node('adult-setting').click();
+    for (const pin of ['2', '4', '6', '8', '2', '4', '6', '8']) h.node('pin-' + pin).click();
+    assert.match(h.text('adult-setting'), /Unlocked/);
+    h.node('tab-6').click(); assert.ok(h.until(() => h.text('main').includes('Late Film')), 'unlocked: the adult film is in Recently added');
+    assert.equal(h.text('home-0-0'), 'Late FilmLate Film');
+    h.node('tab-4').click(); h.node('adult-setting').click(); assert.match(h.text('adult-setting'), /Locked/);
+    h.node('tab-6').click();
+    assert.ok(!h.text('main').includes('Late Film'), 'locked: gone at once, not after the new index is ready');
+    assert.ok(h.until(() => shelfTitles(h).length)); assert.ok(!h.text('main').includes('Late Film'));
+});
+
+test('adult titles stay out of Home and Discover until the passcode unlocks them', () => {
+    const base = vod();
+    const h = harness({ ...base, movies: base.movies.concat([{ id: 'm:x', name: 'Late Film', categoryIds: ['xxx'], added: 99999, url: 'https://fixture.invalid/x.mp4', backups: [] }]),
+        movieCats: base.movieCats.concat([{ id: 'xxx', name: 'XXX' }]) });
+    h.node('tab-1').click(); h.key('up'); h.key('ok'); h.key('down', 3); h.key('ok');
+    assert.equal(h.text('discover-list'), 'List: Recently added'); assert.notEqual(gridNames(h)[0], 'Late Film');
+    assert.ok(!h.text('main').includes('Late Film'));
+});
+
+// Regression tests for the review of the Movies & Series screens.
+function manyMovies(n, extra = {}) {
+    return Array.from({ length: n }, (_, i) => ({ id: 'm:' + i, name: 'Title ' + i, categoryIds: ['en'], added: 9000 - i, rating: '7', url: 'https://fixture.invalid/' + i + '.mp4', backups: [], ...extra }));
+}
+function statusTitles(h) { return h.node('main').querySelectorAll('h2').filter(n => /browse-status/.test(n.parentNode.className)).map(n => n.textContent); }
+function searchFor(h, query) { h.node('tab-3').click(); const input = h.node('search-input'); input.value = query; input.oninput(); h.advance(200); return h.node('search-results').querySelectorAll('.search-result').map(n => n.textContent); }
+
+test('holding OK on the last Library title removes it and the release opens nothing', () => {
+    const h = harness(vod({ favourites: ['m:en2'] }));
+    h.node('tab-2').click(); assert.equal(h.focused, 'lib-0-0'); assert.equal(h.text('shelf-name'), 'Film 02');
+    h.holdOk();
+    assert.match(h.text('toast'), /Film 02 removed from your Library/);
+    assert.match(h.node('tab-2').className, /active/, 'still in the Library');
+    assert.equal(h.focused, 'empty-action'); assert.deepEqual(statusTitles(h), ['Your Library is empty']);
+    assert.equal(h.document.getElementById('discover-list'), null, 'the release did not press Browse Discover');
+    h.key('back'); assert.equal(h.focused, 'tab-2', 'Back goes up one level from the Library');
+});
+
+test('while titles load or are prepared, focus waits on the section\'s tab and moves to the rows once they arrive', () => {
+    const h = harness(vod({ deferLoad: true }));
+    assert.deepEqual(statusTitles(h), ['Loading your movies and series']);
+    assert.equal(h.focused, 'tab-6', 'focus is visible on the Home tab, not on nothing');
+    h.key('ok'); assert.equal(h.focused, 'tab-6');
+    h.key('down'); assert.equal(h.focused, 'tab-6', 'Down tries the rows and waits on the tab again');
+    h.finishLoad();
+    assert.equal(h.focused, 'home-0-0', 'the rows arrive: focus enters them');
+    const moved = harness(vod({ deferLoad: true }));
+    moved.key('right'); assert.equal(moved.focused, 'tab-0');
+    moved.finishLoad(); assert.equal(moved.focused, 'tab-0', 'a key pressed while waiting keeps focus where it went');
+    const big = harness(vod({ movies: manyMovies(7000) }));
+    assert.deepEqual(statusTitles(big), ['Preparing your movies and series']); assert.equal(big.focused, 'tab-6');
+    assert.ok(big.until(() => big.focused === 'home-0-0'), 'prepared: focus enters the rows'); assert.equal(big.text('shelf-name'), 'Title 0');
+    const slow = harness(vod({ movies: manyMovies(7000), deferLoad: true }));
+    assert.deepEqual(statusTitles(slow), ['Loading your movies and series']); assert.equal(slow.focused, 'tab-6');
+    slow.key('down'); assert.equal(slow.focused, 'tab-6');
+    slow.finishLoad();
+    assert.deepEqual(statusTitles(slow), ['Preparing your movies and series'], 'loaded: prepared, not shown as empty'); assert.equal(slow.focused, 'tab-6');
+    assert.ok(slow.until(() => slow.focused === 'home-0-0'));
+    const library = harness(vod({ deferLoad: true, startOn: 'live' }));
+    library.node('tab-2').click(); assert.equal(library.focused, 'tab-2');
+    library.finishLoad(); assert.equal(library.focused, 'empty-action', 'nothing to show: focus moves to the status action');
+});
+
+test('Search applies Movies & Series: USA only, from the index or the category check; live channels are unchanged', () => {
+    const base = vod();
+    const amelie = { id: 'm:am', name: 'Amelie (2001)', categoryIds: ['en'], year: '2001', url: 'https://fixture.invalid/am.mp4', backups: [] };
+    const rows = { ...base.rows, movie: { popular: base.rows.movie.popular.concat([{ id: 400, title: 'Amelie', year: '2001', origin: ['FR'] }]) } };
+    const h = harness({ ...base, movies: base.movies.concat([amelie]), rows, startOn: 'live' });
+    assert.deepEqual(searchFor(h, 'francais'), [], 'films filed under FR | Films are hidden');
+    assert.deepEqual(searchFor(h, 'amelie'), [], 'a matched title whose TMDB origin is not US is hidden');
+    assert.deepEqual(searchFor(h, 'film 0'), ['Film 01Movie', 'Film 02Movie', 'Film 03Movie', 'Film 04Movie', 'Film 05Movie', 'Film 06Movie', 'Film 07Movie', 'Film 08Movie', 'Film 09Movie',
+        'Netflix film 01Movie', 'Netflix film 02Movie', 'Netflix film 03Movie', 'Netflix film 04Movie', 'Netflix film 05Movie', 'Netflix film 06Movie']);
+    assert.deepEqual(searchFor(h, 'news'), ['BBC NewsLive TV', 'Fox NewsLive TV', 'Sky NewsLive TV'], 'channels as before');
+    h.node('tab-4').click(); h.node('vod-region-setting').click(); assert.equal(h.settings.vodUsOnly, false);
+    assert.deepEqual(searchFor(h, 'francais'), ['Film francais 01Movie', 'Film francais 02Movie', 'Film francais 03Movie'], 'All shows every title');
+    assert.deepEqual(searchFor(h, 'amelie'), ['Amelie (2001)Movie']);
+});
+
+test('Home with no title that passes USA only points to the Movies & Series switch', () => {
+    const base = vod();
+    const h = harness({ ...base, movies: base.movies.map(m => ({ ...m, categoryIds: ['fr'] })), seriesList: base.seriesList.map(s => ({ ...s, categoryIds: ['de'] })), seriesCats: [{ id: 'de', name: 'DE | Serien' }] });
+    assert.deepEqual(statusTitles(h), ['Browse your movies and series']);
+    assert.match(h.text('main'), /USA only\. Open Discover, or show all titles with Settings › Movies & Series\./);
+    assert.equal(h.focused, 'empty-action');
+    h.node('tab-4').click(); h.node('vod-region-setting').click(); h.node('tab-6').click();
+    assert.ok(shelfTitles(h).length, 'All: the rows appear');
+});
+
+test('a playlist with only live channels: Home offers Live TV instead of another download', () => {
+    const h = harness({ startOn: 'home', movies: [], seriesList: [] });
+    assert.match(h.text('main'), /The playlist has no movies or series\./);
+    assert.equal(h.focused, 'empty-action'); assert.equal(h.text('empty-action'), 'Open Live TV');
+    h.key('ok'); assert.match(h.node('tab-0').className, /active/); assert.equal(h.selectedRow, 'CNN');
+    assert.equal(h.loads, 1, 'nothing was downloaded again');
+});
+
+test('timestamps in milliseconds sort Recently added like seconds and never break Home', () => {
+    const base = vod();
+    const h = harness({ ...base, movies: base.movies.map(m => ({ ...m, added: m.added * 1000 + 1700000000000 })) });
+    assert.equal(h.focused, 'home-0-0');
+    h.key('down', 2); assert.equal(h.text('shelf-eyebrow'), 'Recently added – Movies');
+    assert.equal(h.text('shelf-name'), 'Netflix film 06', 'newest first');
+    h.node('tab-1').click(); h.key('up'); h.key('ok'); h.key('down', 3); h.key('ok');
+    assert.equal(h.text('discover-list'), 'List: Recently added'); assert.equal(gridNames(h)[0], 'Netflix film 06');
+});
+
+test('a large catalogue delivered again (saved copy, then the network) keeps Home and its focus while it is indexed again', () => {
+    const h = harness(vod({ movies: manyMovies(7000) }));
+    assert.ok(h.until(() => shelfTitles(h).length));
+    h.key('down'); h.key('right', 3); assert.equal(h.focused, 'home-1-3');
+    h.finishLoad();
+    assert.equal(h.focused, 'home-1-3', 'focus stays on the poster');
+    assert.ok(shelfTitles(h).length, 'the rows stay on screen'); assert.deepEqual(statusTitles(h), []);
+    h.key('right'); assert.equal(h.focused, 'home-1-4', 'keys work while the new index is built');
+    h.advance(50);
+    assert.equal(h.focused, 'home-1-4'); assert.deepEqual(statusTitles(h), []);
+    h.node('tab-1').click(); h.finishLoad();
+    assert.equal(h.focused, 'card-0'); assert.equal(h.document.getElementById('discover-grid') !== null, true, 'Discover keeps its grid too');
+});
+
+test('a series whose last episode was finished leaves Continue watching once its details show there is no next one', () => {
+    const episodes = season => [1, 2, 3].map(e => ({ id: 'e:' + season + e, episode: e, name: 'Episode ' + e, url: 'https://fixture.invalid/e.mp4' }));
+    const info = { seasons: [1, 2].map(number => ({ number, episodes: episodes(number) })) };
+    const upNext = [{ seriesId: 's:2', season: 2, episode: 3, updated: 85 }];
+    const h = harness(vod({ upNext, seriesInfo: () => info }));
+    h.node('tab-2').click(); assert.deepEqual(shelfTitles(h), ['Continue watching']); assert.equal(h.text('shelf-name'), 'Show 2');
+    h.key('ok'); assert.equal(h.focused, 'episode-0');
+    assert.deepEqual(upNext, [], 'the marker is cleared');
+    h.key('back'); assert.deepEqual(statusTitles(h), ['Your Library is empty']);
+});
+
+test('a catalogue indexed in slices is never drawn into a page that is still being built', () => {
+    for (const tab of ['tab-6', 'tab-1']) {
+        const h = harness(vod({ movies: manyMovies(3001), startOn: 'live' }));
+        h.node(tab).click();
+        assert.deepEqual(h.duplicateIds(), []);
+        assert.ok(h.until(() => !statusTitles(h).length && (tab === 'tab-1' || shelfTitles(h).length)));
+        assert.deepEqual(h.duplicateIds(), []);
+        assert.equal(h.node('main').querySelectorAll('.browse-status').length, 0);
+    }
+});
+
+test('rows that arrive from lumanest.tv are matched in the app: Popular appears, also on a large catalogue', () => {
+    const base = vod();
+    const h = harness({ ...base, rows: null, rowsLater: true });
+    assert.ok(!shelfTitles(h).includes('Popular – Movies'));
+    h.deliverRows(base.rows);
+    assert.equal(shelfTitles(h)[0], 'Popular – Movies'); assert.equal(h.focused, 'home-0-0');
+    h.node('tab-4').click(); h.node('about-tuner').click(); assert.match(h.text('dialog-layer'), /TMDB API/);
+    const titles = manyMovies(7000), rows = { v: 1, source: 'tmdb', movie: { popular: Array.from({ length: 8 }, (_, i) => ({ id: 500 + i, title: 'Title ' + (i * 10), origin: ['US'] })) }, tv: {}, genres: {} };
+    const big = harness(vod({ movies: titles, rows: null, rowsLater: true }));
+    assert.ok(big.until(() => big.focused === 'home-0-0')); assert.equal(big.text('shelf-eyebrow'), 'Recently added – Movies');
+    big.deliverRows(rows);
+    assert.equal(big.text('shelf-eyebrow'), 'Recently added – Movies', 'the old matches stay while the new rows are matched');
+    assert.ok(big.until(() => shelfTitles(big)[0] === 'Popular – Movies'));
+    assert.equal(big.focused, 'home-0-0'); assert.equal(big.text('shelf-name'), 'Title 0');
 });
