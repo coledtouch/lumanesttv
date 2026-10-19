@@ -58,6 +58,55 @@ struct Pattern: @unchecked Sendable {
     }
 }
 
+/// Provider text kept apart as the other Tuner apps keep it. Swift's `String` equality, and so every `Dictionary`, `Set`
+/// and `==` over strings, takes canonically equivalent text as one ("Espa\u{F1}ol" and "Espan\u{303}ol", "\u{212A}" and
+/// "K"), where JavaScript, Kotlin and BrightScript compare code unit by code unit: two provider ids or groups spelled
+/// that way would become one. Ids and names a provider sends are compared, or used as keys, in one of these forms.
+enum ExactText {
+    /// Equal only when the UTF-8 bytes are.
+    static func same(_ a: String, _ b: String) -> Bool { a.utf8.elementsEqual(b.utf8) }
+
+    /// A form of `text` that equals another text's form only when the two texts' bytes are equal: ASCII text unchanged
+    /// (ASCII strings are equal in Swift only when their bytes are, so ids such as "123" stay as they are), any other text
+    /// `spelled`, which never equals ASCII text.
+    static func key(_ text: String) -> String {
+        text.utf8.contains(where: { $0 >= 0x80 }) ? spelled(text) : text
+    }
+
+    /// "\u{A4}" followed by the UTF-8 bytes of `text` in upper-case hex: equal for equal bytes only, whatever the text.
+    static func spelled(_ text: String) -> String {
+        let digits = Array("0123456789ABCDEF".unicodeScalars)
+        var scalars = String.UnicodeScalarView()
+        scalars.append("\u{A4}")
+        for byte in text.utf8 {
+            scalars.append(digits[Int(byte >> 4)])
+            scalars.append(digits[Int(byte & 0x0F)])
+        }
+        return String(scalars)
+    }
+
+    /// The text a `key` was made from.
+    static func text(fromKey key: String) -> String {
+        let scalars = Array(key.unicodeScalars)
+        guard scalars.first == "\u{A4}", scalars.count % 2 == 1 else { return key }
+        func nibble(_ scalar: Unicode.Scalar) -> UInt8? {
+            switch scalar {
+            case "0"..."9": return UInt8(scalar.value - 0x30)
+            case "A"..."F": return UInt8(scalar.value - 0x41 + 10)
+            default: return nil
+            }
+        }
+        var bytes: [UInt8] = []
+        var index = 1
+        while index < scalars.count {
+            guard let high = nibble(scalars[index]), let low = nibble(scalars[index + 1]) else { return key }
+            bytes.append(high << 4 | low)
+            index += 2
+        }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+}
+
 enum TextFold {
     /// Lowercased, diacritics and other combining marks removed (NFD/NFKD), for matching and sorting.
     static func fold(_ text: String, compatibility: Bool = false) -> String {

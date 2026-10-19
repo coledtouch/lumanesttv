@@ -6,12 +6,12 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {
   SERVICES as BROWSE_SERVICES, browseServices, buildHomeRows, buildTitleSection, buildTitleSectionAsync, categoryGenreKeys, categoryServices, clockText,
-  compactCategory, compactXtream, discoverLists, emptyRowsSection, foldText, genreTable, homeRowSpecs, isAdultName, isForeignCategory, libraryFor, libraryIsFavorite,
+  compactCategory, compactXtream, cutText, discoverLists, emptyRowsSection, foldText, genreTable, homeRowSpecs, isAdultName, isForeignCategory, libraryFor, libraryIsFavorite,
   libraryKeys, libraryNew, libraryProgress, libraryRecordProgress, libraryRecordWatched, libraryRefs, libraryRemoveProgress, libraryToggleFavorite,
   libraryTypeOf, matchTmdb, normalizeTitle, originCountries, parseRowsPayload, pickTitles, progressFraction, providerGenreKeys, providerTmdbId, searchTitles,
   titleFromCompact, titleFromM3u, titleYearOf, tmdbIndex, trimEnds, unicodeSpaces, yearOfText, type BrowseTitle, type CategoryInput, type Library, type TitleSection,
 } from '../lib/browse.ts';
-import {isAdultGroup} from '../lib/player-data.ts';
+import {isAdultGroup, parseM3U, readExtinf, trimField} from '../lib/player-data.ts';
 import {readJsonArray} from '../lib/player-vod-data.ts';
 import {SERVICES as CATALOG_SERVICES, mergePages, type CatalogRows, type MediaLists} from '../lib/catalog.ts';
 
@@ -48,7 +48,8 @@ type SharedCase =
   | {kind: 'category'; name: string; foreign: boolean}
   | {kind: 'normalize'; input: string; title: string; year: string}
   | {kind: 'usa'; category: string | string[]; origin: string[] | null; expect: boolean}
-  | {kind: 'tmdb'; json: string; expect: string | null};
+  | {kind: 'tmdb'; json: string; expect: string | null}
+  | {kind: 'm3u'; text: string; expect: {name: string; group: string}[]};
 const SHARED_CASES: SharedCase[] = JSON.parse(readFileSync(new URL('../../docs/browse-cases.json', import.meta.url), 'utf8'));
 const sharedCases = <K extends SharedCase['kind']>(kind: K) => SHARED_CASES.filter((item): item is Extract<SharedCase, {kind: K}> => item.kind === kind);
 
@@ -73,7 +74,7 @@ function usaThroughIndex(category: string | string[], origin: string[] | null, l
 }
 
 test('docs/browse-cases.json: the file has every kind of case and nothing else', () => {
-  const kinds = ['category', 'normalize', 'usa', 'tmdb'];
+  const kinds = ['category', 'normalize', 'usa', 'tmdb', 'm3u'];
   assert.ok(SHARED_CASES.length >= 200, 'cases loaded: ' + SHARED_CASES.length);
   assert.deepEqual(SHARED_CASES.filter(item => !kinds.includes(item.kind)), []);
   for (const kind of kinds) assert.ok(SHARED_CASES.some(item => item.kind === kind), kind);
@@ -118,6 +119,117 @@ test('docs/browse-cases.json: provider TMDB ids, read as the server reads a prov
     return {json: item.json, id: providerTmdbId(row) || null, compact: compact ? compact.tmdb ?? null : 'no row', expect: item.expect};
   }).filter(item => item.id !== item.expect || item.compact !== item.expect);
   assert.deepEqual(wrong, []);
+});
+
+/**
+ * One title named name, as the browser indexes it: its year, its normalized name (the lookup key titleSectionSteps
+ * reads) and whether it matches a TMDB title listed under key and year (none when key is "").
+ */
+function indexedName(title: BrowseTitle, key: string, year: string) {
+  const payload = rowsPayloadWith(key ? {popular: [tmdbItem(5, key, year || '2000', ['US'], [])]} : {}, {});
+  const item = buildTitleSection([title], [], payload.movie, payload.genres.movie).items[0];
+  return {title: normalizeTitle(item.name), year: item.year, matched: item.tmdb === '5'};
+}
+
+test('docs/browse-cases.json: every normalize case through the compact catalogue and the browse index, however long the name', () => {
+  const cases = sharedCases('normalize');
+  assert.ok(cases.filter(item => item.input.length > 150).length >= 10, 'names longer than 150 characters are among the cases');
+  // TMDB titles are normalized as provider names are, so a case's normalized name lists a TMDB title under itself.
+  assert.deepEqual(cases.filter(item => normalizeTitle(item.title) !== item.title), []);
+  const wrong = cases.map(item => {
+    // The server compacts the row (lib/player-vod.ts) and sends the catalogue as JSON; the browser builds it into titles.
+    const compact = JSON.parse(JSON.stringify(compactXtream('movie', {stream_id: 1, name: item.input})));
+    const got = indexedName(titleFromCompact('movie', compact), item.title, item.year);
+    return {input: item.input, ...got, want: {title: item.title, year: item.year, matched: Boolean(item.title)}};
+  }).filter(item => item.title !== item.want.title || item.year !== item.want.year || item.matched !== item.want.matched);
+  assert.deepEqual(wrong, []);
+});
+
+test('docs/browse-cases.json: every normalize case as an M3U title, through the playlist reader and the browse index', () => {
+  // A name holding a line end is cut into lines by the playlist itself, and an empty one is "Channel N"; every other
+  // name is an entry's title whole.
+  const cases = sharedCases('normalize').filter(item => !/[\r\n]/.test(item.input) && trimField(item.input));
+  assert.ok(cases.length >= 160, String(cases.length));
+  const channels = parseM3U('#EXTM3U\n' + cases.map((item, i) => '#EXTINF:-1 group-title="Movies",' + item.input + '\nhttp://m3u.invalid/movie/u/p/' + i + '.mp4\n').join(''));
+  assert.equal(channels.length, cases.length);
+  const wrong = cases.map((item, i) => {
+    const got = indexedName(titleFromM3u('movie', 'c'.repeat(43), channels[i].name, '', channels[i].group, 'mp4'), item.title, item.year);
+    return {input: item.input, ...got, want: {title: item.title, year: item.year, matched: Boolean(item.title)}};
+  }).filter(item => item.title !== item.want.title || item.year !== item.want.year || item.matched !== item.want.matched);
+  assert.deepEqual(wrong, []);
+});
+
+test('docs/browse-cases.json: M3U playlists, through the web player\'s playlist reader', () => {
+  const cases = sharedCases('m3u');
+  // The web player names a missing group "Other": no case expects a group of that name, so "Other" reads as none.
+  assert.deepEqual(cases.filter(item => item.expect.some(entry => entry.group === 'Other')), []);
+  const wrong = cases.map(item => {
+    let got: {name: string; group: string}[];
+    try {got = parseM3U(item.text).map(channel => ({name: channel.name, group: channel.group === 'Other' ? '' : channel.group}));}
+    catch (error) {got = [{name: 'refused: ' + (error as Error).message, group: ''}];}
+    return {text: item.text, got, expect: item.expect};
+  }).filter(item => JSON.stringify(item.got) !== JSON.stringify(item.expect));
+  assert.deepEqual(wrong, []);
+});
+
+test('M3U playlists: Channel N counts every URL line, the ones the web player leaves out too', () => {
+  const playlist = [
+    '#EXTM3U', 'http://m3u.invalid/live/1.ts', '#EXTINF:-1,', 'file:///etc/passwd', '#EXTINF:-1 tvg-name="",', 'not a link',
+    '#EXTINF:-1,Repeated', 'http://m3u.invalid/live/1.ts', 'ftp://m3u.invalid/live/2.ts', '#EXTINF:-1 group-title="News"', 'http://m3u.invalid/live/3.ts',
+    '#EXTINF:-1 tvg-name="Heat"', 'HTTPS://m3u.invalid/live/4.ts',
+  ].join('\r');
+  assert.deepEqual(parseM3U(playlist).map(channel => [channel.name, channel.group, channel.url]), [
+    ['Channel 1', 'Other', 'http://m3u.invalid/live/1.ts'], ['Channel 6', 'News', 'http://m3u.invalid/live/3.ts'], ['Heat', 'Other', 'https://m3u.invalid/live/4.ts'],
+  ]);
+  // Lines are trimmed as provider fields: U+0085, U+2028 and U+2029 are spaces there, not line ends, so a line of them is
+  // empty (no entry) and one before a tag or a link is taken off.
+  const spaced = [C(0x85) + '#EXTM3U', C(0x85), C(0x2028, 0x2029), C(0x85) + '#EXTINF:-1,Heat' + C(0x85), C(0x2028) + 'http://m3u.invalid/live/1.ts' + C(0x85), C(0x85) + 'http://m3u.invalid/live/2.ts'];
+  assert.deepEqual(parseM3U(spaced.join('\n')).map(channel => [channel.name, channel.url]), [['Heat', 'http://m3u.invalid/live/1.ts'], ['Channel 2', 'http://m3u.invalid/live/2.ts']]);
+  assert.throws(() => parseM3U('#EXTM3U\r#EXTINF:-1,Heat\rfile:///etc/passwd\r'), /No channels/);
+  for (const refused of ['', '\n\r\n', 'EXTM3U\n#EXTINF:-1,Heat\nhttp://m3u.invalid/live/1.ts', '#EXTINF:-1,Heat\n#EXTM3U\nhttp://m3u.invalid/live/1.ts', '#EXTM3\nhttp://m3u.invalid/live/1.ts']) {
+    assert.throws(() => parseM3U(refused), /valid playlist/, JSON.stringify(refused));
+  }
+});
+
+test('M3U playlists: values and the title of an #EXTINF line, as docs/browse.md reads them', () => {
+  const read = (line: string) => {
+    const info = readExtinf(line);
+    return [Object.fromEntries(info.values), info.title];
+  };
+  assert.deepEqual(read('#EXTINF:-1 tvg-name="Love" group-title="Movies",Crazy, Stupid, Love (2011)'), [{'tvg-name': 'Love', 'group-title': 'Movies'}, 'Crazy, Stupid, Love (2011)']);
+  assert.deepEqual(read("#EXTINF:-1 tvg-logo=\"http://img.invalid/a,b.png\" group-title='Kids, Family',Up"), [{'tvg-logo': 'http://img.invalid/a,b.png', 'group-title': 'Kids, Family'}, 'Up']);
+  assert.deepEqual(read("#EXTINF:-1 tvg-name='Bob's Burgers' group-title='Kids',"), [{'tvg-name': 'Bob', 'group-title': 'Kids'}, '']);
+  assert.deepEqual(read("#EXTINF:-1 tvg-id=Bob's,Heat"), [{}, 'Heat'], 'that quote opens no value');
+  assert.deepEqual(read('#EXTINF:-1 tvg-name="Heat,Heat'), [{}, 'Heat'], 'a quote without its partner opens no value');
+  assert.deepEqual(read('#EXTINF:-1 GROUP-Title = "A" group-title="B" xgroup-title="C",Heat group-title="D"'), [{'group-title': 'A', 'xgroup-title': 'C'}, 'Heat group-title="D"'], 'the first value; nothing after the name comma');
+  assert.deepEqual(read('#EXTINF:-1 tvg-name="Heat"'), [{'tvg-name': 'Heat'}, ''], 'no name comma');
+  assert.deepEqual(read('#EXTINF:-1,' + C(0xa0, 0x85) + ' Heat ' + C(0x1f, 0x3000)), [{}, 'Heat ' + C(0x1f)], 'the title is trimmed as a provider field');
+  assert.equal(trimField(C(0xfeff, 0x85, 0x2028, 9, 11) + 'A' + C(0x85) + 'B' + C(0x200a, 0x205f, 32, 13, 10)), 'A' + C(0x85) + 'B');
+  assert.equal(trimField(C(0x1c, 0x180e, 0x200b) + 'A' + C(0x1f)), C(0x1c, 0x180e, 0x200b) + 'A' + C(0x1f), 'U+001C to U+001F, U+180E and U+200B stay');
+  // A logo is read as every value is: a comma inside the quotes is part of it, and one after the name comma is no value.
+  const [movie, live] = parseM3U('#EXTM3U\n#EXTINF:-1 tvg-logo = \'https://img.invalid/a,b.jpg\',Heat (1995)\nhttp://m3u.invalid/movie/u/p/1.mp4\n#EXTINF:-1,News tvg-logo="https://img.invalid/n.jpg"\nhttp://m3u.invalid/live/u/p/2.ts');
+  assert.deepEqual([movie.name, movie.logo, live.name, live.logo], ['Heat (1995)', 'https://img.invalid/a,b.jpg', 'News tvg-logo="https://img.invalid/n.jpg"', undefined]);
+});
+
+test('performance: an M3U playlist with a 190,000-character #EXTINF line and one with 50,000 entries read in well under a second', () => {
+  const values = Array.from({length: 12000}, (_, i) => 'k' + i + '="v, ' + i + '"').join(' ');
+  // Every quote opens a value but the last of each kind, which has no partner.
+  const quotes = 'a="b '.repeat(20000) + "c='d ".repeat(20000);
+  for (const [line, name] of [['#EXTINF:-1 ' + values + ' tvg-name="Heat",Ronin', 'Ronin'], ['#EXTINF:-1 ' + quotes + ',Ronin', 'Ronin'], ['#EXTINF:-1 tvg-name="' + 'x'.repeat(190000) + '"', 'x'.repeat(190000)]] as const) {
+    assert.ok(line.length >= 190000, String(line.length));
+    const started = performance.now();
+    const channels = parseM3U('#EXTM3U\n' + line + '\nhttp://m3u.invalid/live/1.ts\n');
+    const ms = performance.now() - started;
+    assert.deepEqual(channels.map(channel => channel.name), [name]);
+    assert.ok(ms < 50, 'took ' + ms.toFixed(1) + ' ms');
+  }
+  let playlist = '#EXTM3U';
+  for (let i = 1; i <= 50000; i++) playlist += '\r#EXTINF:-1 tvg-id="' + i + '" tvg-name="N' + i + '" group-title="G' + (i % 100) + '",Title ' + i + '\rhttp://m3u.invalid/live/' + i + '.ts';
+  const started = performance.now();
+  const channels = parseM3U(playlist);
+  const ms = performance.now() - started;
+  assert.deepEqual([channels.length, channels[49999].name, channels[49999].group], [50000, 'Title 50000', 'G0']);
+  assert.ok(ms < 1000, 'took ' + ms.toFixed(1) + ' ms');
 });
 
 // ------------------------------------------------------------------ titles
@@ -314,6 +426,21 @@ test('normalize step 1 and the year from a name trim tab, line feed, vertical ta
   assert.equal(normalizeTitle(C(0x1c) + ' | EN'), '', 'U+001C keeps the space before the pipe, so EN is a trailing tag');
 });
 
+test('a shortened copy of provider text is cut between whole characters, never inside a surrogate pair', () => {
+  // docs/browse.md, "Long names". U+1F600 is two UTF-16 units, a surrogate pair.
+  const pair = C(0x1f600);
+  assert.equal(cutText('abc', 3), 'abc');
+  assert.equal(cutText('abcd', 3), 'abc');
+  assert.equal(cutText('ab' + pair + 'c', 3), 'ab', 'a cut after the first half of the pair leaves the pair out');
+  assert.equal(cutText('ab' + pair + 'c', 4), 'ab' + pair, 'a pair that fits stays whole');
+  assert.equal(cutText('a' + pair, 3), 'a' + pair, 'a text that fits is not cut');
+  assert.equal(cutText(pair, 1), '');
+  // The compact catalogue's genre is cut at 100 units.
+  assert.equal(compactXtream('movie', {stream_id: '5', name: 'A', genre: 'g'.repeat(99) + pair + 'tail'})!.genre, 'g'.repeat(99));
+  assert.equal(compactXtream('movie', {stream_id: '5', name: 'A', genre: 'g'.repeat(98) + pair + 'tail'})!.genre, 'g'.repeat(98) + pair);
+  assert.equal(compactXtream('movie', {stream_id: '5', name: 'A', genre: ' ' + 'g'.repeat(120)})!.genre, 'g'.repeat(100), 'trimmed, then cut');
+});
+
 test('compact catalogue rows keep only what browsing needs, within limits', () => {
   const item = compactXtream('movie', {
     num: 1, name: 'x'.repeat(500), stream_type: 'movie', stream_id: 42, stream_icon: 'https://image.tmdb.org/t/p/w600/a.jpg', rating: '7.25', rating_5based: 3.6,
@@ -321,7 +448,7 @@ test('compact catalogue rows keep only what browsing needs, within limits', () =
   })!;
   assert.deepEqual(Object.keys(item).sort(), ['added', 'cat', 'cats', 'ext', 'genre', 'id', 'name', 'poster', 'rating', 'tmdb']);
   assert.deepEqual(item.cats, ['13'], 'category_ids other than category_id');
-  assert.equal(item.name.length, 150);
+  assert.equal(item.name, 'x'.repeat(500), 'a long name is kept whole (docs/browse.md, "Long names")');
   assert.equal(item.ext, 'mkv');
   assert.equal(item.rating, 7.3);
   assert.ok(!JSON.stringify(item).includes('direct_source') && !JSON.stringify(item).includes('136.148'));
@@ -340,6 +467,9 @@ test('compact catalogue rows keep only what browsing needs, within limits', () =
   assert.equal(titleFromCompact('movie', {id: '5', name: 'A', added: 1700000000123}).added, 1700000000, 'also in a catalogue compacted before');
   assert.deepEqual(titleFromCompact('movie', {id: '5', name: 'A', cat: '1', cats: ['2']}).cats, ['2']);
   assert.deepEqual(compactCategory({category_id: '3', category_name: 'XXX', parent_id: 0, is_adult: 1}), {id: '3', name: 'XXX', adult: true});
+  // A long category name is kept whole: USA only reads a tag at its end.
+  const long = compactCategory({category_id: '4', category_name: 'Movies ' + 'and more '.repeat(20) + '| FR'})!;
+  assert.deepEqual([long.name.length, isForeignCategory(long.name)], [191, true]);
   assert.equal(compactCategory({category_name: 'No id'}), null);
 });
 

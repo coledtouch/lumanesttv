@@ -113,8 +113,9 @@ function provider(url, headers = new Headers()) {
     if (user === 'down-user' && state.down) return new Response('down', {status: 502});
     const action = call.action;
     if (action === 'get_vod_streams' && user === 'huge-user') {
-      // About 60 MB of titles, made as it is read.
-      const item = JSON.stringify({stream_id: 1, name: 'x'.repeat(1400), stream_icon: 'https://image.tmdb.org/t/p/w600/a.jpg'});
+      // About 60 MB of titles, made as it is read. The bulk is in a field the catalogue drops, so the list passes its
+      // byte limit long before the compact titles fill the catalogue (names are kept whole).
+      const item = JSON.stringify({stream_id: 1, name: 'Huge', stream_icon: 'https://image.tmdb.org/t/p/w600/a.jpg', plot: 'x'.repeat(1400)});
       let sent = 0;
       return new Response(new ReadableStream({
         pull(controller) {
@@ -126,7 +127,7 @@ function provider(url, headers = new Headers()) {
     }
     // Slower than the build deadline the test sets (1.5 s); it ends after 4 s, as the mock can't see the Worker give up.
     if (action === 'get_vod_streams' && user.startsWith('slow-')) return new Response(chunked(['[', ...Array.from({length: 80}, (_, i) => JSON.stringify({stream_id: i}) + ',')], 50), {headers: {'Content-Type': 'application/json'}});
-    // About 560 KB of compact titles (names are cut at 150 characters).
+    // About 3.1 MB of compact titles (names are kept whole, docs/browse.md "Long names").
     if (action === 'get_vod_streams' && user === 'big-user') return Response.json(Array.from({length: 3000}, (_, i) => ({stream_id: i + 1, name: 'Title ' + i + ' ' + 'x'.repeat(1000)})));
     if (action === 'get_vod_streams' && POSTER_HOSTS[user]) return Response.json(hostMovies(user));
     if (action === 'get_series' && POSTER_HOSTS[user]) return Response.json(hostSeries());
@@ -516,7 +517,8 @@ test('the catalogue is cut at its byte budget and marked truncated', async () =>
   assert.equal(response.status, 200);
   const data = JSON.parse(text);
   assert.equal(data.movies.truncated, true, JSON.stringify([text.length, data.movies.items.length]));
-  assert.ok(data.movies.items.length > 900 && data.movies.items.length < 1100, String(data.movies.items.length));
+  // Each compact title takes about 1,045 bytes of the movies' 200,000.
+  assert.ok(data.movies.items.length > 170 && data.movies.items.length < 210, String(data.movies.items.length));
   assert.ok(text.length < 200000 + 5000, String(text.length));
   assert.equal(data.series.items.length, 1, 'series keep the rest of the budget');
 });

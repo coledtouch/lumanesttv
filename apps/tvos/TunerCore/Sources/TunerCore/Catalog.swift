@@ -318,7 +318,8 @@ public actor CatalogService {
         guard source.kind == .xtream, movie.id.hasPrefix("m:") else { return MovieInfo() }
         guard let login = source.xtreamLogin else { throw TunerError.loginFailed }
         let token = generation
-        let info = try await XtreamClient(login: login, http: http).movieInfo(streamID: String(movie.id.dropFirst(2)))
+        let streamID = ExactText.text(fromKey: String(movie.id.dropFirst(2)))
+        let info = try await XtreamClient(login: login, http: http).movieInfo(streamID: streamID)
         if token == generation { movieInfoCache[movie.id] = info }
         return info
     }
@@ -665,7 +666,8 @@ public struct GuideSchedule: Codable, Sendable, Hashable {
 
 public enum XMLTV {
     public struct Wanted: Sendable, Hashable {
-        /// Lowercased epg ids.
+        /// Lowercased epg ids, as `ExactText.key` forms ("cnn.us" as it is): Swift's `String` equality would take two
+        /// canonically equivalent ids as one, which the guide keeps apart as Android does.
         public var ids: Set<String>
         /// `ChannelMatch.key(name)`, `key(epgID)`, `idKey(epgID)` with length >= 2.
         public var keys: Set<String>
@@ -676,7 +678,7 @@ public enum XMLTV {
             for channel in channels {
                 keys.insert(ChannelMatch.key(channel.name))
                 if let epg = channel.epgID?.trimmingCharacters(in: .whitespaces), !epg.isEmpty {
-                    ids.insert(epg.lowercased())
+                    ids.insert(ExactText.key(epg.lowercased()))
                     keys.insert(ChannelMatch.key(epg))
                     keys.insert(ChannelMatch.idKey(epg))
                 }
@@ -687,7 +689,8 @@ public enum XMLTV {
     }
 
     public struct Result: Sendable, Hashable {
-        /// Lowercased channel id → programmes.
+        /// Lowercased channel id (an `ExactText.key` form, like `Wanted.ids`) → programmes; `icons` and the values of
+        /// `nameToID` use the same ids.
         public var programs: [String: [Program]]
         public var icons: [String: URL]
         /// ChannelMatch key of a display-name → channel id (main feed beats regional feeds).
@@ -810,8 +813,9 @@ public enum XMLTV {
             let id = channel.epgID?.trimmingCharacters(in: .whitespaces).lowercased()
             var xid: String?
             if let id, !id.isEmpty {
-                if result.programs[id] != nil || result.icons[id] != nil {
-                    xid = id
+                let exact = ExactText.key(id)
+                if result.programs[exact] != nil || result.icons[exact] != nil {
+                    xid = exact
                 } else {
                     xid = result.nameToID[ChannelMatch.key(id)] ?? result.nameToID[ChannelMatch.idKey(id)]
                 }
@@ -874,7 +878,7 @@ private final class XMLTVHandler: NSObject, XMLParserDelegate {
         switch elementName {
         case "channel":
             if let raw = attributeDict["id"] {
-                let id = raw.lowercased()
+                let id = ExactText.key(raw.lowercased())
                 channelID = id
                 addName(ChannelMatch.idKey(raw), id, regional: ChannelMatch.isRegional(raw))
             }
@@ -886,7 +890,7 @@ private final class XMLTVHandler: NSObject, XMLParserDelegate {
                 icons[id] = url
             }
         case "programme":
-            programmeChannel = attributeDict["channel"]?.lowercased()
+            programmeChannel = attributeDict["channel"].map { ExactText.key($0.lowercased()) }
             programmeStart = attributeDict["start"].flatMap(XMLTV.parseTime)
             programmeEnd = attributeDict["stop"].flatMap(XMLTV.parseTime)
             title = nil; subtitle = nil; desc = nil

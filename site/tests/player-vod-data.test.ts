@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import {
   CATALOGUE_HOST, POSTER_FILE, POSTER_TAG_LENGTH, VodError, carriesSecret, catalogueHostAddress, catalogueHostOf, catalogueImageAddress, classifyPoster, compactMovieInfo,
   compactSeriesInfo, createCataloguePosters, createPosterBook, createPosterCounter, durationOf, electCatalogueHost, entryExt, entryKind, imageAddress, isPosterFile,
-  isPosterPath, posterTag, readJsonArray, sniffImage, validImageToken, vodPlayURL, xtreamServer, xtreamURL, type ImageToken,
+  isPosterPath, posterTag, readJsonArray, sniffImage, validImageToken, VOD_LIMITS, vodPlayURL, xtreamServer, xtreamURL, type ImageToken,
 } from '../lib/player-vod-data.ts';
 import {open, mac, seal, sealStable} from '../lib/player-crypto.ts';
 
@@ -92,7 +92,7 @@ test('streamed lists: elements across chunk boundaries, strings, escapes and mul
     {stream_id: 2, name: '日本語のタイトル', note: 'brackets ] } [ { in a string'},
     {stream_id: 3, name: 'emoji 🎬', escaped: 'A\n\t"'},
   ];
-  const text = '﻿ \n' + JSON.stringify(list, null, 1);
+  const text = '\ufeff \n' + JSON.stringify(list, null, 1);
   for (const size of [1, 2, 3, 7, 64, 100000]) {
     const {items, result} = await readAll(bytesSplit(text, size));
     assert.deepEqual(items, list, 'chunk size ' + size);
@@ -513,6 +513,29 @@ test('series details: seasons in number order, episode limits and defaults', () 
   assert.ok(huge.seasons.length <= 100);
   assert.equal(huge.seasons.reduce((sum, season) => sum + season.episodes.length, 0), 3000);
   assert.deepEqual(compactSeriesInfo(null, '1').seasons, []);
+});
+
+test('details text is cut between whole characters, never inside a surrogate pair', () => {
+  // docs/browse.md, "Long names": each text below is trimmed, then cut where its limit falls on the first half of a
+  // surrogate pair (U+1F600), so the pair is left out rather than halved.
+  const pair = String.fromCodePoint(0x1f600);
+  const long = (max: number) => '  ' + 'a'.repeat(max - 1) + pair + 'tail';
+  const series = compactSeriesInfo({
+    info: {name: long(150), plot: long(VOD_LIMITS.plot), genre: long(100)},
+    seasons: [{season_number: 1, name: long(100)}],
+    episodes: {'1': [{id: '1', episode_num: 1, title: long(VOD_LIMITS.episodeTitle), info: {plot: long(VOD_LIMITS.plot)}}]},
+  }, '9');
+  const episode = series.seasons[0].episodes[0];
+  const movie = compactMovieInfo({info: {plot: long(VOD_LIMITS.plot), genre: long(100), cast: long(300), director: long(150)}}, '1');
+  const cuts: [string, string | undefined, number][] = [
+    ['series name', series.name, 150], ['series plot', series.plot, VOD_LIMITS.plot], ['series genre', series.genre, 100], ['season name', series.seasons[0].name, 100],
+    ['episode title', episode.title, VOD_LIMITS.episodeTitle], ['episode plot', episode.plot, VOD_LIMITS.plot],
+    ['movie plot', movie.plot, VOD_LIMITS.plot], ['movie genre', movie.genre, 100], ['cast', movie.cast, 300], ['director', movie.director, 150],
+  ];
+  for (const [label, text, max] of cuts) assert.equal(text, 'a'.repeat(max - 1), label);
+  assert.equal(compactMovieInfo({info: {director: 'a'.repeat(148) + pair + 'tail'}}, '1').director, 'a'.repeat(148) + pair, 'a pair that fits stays whole');
+  assert.equal(compactMovieInfo({info: {director: ' ' + 'b'.repeat(200) + ' '}}, '1').director, 'b'.repeat(150), 'other text is still cut at its limit');
+  assert.equal(compactMovieInfo({info: {director: ' ' + pair + ' '}}, '1').director, pair);
 });
 
 test('movie details', () => {

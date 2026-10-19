@@ -3,7 +3,7 @@
 // line's catalogue image host), then the initials card.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {NO_POSTERS, TMDB_POSTER_BASE, posterChoices, posterFailed, providerPosterSrc, shownPoster, tmdbPosters, type PosterSources} from '../app/watch/poster-choice.ts';
+import {NO_POSTERS, TMDB_POSTER_BASE, channelBadge, initials, posterChoices, posterFailed, providerPosterSrc, shownPoster, tmdbPosters, type PosterSources} from '../app/watch/poster-choice.ts';
 import {buildTitleSection, parseRowsPayload, titleFromCompact} from '../lib/browse.ts';
 
 const rowsBody = JSON.stringify({
@@ -96,4 +96,17 @@ test('a picture that fails to load gives way to the next: TMDB, then the line’
   assert.equal(shownPoster(srcs, failed), undefined, 'both failed: the initials card');
   assert.equal(shownPoster([], []), undefined, 'nothing to try: the initials card');
   assert.equal(shownPoster(['', 'b'], []), 'b', 'empty entries are skipped');
+});
+
+test('the initials card and channel badges never show half a character', () => {
+  // U+10428 (a Deseret letter, capital U+10400) and U+1F4FA are each two UTF-16 units, a surrogate pair.
+  const letter = String.fromCodePoint(0x10428), capital = String.fromCodePoint(0x10400), tv = String.fromCodePoint(0x1f4fa);
+  assert.equal(initials('The Matrix (1999)'), 'TM');
+  assert.equal(initials('[4K] dune part two'), 'DP');
+  assert.equal(initials(letter + 'ub Story'), capital + 'S', 'a word that starts with a pair gives the whole pair');
+  assert.equal(initials('!' + tv + '!'), '!', 'no word starts with a letter or digit: the first two units, less half a pair');
+  assert.equal(initials('!?'), '!?');
+  assert.equal(channelBadge('cnn'), 'CN');
+  assert.equal(channelBadge(tv + ' News'), tv);
+  assert.equal(channelBadge('A' + tv + ' News'), 'A');
 });

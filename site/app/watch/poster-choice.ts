@@ -4,9 +4,9 @@
 //   2. The line's own poster: a direct https link (TMDB's image host), or "~<base>:<file>" through /api/player/image
 //      for a provider host or the line's catalogue image host (lib/player-vod-data.ts createPosterBook; on the
 //      catalogue image host <file> is "<path>!<tag>", passed on as it is).
-//   3. Nothing: the initials card (poster.tsx TitleCard).
+//   3. Nothing: the initials card (poster.tsx TitleCard, its letters from initials below).
 // The picture shown falls back down the list when one fails to load (poster.tsx PosterArt). Pure, so tests run it.
-import type {RowsPayload, RowsSection} from '../../lib/browse.ts';
+import {cutText, type RowsPayload, type RowsSection} from '../../lib/browse.ts';
 import {TMDB_POSTER_PATH} from '../../lib/catalog.ts';
 
 /** TMDB's poster size for the web player's cards and details (342 px wide, about 2x a 170 px card). */
@@ -77,4 +77,19 @@ export function shownPoster(srcs: readonly string[], failed: readonly string[]):
 /** The failed pictures once src has failed to load too (unchanged when it is already there). */
 export function posterFailed(failed: readonly string[], src: string): readonly string[] {
   return failed.includes(src) ? failed : [...failed, src];
+}
+
+/**
+ * The initials card's letters: the first character of the name's first two words that start with a letter or a digit
+ * (words in brackets left out), else the name's first two UTF-16 units, in capitals. A character outside the Basic
+ * Multilingual Plane is taken whole, never half of its surrogate pair (docs/browse.md, "Long names").
+ */
+export function initials(name: string) {
+  const words = name.replace(/\([^)]*\)|\[[^\]]*\]/g, ' ').split(/\s+/).filter(word => /^[\p{L}\p{N}]/u.test(word));
+  return (words.slice(0, 2).map(word => word.slice(0, word.codePointAt(0)! > 0xffff ? 2 : 1)).join('') || cutText(name, 2)).toUpperCase();
+}
+
+/** A channel's badge in the channel lists: the first two UTF-16 units of its name in capitals, never half a character. */
+export function channelBadge(name: string) {
+  return cutText(name, 2).toUpperCase();
 }

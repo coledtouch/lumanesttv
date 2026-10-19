@@ -2,6 +2,7 @@
 // match and order titles the same way. The category filter, title normalization, years, TMDB matching and USA only
 // are the shared rules of docs/browse.md, checked against every case in docs/browse-cases.json
 // (tests/browse.test.ts); lists, Home rows and the Library follow the Roku app's apps/roku/source/lib/BrowseLogic.brs.
+// M3U playlists are read by the shared rules too, in parseM3U (lib/player-data.ts), on the server.
 // Pure: no DOM, no Workers APIs. The server (lib/player-vod.ts) uses the compaction helpers; the browser (app/watch)
 // builds the browse index from the compact catalogue and GET /api/catalog/rows?v=1. It runs in viewers' browsers, so
 // no pattern uses lookbehind (Safari before 16.4 rejects it).
@@ -14,6 +15,16 @@ export function asText(value: unknown): string {
   if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '';
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   return '';
+}
+
+/**
+ * A text cut to at most max UTF-16 units for display, one fewer when the last of them would be the first half of a
+ * surrogate pair, so a shortened copy never ends inside a character (docs/browse.md, "Long names").
+ */
+export function cutText(text: string, max: number) {
+  if (text.length <= max) return text;
+  const last = text.charCodeAt(max - 1);
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? max - 1 : max);
 }
 
 /** Xtream marks adult categories and streams with is_adult = 1, "1" or true. */
@@ -283,12 +294,15 @@ const MORE_CATEGORIES = 10;
  * One Xtream get_vod_streams (kind "movie") or get_series (kind "series") row, or null when it has no numeric id.
  * Everything else the provider sends (direct_source, custom_sid, num, stream_type…) is dropped. cats holds the
  * category_ids other than category_id.
+ * The name is kept whole, however long (docs/browse.md, "Long names"): the browser reads the lookup keys from it, and
+ * the year comes from it here, so a cut name would match differently. It stays bounded: a row is at most
+ * VOD_LIMITS.element bytes, and the catalogue stops at its byte budget (lib/player-vod.ts).
  */
 export function compactXtream(kind: 'movie' | 'series', raw: unknown): CompactTitle | null {
   if (!isRecord(raw)) return null;
   const id = asText(kind === 'movie' ? raw.stream_id : raw.series_id).trim();
   if (!XTREAM_ID.test(id)) return null;
-  const name = asText(raw.name).trim().slice(0, 150);
+  const name = asText(raw.name).trim();
   const year = yearOfText(raw.year) || yearOfText(raw.releaseDate) || yearOfText(raw.release_date) || yearOfText(raw.releasedate) || titleYearOf(name);
   const cat = asText(raw.category_id).trim().slice(0, 40);
   const cats: string[] = [];
@@ -300,7 +314,7 @@ export function compactXtream(kind: 'movie' | 'series', raw: unknown): CompactTi
   const rating = ratingOf(raw);
   const added = unixSeconds(integerOf(kind === 'movie' ? raw.added : raw.last_modified));
   const tmdb = providerTmdbId(raw);
-  const genre = asText(raw.genre).trim().slice(0, 100);
+  const genre = cutText(asText(raw.genre).trim(), 100);
   const item: CompactTitle = {id, name};
   if (year) item.year = year;
   if (cat) item.cat = cat;
@@ -318,12 +332,16 @@ export function compactXtream(kind: 'movie' | 'series', raw: unknown): CompactTi
   return item;
 }
 
-/** One Xtream category row ({category_id, category_name}), or null. */
+/**
+ * One Xtream category row ({category_id, category_name}), or null. The name is kept whole, as the other apps keep it:
+ * USA only reads all of it (a tag such as "| FR" may come last), and the list is at most VOD_LIMITS.categories rows
+ * read from at most VOD_LIMITS.categoryBytes.
+ */
 export function compactCategory(raw: unknown): CompactCategory | null {
   if (!isRecord(raw)) return null;
   const id = asText(raw.category_id).trim().slice(0, 40);
   if (!id) return null;
-  const category: CompactCategory = {id, name: asText(raw.category_name).trim().slice(0, 100)};
+  const category: CompactCategory = {id, name: asText(raw.category_name).trim()};
   if (isFlagOn(raw.is_adult)) category.adult = true;
   return category;
 }

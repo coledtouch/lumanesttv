@@ -35,7 +35,7 @@ sub markBrowseDirty()
 end sub
 
 function browseOpts(genre as string) as object
-    return {usOnly: m.settings.vodUsOnly, adultOk: m.adultUnlocked, genre: genre, seen: {}}
+    return {usOnly: m.settings.vodUsOnly, adultOk: m.adultUnlocked, genre: genre, seen: exactKeys()}
 end function
 
 function hasTmdb() as boolean
@@ -87,13 +87,13 @@ sub librarySave()
     libraryIndex()
 end sub
 
-' Lookups for the tiles: favorites by key and progress by key.
+' Lookups for the tiles: favorites by key and progress by key, letter case included ("m1a" and "m1A" are two titles).
 sub libraryIndex()
-    m.favSet = {}
+    m.favSet = exactKeys()
     for each key in m.library.fav
         m.favSet[key] = true
     end for
-    m.progByKey = {}
+    m.progByKey = exactKeys()
     for each entry in m.library.prog
         m.progByKey[entry.k] = entry
     end for
@@ -135,8 +135,9 @@ end sub
 ' Updates the check badge on every tile of that title currently built.
 sub syncFavoriteTiles(key as string, added as boolean)
     refType = libraryTypeOf(key)
-    if m.catalog = invalid or not m.catalog[refType].byKey.DoesExist(key) then return
-    idx = m.catalog[refType].byKey[key]
+    if m.catalog = invalid then return
+    idx = titleIndexOf(m.catalog[refType], key)
+    if idx < 0 then return
     for each list in [m.homeRows, m.libraryRows]
         if list.content <> invalid
             for r = 0 to list.content.getChildCount() - 1
@@ -153,8 +154,9 @@ end sub
 ' (Home and the Library are rebuilt instead).
 sub syncProgressTiles(key as string)
     refType = libraryTypeOf(key)
-    if m.catalog = invalid or not m.catalog[refType].byKey.DoesExist(key) then return
-    idx = m.catalog[refType].byKey[key]
+    if m.catalog = invalid then return
+    idx = titleIndexOf(m.catalog[refType], key)
+    if idx < 0 then return
     fraction = progressFraction(m.progByKey[key])
     for each grid in [m.discoverGrid, m.searchGrid]
         if grid.content <> invalid

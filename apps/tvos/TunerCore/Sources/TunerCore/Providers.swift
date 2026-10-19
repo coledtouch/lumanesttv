@@ -179,6 +179,10 @@ public struct XtreamAccountInfo: Sendable, Equatable {
 
 /// Parsers take raw response bytes, so they are testable from fixtures. List parsers merge duplicates by id
 /// (union of categoryIDs; country/language joined with ";"; adult = any), keep provider order; live also renumbers.
+/// Provider ids are compared byte for byte, as the other apps compare them: category ids, and the stream, series and
+/// episode ids in `Channel.key`, `Movie.id`, `Series.id` and `Episode.id`, are kept as `ExactText.key` forms ("123" as it
+/// is), because Swift's `String` equality would take canonically equivalent ids ("\u{E9}" and "e\u{301}") as one.
+/// `Channel.streamID` and `Series.seriesID` keep the provider's id for requests.
 public enum XtreamParser {
     static let countryFields = ["country", "country_code", "country_name", "stream_country", "tvg-country"]
     static let languageFields = ["language", "lang", "original_language", "audio_language", "stream_language", "tvg-language"]
@@ -206,7 +210,7 @@ public enum XtreamParser {
         var result: [Category] = []
         var seen = Set<String>()
         try forEachRow(data, fields: ["category_id", "category_name", "is_adult"]) { row in
-            guard let id = row["category_id"]?.text, seen.insert(id).inserted else { return }
+            guard let id = row["category_id"]?.text.map(ExactText.key), seen.insert(id).inserted else { return }
             result.append(Category(id: id, name: row["category_name"]?.text ?? "Other", adult: AdultFilter.isAdultFlag(row["is_adult"]?.text)))
         }
         return result
@@ -216,7 +220,8 @@ public enum XtreamParser {
         var order: [String] = []
         var byID: [String: Channel] = [:]
         try forEachRow(data, fields: liveFields) { row in
-            guard let id = row["stream_id"]?.text else { return }
+            guard let streamID = row["stream_id"]?.text else { return }
+            let id = ExactText.key(streamID)
             let categories = categoryIDs(row)
             if var previous = byID[id] {
                 merge(&previous.categoryIDs, categories)
@@ -226,10 +231,10 @@ public enum XtreamParser {
                 byID[id] = previous
                 return
             }
-            guard let url = Xtream.liveURL(login, streamID: id, directSource: row["direct_source"]?.text) else { return }
-            byID[id] = Channel(key: "x:\(id)", number: row["num"]?.int ?? 0, name: row["name"]?.text ?? "Channel \(id)",
+            guard let url = Xtream.liveURL(login, streamID: streamID, directSource: row["direct_source"]?.text) else { return }
+            byID[id] = Channel(key: "x:\(id)", number: row["num"]?.int ?? 0, name: row["name"]?.text ?? "Channel \(streamID)",
                                logo: webURL(row["stream_icon"]?.text), categoryID: categories.first ?? "", categoryIDs: categories,
-                               epgID: row["epg_channel_id"]?.text, streamID: id, url: url, country: metadata(row, countryFields),
+                               epgID: row["epg_channel_id"]?.text, streamID: streamID, url: url, country: metadata(row, countryFields),
                                language: metadata(row, languageFields), adult: AdultFilter.isAdultFlag(row["is_adult"]?.text))
             order.append(id)
         }
@@ -241,7 +246,8 @@ public enum XtreamParser {
         var order: [String] = []
         var byID: [String: Movie] = [:]
         try forEachRow(data, fields: movieFields) { row in
-            guard let id = row["stream_id"]?.text else { return }
+            guard let streamID = row["stream_id"]?.text else { return }
+            let id = ExactText.key(streamID)
             let categories = categoryIDs(row)
             if var previous = byID[id] {
                 merge(&previous.categoryIDs, categories)
@@ -252,7 +258,7 @@ public enum XtreamParser {
                 return
             }
             let ext = row["container_extension"]?.text
-            guard let url = Xtream.movieURL(login, streamID: id, containerExtension: ext, directSource: row["direct_source"]?.text) else { return }
+            guard let url = Xtream.movieURL(login, streamID: streamID, containerExtension: ext, directSource: row["direct_source"]?.text) else { return }
             let name = row["name"]?.text ?? "Movie"
             byID[id] = Movie(id: "m:\(id)", name: name, poster: webURL(row["stream_icon"]?.text), rating: ratingText(row["rating"]?.text),
                              categoryID: categories.first ?? "", categoryIDs: categories, url: url, added: unixSeconds(row["added"]),
@@ -269,7 +275,8 @@ public enum XtreamParser {
         var order: [String] = []
         var byID: [String: Series] = [:]
         try forEachRow(data, fields: seriesFields) { row in
-            guard let id = row["series_id"]?.text else { return }
+            guard let seriesID = row["series_id"]?.text else { return }
+            let id = ExactText.key(seriesID)
             let categories = categoryIDs(row)
             if var previous = byID[id] {
                 merge(&previous.categoryIDs, categories)
@@ -280,7 +287,7 @@ public enum XtreamParser {
                 return
             }
             let name = row["name"]?.text ?? "Series"
-            byID[id] = Series(id: "s:\(id)", seriesID: id, name: name, cover: webURL(row["cover"]?.text), plot: row["plot"]?.text,
+            byID[id] = Series(id: "s:\(id)", seriesID: seriesID, name: name, cover: webURL(row["cover"]?.text), plot: row["plot"]?.text,
                               rating: ratingText(row["rating"]?.text), genre: row["genre"]?.text, year: yearOf(row, name: name),
                               backdrop: webURL(row["backdrop_path"]?.text), added: unixSeconds(row["last_modified"]),
                               categoryID: categories.first ?? "", categoryIDs: categories, tmdbID: tmdb(row),
@@ -320,7 +327,7 @@ public enum XtreamParser {
             var duration = details["duration_secs"]?.int ?? 0
             if duration <= 0, let text = details["duration"]?.text { duration = parseClock(text) ?? 0 }
             let title = row["title"]?.text ?? "Episode \(number)"
-            seasons[season, default: []].append(Episode(id: "e:\(id)", season: season, number: number, title: title, plot: details["plot"]?.text,
+            seasons[season, default: []].append(Episode(id: "e:\(ExactText.key(id))", season: season, number: number, title: title, plot: details["plot"]?.text,
                                                         image: webURL(details["movie_image"]?.text), durationSeconds: duration, url: url,
                                                         containerExtension: ext?.lowercased(),
                                                         subtitles: unique(subtitles(row["subtitles"]) + subtitles(details["subtitles"]))))
@@ -404,13 +411,14 @@ public enum XtreamParser {
 
     static func categoryIDs(_ row: JSONValue) -> [String] {
         var list: [String] = []
-        if let id = row["category_id"]?.text { list.append(id) }
+        if let id = row["category_id"]?.text { list.append(ExactText.key(id)) }
         if let extra = row["category_ids"] {
             let values: [JSONValue]
             if case .array(let items) = extra { values = items } else { values = [extra] }
             for value in values {
                 guard var text = value.text else { continue }
                 if let dot = text.firstIndex(of: ".") { text = String(text[..<dot]) }
+                text = ExactText.key(text)
                 if !text.isEmpty && !list.contains(text) { list.append(text) }
             }
         }
@@ -428,7 +436,7 @@ public enum XtreamParser {
             let items: [JSONValue]
             if case .array(let list) = value { items = list } else { items = [value] }
             for item in items {
-                guard let text = item.text, !values.contains(text) else { continue }
+                guard let text = item.text, !values.contains(where: { ExactText.same($0, text) }) else { continue }
                 values.append(text)
             }
         }
@@ -437,7 +445,7 @@ public enum XtreamParser {
 
     static func mergeMetadata(_ first: String?, _ second: String?) -> String? {
         guard let first else { return second }
-        guard let second, first != second else { return first }
+        guard let second, !ExactText.same(first, second) else { return first }
         return first + ";" + second
     }
 
@@ -598,47 +606,58 @@ public struct M3UPlaylist: Sendable, Equatable {
 }
 
 public enum M3UParser {
-    private static let episodeName = Pattern(#"^(.*?)\s+[Ss](\d{1,2})[ ._-]*[Ee](\d{1,3})\b(.*)$"#)
+    /// "Show S01E02 Title": the show, season, episode and the rest. The show ends in a character that is not `\s`: with
+    /// `(.*?)` the engine tried `\s+` again from every space of a run inside the name, so its time grew with the square
+    /// of the run (about a second for 16,000 spaces, and from about 10,000 on ICU gave up and found no episode at all).
+    /// The matches are otherwise the same, because a name is trimmed of every `\s` first (`nonBlank`,
+    /// `BrowseText.trimField`): the show is never empty, and the shortest show before `\s+` never ends in a space.
+    private static let episodeName = Pattern(#"^(.*?\S)\s+[Ss](\d{1,2})[ ._-]*[Ee](\d{1,3})\b(.*)$"#)
 
-    /// Android M3u.kt rules plus Tizen's playlist series. VOD = URL contains /movie/ or /series/, or ends in
-    /// .mp4/.mkv/.avi (before any query). Category ids "live:g0", "movies:g0", "series:g0"... per kind; every
-    /// playlist category has adult = false. Live channels renumbered (`Renumber`).
+    /// Names and groups as docs/browse.md "M3U playlists" says, plus Tizen's playlist series. VOD = URL contains
+    /// /movie/ or /series/, or ends in .mp4/.mkv/.avi (before any query). Category ids "live:g0", "movies:g0",
+    /// "series:g0"... per kind; every playlist category has adult = false. Live channels renumbered (`Renumber`).
     public static func parse(_ data: Data) -> M3UPlaylist {
         var body = data
         if Gzip.isGzip(body), let plain = try? Gzip.decompress(body) { body = plain }
         let text = String(decoding: body, as: UTF8.self)
 
         var playlist = M3UPlaylist()
-        var liveCategoryIDs: [String: String] = [:]
-        var movieCategoryIDs: [String: String] = [:]
-        var seriesCategoryIDs: [String: String] = [:]
+        // Category ids by the group's UTF-8 bytes: Swift's String equality takes canonically equivalent names
+        // ("Caf\u{E9}" and "Cafe\u{301}") as one, which the other apps keep apart and the category rules read differently.
+        var liveCategoryIDs: [[UInt8]: String] = [:]
+        var movieCategoryIDs: [[UInt8]: String] = [:]
+        var seriesCategoryIDs: [[UInt8]: String] = [:]
         var movieIndex: [String: Int] = [:]
         var seriesIndex: [String: Int] = [:]
 
         var attributes: [String: String] = [:]
-        var title: String?
+        var title = ""
         var groupOverride: String?
+        // Every URL line counts, the ones left out below too: "Channel N" names the entry's place in the playlist.
+        var entry = 0
 
-        func category(_ kind: String, _ name: String, _ ids: inout [String: String], _ list: inout [Category]) -> String {
-            if let id = ids[name] { return id }
+        func category(_ kind: String, _ name: String, _ ids: inout [[UInt8]: String], _ list: inout [Category]) -> String {
+            let key = Array(name.utf8)
+            if let id = ids[key] { return id }
             let id = "\(kind):g\(list.count)"
-            ids[name] = id
+            ids[key] = id
             list.append(Category(id: id, name: name))
             return id
         }
 
-        // Lines end with "\n", "\r\n" or "\r". Split on Unicode scalars: "\r\n" is one `Character`, so a split on the
-        // characters "\n" and "\r" finds no line end in a playlist written with Windows line endings.
+        // Lines end with "\n", "\r\n" or "\r", and nothing else (not U+0085, U+2028 or U+2029). Split on Unicode
+        // scalars: "\r\n" is one `Character`, so a split on the characters "\n" and "\r" finds no line end in a playlist
+        // written with Windows line endings. The empty line between "\r" and "\n" is skipped like any empty line.
         for rawLine in text.unicodeScalars.split(omittingEmptySubsequences: true, whereSeparator: { $0 == "\n" || $0 == "\r" }) {
-            // Spaces and the Unicode spaces only (BrowseText.trimField, docs/browse.md "Trimming"): Foundation's
-            // `.whitespaces` also removes U+200B, which changes how a name reads.
+            // Spaces and the Unicode spaces only (BrowseText.trimField, docs/browse.md "Trimming"), U+FEFF included, so
+            // a byte order mark goes too: Foundation's `.whitespaces` also removes U+200B, which changes how a name reads.
             let line = BrowseText.trimField(String(rawLine))
             if line.isEmpty { continue }
-            // Tags compared scalar by scalar too: a combining mark after "#EXTGRP:" or "#" joins its `Character`.
-            let upper = String(line.unicodeScalars.prefix(8)).uppercased().unicodeScalars
-            func tag(_ name: String) -> Bool { upper.starts(with: name.unicodeScalars) }
+            // Tags compared scalar by scalar (a combining mark after "#EXTGRP:" or "#" joins its `Character`), ignoring
+            // the case of A to Z only: `uppercased()` reads "#EXT\u{0131}NF" (a dotless i) as "#EXTINF".
+            func tag(_ name: String) -> Bool { startsWithTag(line.unicodeScalars, name) }
             if tag("#EXTM3U") {
-                let header = parseAttributes(line)
+                let header = read(line, stopsAtComma: false).attributes
                 if let value = header["url-tvg"] ?? header["x-tvg-url"],
                    let first = value.split(separator: ",").first.map({ $0.trimmingCharacters(in: .whitespaces) }),
                    let link = Xtream.httpLink(first) {
@@ -647,8 +666,7 @@ public enum M3UParser {
                 continue
             }
             if tag("#EXTINF") {
-                attributes = parseAttributes(line)
-                title = nameAfterComma(line)
+                (attributes, title) = read(line)
                 groupOverride = nil
                 continue
             }
@@ -657,10 +675,11 @@ public enum M3UParser {
                 continue
             }
             if line.unicodeScalars.first == "#" { continue }
-            defer { attributes = [:]; title = nil; groupOverride = nil }
+            entry += 1
+            defer { attributes = [:]; title = ""; groupOverride = nil }
             guard let link = Xtream.httpLink(line), let url = Xtream.makeURL(link) else { continue }
 
-            let name = nonBlank(title) ?? nonBlank(attributes["tvg-name"]) ?? "Channel \(playlist.channels.count + 1)"
+            let name = nonBlank(title) ?? nonBlank(attributes["tvg-name"]) ?? "Channel \(entry)"
             let group = nonBlank(attributes["group-title"]) ?? nonBlank(groupOverride) ?? "Uncategorized"
             let logo = Xtream.httpLink(attributes["tvg-logo"]).flatMap(Xtream.makeURL)
             let country = nonBlank(attributes["tvg-country"]) ?? nonBlank(attributes["country"])
@@ -722,54 +741,65 @@ public enum M3UParser {
         return trimmed
     }
 
-    /// `key="value"` (or single quotes, spaces around "="), keys lowercased.
-    static func parseAttributes(_ line: String) -> [String: String] {
-        var result: [String: String] = [:]
+    /// `line` starts with `tag`, the ASCII letters compared without case and every other scalar exactly.
+    static func startsWithTag(_ line: String.UnicodeScalarView, _ tag: String) -> Bool {
+        func upper(_ c: Unicode.Scalar) -> UInt32 { c >= "a" && c <= "z" ? c.value - 0x20 : c.value }
+        var scalars = line.makeIterator()
+        for wanted in tag.unicodeScalars {
+            guard let c = scalars.next(), upper(c) == upper(wanted) else { return false }
+        }
+        return true
+    }
+
+    /// An `#EXTINF` line read once from its start, scalar by scalar (docs/browse.md "M3U playlists", Values and title):
+    /// - A key is a run of ASCII letters, digits, "_" and "-", taken whole. When "=" follows it (spaces U+0020 around
+    ///   the "=" allowed), then `"` or `'`, and the same quote comes again later on the line, the text between the
+    ///   quotes is the key's value and reading goes on after the closing quote; otherwise it goes on after the key.
+    /// - The first "," reached is the name comma: the rest of the line, trimmed as a provider field, is the title, and
+    ///   nothing after it is a value. No name comma: the title is "".
+    /// - Any other scalar is passed over, a quote that starts no value too.
+    /// Keys are ASCII-lowercased and a key given twice keeps its first value; a comma or the other quote inside a value
+    /// is part of it. With `stopsAtComma` false (the `#EXTM3U` header, which has no title) a comma is passed over too.
+    /// Time grows with the line: a value's closing quote is looked for once per quote kind at most when it is missing
+    /// (no quote of that kind comes after it, so no later value can open with it).
+    static func read(_ line: String, stopsAtComma: Bool = true) -> (attributes: [String: String], title: String) {
         let scalars = Array(line.unicodeScalars)
-        var i = 0
+        let n = scalars.count
+        var attributes: [String: String] = [:]
         func isKey(_ c: Unicode.Scalar) -> Bool {
             (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c == "_" || c == "-"
         }
-        while i < scalars.count {
-            guard isKey(scalars[i]) else { i += 1; continue }
-            let keyStart = i
-            while i < scalars.count && isKey(scalars[i]) { i += 1 }
-            let keyEnd = i
-            var j = i
-            while j < scalars.count && scalars[j] == " " { j += 1 }
-            guard j < scalars.count, scalars[j] == "=" else { continue }
-            j += 1
-            while j < scalars.count && scalars[j] == " " { j += 1 }
-            guard j < scalars.count, scalars[j] == "\"" || scalars[j] == "'" else { i = j; continue }
-            let quote = scalars[j]
-            let valueStart = j + 1
-            var k = valueStart
-            while k < scalars.count && scalars[k] != quote { k += 1 }
-            guard k < scalars.count else { break }
-            var key = String.UnicodeScalarView()
-            key.append(contentsOf: scalars[keyStart..<keyEnd])
-            var value = String.UnicodeScalarView()
-            value.append(contentsOf: scalars[valueStart..<k])
-            result[String(key).lowercased()] = String(value)
-            i = k + 1
+        func text(_ range: Range<Int>) -> String {
+            var view = String.UnicodeScalarView()
+            view.append(contentsOf: scalars[range])
+            return String(view)
         }
-        return result
-    }
-
-    /// The display name follows the first comma that is not inside a quoted attribute. Read scalar by scalar: a comma
-    /// or quote followed by a combining mark or U+200D is one `Character` with it, and would not be found.
-    static func nameAfterComma(_ line: String) -> String? {
-        let scalars = line.unicodeScalars
-        var quote: Unicode.Scalar?
-        for index in scalars.indices {
-            let c = scalars[index]
-            if c == "\"" || c == "'" {
-                if quote == nil { quote = c } else if quote == c { quote = nil }
-            } else if c == ",", quote == nil {
-                let name = BrowseText.trimField(String(scalars[scalars.index(after: index)...]))
-                return name.isEmpty ? nil : name
+        var i = 0
+        while i < n {
+            let c = scalars[i]
+            if c == ",", stopsAtComma { return (attributes, BrowseText.trimField(text(i + 1..<n))) }
+            guard isKey(c) else { i += 1; continue }
+            var keyEnd = i
+            while keyEnd < n && isKey(scalars[keyEnd]) { keyEnd += 1 }
+            var j = keyEnd
+            while j < n && scalars[j] == " " { j += 1 }
+            if j < n && scalars[j] == "=" {
+                j += 1
+                while j < n && scalars[j] == " " { j += 1 }
+                if j < n && (scalars[j] == "\"" || scalars[j] == "'") {
+                    let quote = scalars[j]
+                    var close = j + 1
+                    while close < n && scalars[close] != quote { close += 1 }
+                    if close < n {
+                        let key = BrowseText.asciiLowercased(text(i..<keyEnd))
+                        if attributes[key] == nil { attributes[key] = text(j + 1..<close) }
+                        i = close + 1
+                        continue
+                    }
+                }
             }
+            i = keyEnd
         }
-        return nil
+        return (attributes, "")
     }
 }

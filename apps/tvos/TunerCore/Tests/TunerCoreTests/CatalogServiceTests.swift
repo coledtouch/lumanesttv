@@ -223,7 +223,8 @@ final class CatalogServiceTests: XCTestCase {
         let catalog = service(directory, http: http, now: Shared(start))
         await catalog.load(source, options: CatalogOptions())
         let state = await catalog.state
-        XCTAssertEqual(state.live?.channels.map(\.name), ["CNN", "BBC One", "Sky News, Live", "Channel 5", "Fallback Name"],
+        // "Channel 11": the 11th entry of the playlist, movies and episodes counted (docs/browse.md "M3U playlists").
+        XCTAssertEqual(state.live?.channels.map(\.name), ["CNN", "BBC One", "Sky News, Live", "Channel 11", "Fallback Name"],
                        "the \"XXX Adults\" group is gone")
         XCTAssertEqual(state.live?.playlistGuideURL?.absoluteString, "http://epg.example.com/guide.xml.gz")
         XCTAssertEqual(state.movies?.movies.map(\.name), ["Inside Out 2 (2024)"], "the MKV film is left out")
@@ -267,6 +268,20 @@ final class CatalogServiceTests: XCTestCase {
         _ = try await catalog.seriesInfo(for: show, source: demoSource)
         XCTAssertEqual(http.requests.map(xtreamAction).filter { $0.hasSuffix("_info") }, ["get_vod_info", "get_series_info"])
         XCTAssertEqual(queryValue(http.requests.last { xtreamAction($0) == "get_series_info" }!, "series_id"), "331")
+    }
+
+    /// A movie whose provider id is not ASCII keeps an `ExactText.key` form in `Movie.id`; its details are asked for with
+    /// the provider's own id.
+    func testDetailsOfAMovieWithANonASCIIIDAskForTheProviderID() async throws {
+        let http = xtreamPanel()
+        let catalog = service(makeTemporaryDirectory(self), http: http, now: Shared(start))
+        let movies = try XtreamParser.movies(Data(#"[{"stream_id":"e\u0301","name":"Dune"}]"#.utf8), login: demoLogin)
+        let dune = try XCTUnwrap(movies.first)
+        XCTAssertEqual(dune.id, "m:\u{A4}65CC81")
+        let info = try await catalog.movieInfo(for: dune, source: demoSource)
+        XCTAssertEqual(info.director, "Denis Villeneuve")
+        let request = try XCTUnwrap(http.requests.last { xtreamAction($0) == "get_vod_info" })
+        XCTAssertEqual(queryValue(request, "vod_id").map { Array($0.utf8) }, Array("e\u{301}".utf8))
     }
 
     func testFailuresWithoutSnapshotsReportTheReason() async {

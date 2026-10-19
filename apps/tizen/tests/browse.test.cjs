@@ -1,6 +1,6 @@
 'use strict';
-// Movies & Series browsing logic in js/data.js (docs/browse.md): the shared cases of docs/browse-cases.json,
-// title matching, the USA filter, re-uploads and copies of one title, Home rows,
+// Movies & Series browsing logic in js/data.js (docs/browse.md): the shared cases of docs/browse-cases.json (M3U
+// playlists among them, through parseM3u), title matching, the USA filter, re-uploads and copies of one title, Home rows,
 // Discover lists and genres, fallbacks without TMDB, the catalog rows client and its 12-hour cache, and the
 // Continue watching / Recently watched library. The same file runs in the Samsung and LG apps.
 const test = require('node:test');
@@ -261,6 +261,108 @@ test('docs/browse-cases.json: the provider TMDB id, read by JSON.parse and parse
             assert.equal(items[0].tmdb || null, c.expect, c.json);
         }
     }
+});
+
+test('docs/browse-cases.json: these tests run every kind of shared case', () => {
+    const kinds = [...new Set(sharedCases.map(c => c.kind))].sort();
+    assert.deepEqual(kinds, ['category', 'm3u', 'normalize', 'tmdb', 'usa'], 'a kind of case these tests do not run');
+});
+
+// docs/browse.md, M3U playlists: the live channels parseM3u makes of a playlist, in order, as {name, group}; the group
+// is the name of the channel's category, "Uncategorized" (no group) read as "".
+const m3uSource = { type: 'm3u', m3uUrl: 'http://m3u.invalid/list.m3u' };
+function m3uChannels(D, text) {
+    const parsed = D.parseM3u(text, m3uSource), groups = new Map(parsed.liveCategories.map(cat => [cat.id, cat.name]));
+    assert.equal(parsed.movies.length + parsed.series.length, 0, 'every URL of the cases is a live channel');
+    return plain(parsed.live.map(item => ({ name: item.name, group: groups.get(item.categoryId) === 'Uncategorized' ? '' : groups.get(item.categoryId) })));
+}
+
+test('docs/browse-cases.json: M3U playlists, named and grouped by parseM3u, also where \\s takes U+180E', () => {
+    // Commas in titles and in "..." and '...' values, quotes without a partner, a missing or empty title, tvg-name and
+    // Channel N, #EXTGRP:, keys in any case, control characters, Unicode spaces, a byte order mark, and playlists
+    // whose lines end in LF, CR LF or CR alone (an old Mac playlist: one long line when split at LF).
+    const cases = sharedCases.filter(c => c.kind === 'm3u');
+    assert.ok(cases.length >= 30 && cases.some(c => /\r(?!\n)/.test(c.text) && !c.text.includes('\n')), 'CR-only playlists are among the cases');
+    const context = sandbox();
+    vm.runInContext(sourceText, context);
+    for (const [label, D] of [['V8', context.window.TunerData], ['with U+180E in \\s', oldSpaces().window.TunerData]]) {
+        for (const c of cases) assert.deepEqual(m3uChannels(D, c.text), c.expect, label + ': ' + JSON.stringify(c.text));
+    }
+});
+
+test('M3U: lines end only at CR LF, CR and LF and are trimmed as provider fields, also where \\s takes U+180E', () => {
+    // docs/browse.md, M3U playlists: U+0085, U+2028 and U+2029 are Unicode spaces, not line ends; trim() keeps U+0085,
+    // and the oldest TV browsers' also takes U+180E, which a provider field keeps (so that line is a URL, left out).
+    const playlist = ['#EXTM3U', '\u0085#EXTINF:-1 group-title="Movies",Heat\u2028', '\u2029http://m3u.invalid/live/1.ts\u0085', '\u180e#EXTINF:-1,Ronin',
+        'http://m3u.invalid/live/3.ts', '\u3000#EXTINF:-1,Up\u2028Down\u00a0', '\ufeffhttp://m3u.invalid/live/4.ts'].join('\n');
+    for (const [label, D] of [['V8', data], ['with U+180E in \\s', oldSpaces().window.TunerData]]) {
+        assert.deepEqual(m3uChannels(D, playlist), [{ name: 'Heat', group: 'Movies' }, { name: 'Channel 3', group: '' }, { name: 'Up\u2028Down', group: '' }], label);
+    }
+});
+
+test('M3U: N in Channel N counts every URL line of the playlist, the ones left out or merged and the movies too', () => {
+    const playlist = ['#EXTM3U', '#EXTINF:-1,One', 'http://m3u.invalid/live/1.ts', '#EXTINF:-1,Not playable', 'rtmp://m3u.invalid/live/2',
+        '#EXTINF:-1,Repeat of One', 'http://m3u.invalid/live/1.ts', '#EXTINF:-1 group-title="Films"', 'http://m3u.invalid/movie/4.mp4',
+        '#EXTINF:-1 group-title="News"', 'http://m3u.invalid/live/5.ts', 'http://m3u.invalid/live/6.ts'].join('\r\n');
+    const parsed = data.parseM3u(playlist, m3uSource), groups = new Map(parsed.liveCategories.map(cat => [cat.id, cat.name]));
+    assert.deepEqual(plain(parsed.live.map(item => [item.name, groups.get(item.categoryId)])), [['One', 'Uncategorized'], ['Channel 5', 'News'], ['Channel 6', 'Uncategorized']],
+        'the rtmp URL is left out and the repeat of One merges into it, and both count');
+    assert.deepEqual(plain(parsed.movies.map(item => item.name)), ['Channel 4']);
+});
+
+test('M3U: an #EXTINF line of 200,000 characters is read in one pass, in well under 100 ms', () => {
+    // docs/browse.md, M3U playlists: a reader that starts a key again at every character of a long run of key
+    // characters, or a pattern over the whole line, takes time that grows with the square of the line (seconds here).
+    const lines = {
+        'a run of key characters before an unpaired quote': '#EXTINF:-1 ' + 'a'.repeat(200000) + '="x,Heat',
+        'values with commas and both quotes, and stray quotes': '#EXTINF:-1 ' + 'a="x,y" b=\'c"d\' "e '.repeat(10000) + 'k="unclosed ,Heat',
+        'spaces around "="': '#EXTINF:-1 tvg-name' + ' '.repeat(100000) + '=' + ' '.repeat(100000) + 'x,Heat',
+    };
+    const context = sandbox();
+    vm.runInContext(sourceText, context);
+    for (const [label, line] of Object.entries(lines)) {
+        context.playlist = '#EXTM3U\r' + line + '\rhttp://m3u.invalid/live/1.ts';
+        const start = process.hrtime.bigint();
+        const names = vm.runInContext('window.TunerData.parseM3u(playlist, {}).live.map(function (item) { return item.name; })', context, { timeout: 5000 });
+        const ms = Number(process.hrtime.bigint() - start) / 1e6;
+        assert.deepEqual(plain(names), ['Heat'], label);
+        assert.ok(ms < 100, label + ': ' + ms.toFixed(2) + ' ms');
+    }
+});
+
+test('M3U: names with 16,000 spaces inside, before an episode marker or not, are read in well under 50 ms, also where \\s takes U+180E', () => {
+    // "Show S01E02" names: a show-name pattern ^(.*?)\s+S.. ran \s+ again from every space of a run that no episode
+    // marker follows to the end of the run, so its time grew with the square of the run (a second for this playlist).
+    const run = ' '.repeat(16000);
+    const playlist = ['#EXTM3U', '#EXTINF:-1 group-title="Shows",The' + run + 'Show S01E02 Pilot', 'http://m3u.invalid/series/1.mp4',
+        '#EXTINF:-1 group-title="Films",A' + run + 'B', 'http://m3u.invalid/movie/2.mp4', '#EXTINF:-1 group-title="News",News' + run + '24', 'http://m3u.invalid/live/3.ts'].join('\n');
+    const context = sandbox();
+    vm.runInContext(sourceText, context);
+    for (const [label, ctx] of [['V8', context], ['with U+180E in \\s', oldSpaces()]]) {
+        ctx.playlist = playlist; ctx.run = run;
+        const start = process.hrtime.bigint();
+        const result = vm.runInContext('var r = window.TunerData.parseM3u(playlist, {}), short = function (name) { return name.split(run).join("<run>"); };' +
+            '[r.series.map(function (s) { return [short(s.name), s._episodes.map(function (e) { return [e.season, e.episode, short(e.name)]; })]; }),' +
+            ' r.movies.map(function (m) { return short(m.name); }), r.live.map(function (m) { return short(m.name); })]', ctx, { timeout: 5000 });
+        const ms = Number(process.hrtime.bigint() - start) / 1e6;
+        assert.deepEqual(plain(result), [[['The<run>Show', [[1, 2, 'The<run>Show S01E02 Pilot']]]], ['A<run>B'], ['News<run>24']], label);
+        assert.ok(ms < 50, label + ': ' + ms.toFixed(2) + ' ms');
+    }
+});
+
+test('category names with 16,000 spaces inside give their genres in well under 50 ms', () => {
+    // A category's genre words: a split at \s+-\s+ tried \s+ again from every space of a run that no dash follows, to
+    // the end of the run, so its time grew with the square of the run (a quarter of a second here).
+    const context = sandbox();
+    vm.runInContext(sourceText, context);
+    context.run = ' '.repeat(16000);
+    const start = process.hrtime.bigint();
+    const result = vm.runInContext('var b = window.TunerData.browse, movie = function (id, cat) { return { id: id, name: "Heat", categoryIds: [cat], year: "", rating: "", added: 0, tmdb: "", genre: "", url: "https://fixture.invalid/m.mp4", backups: [] }; },' +
+        ' index = b.buildIndex("movies", [movie("m:1", "c1"), movie("m:2", "c2")], [{ id: "c1", name: "Action" + run + "& Comedy" }, { id: "c2", name: "Drama" + run + "- Kids" }], null);' +
+        ' [index.titles.map(function (t) { return t.g; }), index.genres.map(function (g) { return g.name; })]', context, { timeout: 5000 });
+    const ms = Number(process.hrtime.bigint() - start) / 1e6;
+    assert.deepEqual(plain(result), [['|action|comedy|', '|drama|kids|'], ['Action', 'Comedy', 'Drama', 'Kids']]);
+    assert.ok(ms < 50, ms.toFixed(2) + ' ms');
 });
 
 test('USA only: category ids missing from the category list are left out', () => {

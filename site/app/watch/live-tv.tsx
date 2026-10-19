@@ -1,6 +1,7 @@
 'use client';
 import type {RefObject} from 'react';
 import type {Channel} from './use-catalogue';
+import {channelBadge} from './poster-choice';
 
 // The live channel lineup beside the player (Live TV): search, All / Favorites, category and the channel list. Its
 // state lives in the player (player.tsx), which also zaps through it.
@@ -41,7 +42,7 @@ export default function LiveLineup(props: LineupProps) {
     {error && <p className="watch-error" role="alert">{error}</p>}
     <div className="channel-list" ref={channelList}>
       {filtered.slice(0, limit).map(channel => <div key={channel.id} data-channel={channel.id} className={'channel-row ' + (selectedId === channel.id ? 'selected' : '')}>
-        <button className="channel-choice" data-focus-key={'channel:' + channel.id} disabled={!channel.token} aria-pressed={selectedId === channel.id} title={channel.reason || channel.name} onClick={() => props.onChoose(channel)}><span className="channel-icon" aria-hidden="true">{channel.name.slice(0, 2).toUpperCase()}</span><span><strong>{channel.name}</strong><small>{channel.token ? channel.group : 'Stream unavailable'}</small></span>{selectedId === channel.id && <i className="status-dot" aria-hidden="true"/>}</button>
+        <button className="channel-choice" data-focus-key={'channel:' + channel.id} disabled={!channel.token} aria-pressed={selectedId === channel.id} title={channel.reason || channel.name} onClick={() => props.onChoose(channel)}><span className="channel-icon" aria-hidden="true">{channelBadge(channel.name)}</span><span><strong>{channel.name}</strong><small>{channel.token ? channel.group : 'Stream unavailable'}</small></span>{selectedId === channel.id && <i className="status-dot" aria-hidden="true"/>}</button>
         <button className="favorite-button" aria-label={(favorites.includes(channel.id) ? 'Remove ' : 'Add ') + channel.name + (favorites.includes(channel.id) ? ' from favorites' : ' to favorites')} aria-pressed={favorites.includes(channel.id)} onClick={() => props.onFavorite(channel.id)}>{favorites.includes(channel.id) ? '★' : '☆'}</button>
       </div>)}
       {filtered.length === 0 && <div className="no-channels"><p>{channels.length === 0 ? 'Your channel list could not be loaded.' : favoriteOnly && !query && group === 'All channels' ? 'Star a channel to add it here.' : 'No channels match these filters.'}</p>{channels.length ? <button className="small-button" onClick={props.onReset}>Show all channels</button> : <button className="small-button" disabled={checking} onClick={props.onRefresh}>Try again</button>}</div>}

@@ -249,3 +249,40 @@ test('M3U series entries become one series per show with its episodes', () => {
   assert.notEqual(titles[0].key, titles[3].key, 'the same name in another category is another show');
   assert.equal(showKey('VOD | Series', 'Dark'), showKey('vod | series', 'DARK'), 'stable across case');
 });
+
+test('M3U episode names: separators around the episode number, and line separators that only a separator run may hold', () => {
+  const lineSeparator = String.fromCharCode(0x2028);
+  const cases: [string, ReturnType<typeof parseEpisodeName>][] = [
+    ['Show -  S01E02 -  ', {show: 'Show', season: 1, episode: 2, title: ''}],
+    ['Show | S01E02 | Pilot', {show: 'Show', season: 1, episode: 2, title: 'Pilot'}],
+    ['Show S01E02 S01E03', {show: 'Show', season: 1, episode: 2, title: 'S01E03'}],
+    ['Show S01E02x S03E04 y', {show: 'Show', season: 1, episode: 2, title: 'x S03E04 y'}],
+    ['Show S01E02' + lineSeparator + 'Pilot', {show: 'Show', season: 1, episode: 2, title: 'Pilot'}],
+    ['Show S01E02 Pilot' + lineSeparator + 'x', null],
+    ['Show' + lineSeparator + 'Name S01E02', null],
+    ['Show_S01E02', null],
+  ];
+  for (const [name, parsed] of cases) assert.deepEqual(parseEpisodeName(name), parsed, JSON.stringify(name));
+});
+
+test('performance: an M3U episode name with 16,000 spaces inside is read in well under 50 ms', () => {
+  // A pattern that tries a run of spaces from every position in it takes time in proportion to the square of the run.
+  const run = ' '.repeat(16000), lineSeparator = String.fromCharCode(0x2028);
+  const cases: [string, ReturnType<typeof parseEpisodeName>][] = [
+    ['Dark' + run + 'Matter S01E02 Pilot', {show: 'Dark' + run + 'Matter', season: 1, episode: 2, title: 'Pilot'}],
+    ['Dark' + run + 'S01E02' + run + 'Pilot', {show: 'Dark', season: 1, episode: 2, title: 'Pilot'}],
+    ['Dark S01' + run + 'E02 Pilot', {show: 'Dark', season: 1, episode: 2, title: 'Pilot'}],
+    ['Dark' + ' -'.repeat(8000) + 'Matter S01E02', {show: 'Dark' + ' -'.repeat(8000) + 'Matter', season: 1, episode: 2, title: ''}],
+    ['Dark' + run + 'Matter', null],
+    ['Dark S01' + run + 'x', null],
+    ['Dark S01E02' + run + 'Pilot' + lineSeparator + 'x', null],
+  ];
+  for (const [name, parsed] of cases) {
+    const started = performance.now();
+    const result = parseEpisodeName(name);
+    const ms = performance.now() - started;
+    const label = JSON.stringify(name.replace(/ {50,}/g, spaces => '<' + spaces.length + ' spaces>'));
+    assert.deepEqual(result, parsed, label);
+    assert.ok(ms < 50, label + ' took ' + ms.toFixed(1) + ' ms');
+  }
+});

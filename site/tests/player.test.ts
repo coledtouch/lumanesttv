@@ -7,7 +7,8 @@ test('each token purpose uses its own derived key and authenticated label',async
 
 test('duplicate provider entries do not produce duplicate channel keys and formats use the URL path',()=>{
   const channels=parseM3U('#EXTM3U\n#EXTINF:-1 tvg-name="News, Local" group-title="News",Fallback\nhttps://tv.lumanest.tv/live/1.m3u8?auth=signed#live\n#EXTINF:-1 group-title="Favorites",Duplicate\nhttps://tv.lumanest.tv/live/1.m3u8?auth=signed#live\n#EXTINF:-1,Film\nhttps://tv.lumanest.tv/movie/2.mp4#movie');
-  assert.equal(channels.length,2);assert.equal(channels[0].name,'News, Local');assert.equal(channels[0].format,'hls');assert.equal(channels[1].format,'file');
+  // The title comes before tvg-name (docs/browse.md, "M3U playlists").
+  assert.equal(channels.length,2);assert.equal(channels[0].name,'Fallback');assert.equal(channels[0].format,'hls');assert.equal(channels[1].format,'file');
 });
 
 test('HLS rewrite uses the redirected playlist base and accepts indented tags',async()=>{

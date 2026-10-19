@@ -7,6 +7,7 @@ import tv.lumanest.tuner.data.BrowseCatalog
 import tv.lumanest.tuner.data.BrowseList
 import tv.lumanest.tuner.data.CatalogRows
 import tv.lumanest.tuner.data.Category
+import tv.lumanest.tuner.data.M3u
 import tv.lumanest.tuner.data.MiniJson
 import tv.lumanest.tuner.data.Movie
 import tv.lumanest.tuner.data.Series
@@ -17,9 +18,10 @@ import java.io.File
 
 /**
  * Runs every case in docs/browse-cases.json, the file all Tuner apps share (docs/browse.md, "Test cases"), through this
- * app: the category filter, title normalization with the year read from the name, and "Movies & Series: USA only" for a
- * whole catalogue title built into a [BrowseCatalog]. The file is read from the repository, never copied. The "tmdb"
- * cases need the Android framework's JSON reader, so ParserTest runs them under Robolectric.
+ * app: the category filter, title normalization with the year read from the name, "Movies & Series: USA only" for a
+ * whole catalogue title built into a [BrowseCatalog], and the names and groups of whole M3U playlists read by [M3u.parse].
+ * The file is read from the repository, never copied. The "tmdb" cases need the Android framework's JSON reader, so
+ * ParserTest runs them under Robolectric.
  */
 class BrowseCasesTest {
     private val cases: List<Map<*, *>> by lazy {
@@ -31,7 +33,7 @@ class BrowseCasesTest {
 
     @Test fun everyCaseHasAKnownKind() {
         val kinds = cases.map { it["kind"] }.toSet()
-        assertEquals(setOf("category", "normalize", "usa", "tmdb"), kinds)
+        assertEquals(setOf("category", "normalize", "usa", "tmdb", "m3u"), kinds)
     }
 
     @Test fun categoryCases() {
@@ -70,6 +72,34 @@ class BrowseCasesTest {
             }
         }
         assertTrue(failures.joinToString("\n", "USA only cases that fail:\n"), failures.isEmpty())
+    }
+
+    /**
+     * Every "m3u" case (docs/browse.md, "M3U playlists"): the playlist is written to a file as UTF-8, a byte order mark
+     * and its CR LF, CR or LF line ends included, and read by [M3u.parse], the reader the app's playlists go through.
+     * Every URL in the cases is a live channel, so the live channels, in order, are the entries; this app's label for no
+     * group, "Uncategorized", reads as `""`.
+     */
+    @Test fun m3uCases() {
+        val cases = kind("m3u")
+        val failures = cases.mapNotNull { case ->
+            val text = case["text"] as String
+            val expected = (case["expect"] as List<*>).map { (it as Map<*, *>)["name"] as String to it["group"] as String }
+            val file = File.createTempFile("browse-case", ".m3u")
+            val actual = try {
+                file.writeText(text, Charsets.UTF_8)
+                val playlist = M3u.parse(file)
+                assertTrue("Movies read from ${shown(text)}", playlist.movies.isEmpty())
+                val groups = playlist.liveCategories.associate { it.id to it.name }
+                playlist.channels.map { channel ->
+                    channel.name to groups.getValue(channel.categoryId).let { if (it == "Uncategorized") "" else it }
+                }
+            } finally {
+                file.delete()
+            }
+            if (actual == expected) null else shown(text) + ":\n  " + shown("$actual") + "\n  expected " + shown("$expected")
+        }
+        assertTrue(failures.joinToString("\n", "M3U cases that fail (${failures.size} of ${cases.size}):\n"), failures.isEmpty())
     }
 
     /**
@@ -113,6 +143,11 @@ class BrowseCasesTest {
             else -> append(c)
         }
         append('"')
+    }
+
+    /** [text] with its control characters and every character beyond ASCII as `\uXXXX`, for a failure message. */
+    private fun shown(text: String): String = buildString {
+        for (c in text) if (c.code < 0x20 || c.code > 0x7E) append("\\u%04x".format(c.code)) else append(c)
     }
 
     companion object {

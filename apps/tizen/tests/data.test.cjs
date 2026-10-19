@@ -135,6 +135,35 @@ test('duplicates prefer healthy looking channels and retain every usable backup'
     assert.equal(result.merged.b, 'a'); assert.equal(result.items.length, 2);
 });
 
+test('live channel names with long runs of spaces are cleaned up, labelled, folded and filtered in well under 50 ms each', () => {
+    // A pattern \s*X, ([^:|]+?)\s*[:|] or ^[...]+|[...]+$ tried again at every space of a run that X does not follow ran
+    // to the end of the run each time, so its time grew with the square of the run (seconds here). displayName's later
+    // patterns also meet the runs that its earlier replacements make of tags in a row: HD, backup and (A).
+    const context = vm.createContext({ window: { Promise, XMLHttpRequest: function () {}, localStorage: memoryStorage() }, console });
+    vm.runInContext(sourceText, context);
+    vm.runInContext("var D = window.TunerData, run = new Array(16001).join(' '), cats = [{ id: 'us', name: 'USA | Entertainment' }], id = function (item) { return item.id; }," +
+        " ch = function (id, name) { return { id: id, name: name, url: 'http://example.invalid/' + id + '.m3u8', backups: [], image: '', epgId: '', categoryId: 'us', categoryIds: ['us'], number: 0, country: '' }; };", context);
+    const cases = [
+        ['16,000 spaces', "D.displayName('A' + run + 'B')", 'A B'],
+        ['16,000 spaces before a bitrate tag', "D.displayName('CNN' + run + '(HD @ 5 Mbps)')", 'CNN'],
+        ['16,000 spaces before USA', "D.displayName('ESPN' + run + 'B USA')", 'ESPN B'],
+        ['8,000 HD tags', "D.displayName('A' + new Array(8001).join(' HD') + ' B')", 'A B'],
+        ['16,000 backup tags', "D.displayName('A' + new Array(16001).join(' backup') + ' B')", 'A B'],
+        ['16,000 (A) tags before USA', "D.displayName('A ' + new Array(16001).join('(A)') + ' B USA')", 'A (A) B'],
+        ['8,000 dashes', "D.displayName('A' + new Array(8001).join(' -') + ' B') === 'A' + new Array(8001).join(' -') + ' B'", true],
+        ['USA only', "D.usPolicy([ch('a', 'A' + run + 'B'), ch('fr', 'FR' + run + '| Canal')], cats).items.map(id)", ['a']],
+        ['copies folded', "D.foldLive({ items: [ch('a', 'A' + run + 'B'), ch('b', 'A' + run + 'B HD')], categories: cats }).items.map(function (item) { return [item.id, item.name, item.backups.length]; })", [['a', 'A B', 1]]],
+        ['local news', "D.localPolicy({ items: [ch('a', 'A' + run + 'B')], categories: cats }, '01608').items.map(id)", ['a']]
+    ];
+    for (const [label, code, expected] of cases) {
+        const start = process.hrtime.bigint();
+        const result = vm.runInContext(code, context, { timeout: 5000 });
+        const ms = Number(process.hrtime.bigint() - start) / 1e6;
+        assert.deepEqual(plain(result), expected, label);
+        assert.ok(ms < 50, label + ': ' + ms.toFixed(2) + ' ms');
+    }
+});
+
 test('dated live events hide only outside the native six-hour past and twenty-hour future window', () => {
     const { data } = fixture(), now = Date.UTC(2026, 9, 13, 20); // 4 PM Eastern daylight time.
     const items = [channel('old', 'NFL 10: Teams (10.12 1:00PM ET)'), channel('future', 'HBO 38: Wrestling (10.15 8:00PM ET)'), channel('recent', 'MLB 01: Teams (10.13 10:00AM ET)'), channel('soon', 'NBA 02: Teams (10.14 12:00PM ET)'), channel('show', 'The FAN Show @ Oct 13 3:00PM'), channel('long', 'Football Event | Tuesday, 13 October 2026 20:00'), channel('replay', 'NFL Replay (10.01 1:00PM ET)'), channel('continuous', '24/7 Baseball (10.01 1:00PM ET)'), channel('cable', 'CNN'), channel('unparsed', 'ESPN College Football Oct 2026'), channel('bad', 'ESPN Event (13.45 25:60PM ET)')];
