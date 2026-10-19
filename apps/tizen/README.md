@@ -1,6 +1,6 @@
 # Tuner for Samsung Tizen TV
 
-This is the Samsung TV web application in the LumaNest TV monorepo, separate from `../android` and `../webos`. It provides Live TV with a guide and preview, Movies, Series, Search, Favorites and Settings, using a directional pad, OK and Back. The application/package IDs are `TunerTv001.Tuner` / `TunerTv001`; version is 1.4.12.
+This is the Samsung TV web application in the LumaNest TV monorepo, separate from `../android` and `../webos`. It provides Live TV with a guide and preview, Movies, Series, Search, Favorites and Settings, using a directional pad, OK and Back. The application/package IDs are `TunerTv001.Tuner` / `TunerTv001`; version is 1.4.13.
 
 The runtime uses ES5 JavaScript, local HTML/CSS and Samsung's built-in AVPlay. HTTP(S) provider requests and artwork are allowed; scripts are restricted to the packaged application and the TV's local WebAPI library. No remote scripts, inline script handlers or eval are permitted. Provider accounts are entered on the device and must never be embedded in a widget or committed to source.
 
@@ -19,7 +19,7 @@ npm test
 npm run build
 ```
 
-The build copies only `config.xml`, `index.html`, `css/app.css`, the four runtime JavaScript files, and `assets/icon.png`. Tools, tests, node_modules, provider exports, preferences and certificates are excluded. Outputs go to the repository's ignored `output/tizen` directory (`../../output/tizen` from here). Every build creates clean staging, validates ES5 syntax, application identifiers, privileges, CSP and ZIP checksums, and produces `Tuner-1.4.12-tizen-UNSIGNED.wgt`. Pass an output folder to `node tools/build.js <output-folder>` or use the PowerShell packager's `-OutputDirectory` option to choose another location.
+The build copies only `config.xml`, `index.html`, `css/app.css`, the four runtime JavaScript files, and `assets/icon.png`. Tools, tests, node_modules, provider exports, preferences and certificates are excluded. Outputs go to the repository's ignored `output/tizen` directory (`../../output/tizen` from here). Every build creates clean staging, validates ES5 syntax, application identifiers, privileges, CSP and ZIP checksums, and produces `Tuner-1.4.13-tizen-UNSIGNED.wgt`. Pass an output folder to `node tools/build.js <output-folder>` or use the PowerShell packager's `-OutputDirectory` option to choose another location.
 
 **The unsigned widget is a staging artifact. It cannot be installed on a physical Samsung TV.** It needs a Samsung author/distributor certificate profile containing the target TV's DUID.
 
@@ -71,10 +71,24 @@ After that one-time profile setup:
 
 ```powershell
 .\tools\Package-Tizen.ps1 -CertificateProfile TunerTV
-.\tools\Install-Tizen.ps1 -TvAddress <TV-IP> -Widget ..\..\output\tizen\Tuner-1.4.12-tizen.wgt -Launch
+.\tools\Install-Tizen.ps1 -TvAddress <TV-IP> -Widget ..\..\output\tizen\Tuner-1.4.13-tizen.wgt -Launch
 ```
 
 The package script builds fresh staging, invokes the official signer and checks that both widget signature files exist. Their presence does not prove validity: the Samsung CLI and the target TV perform certificate validation. The installer rejects unsigned widgets, checks the developer port, uses an explicit device serial, and only launches Tuner when `-Launch` is supplied. It does not uninstall other applications or reset TV settings.
+
+## Remote control
+
+Every screen follows one navigation model (the code is `apps/tizen/js/app.js`; LG gets the same code through `npm run sync`):
+
+- **One focus.** Exactly one thing looks focused: a button or field with a white fill or ring, or, in the guide list, the highlighted programme. The active category, the selected channel cell, the active tab and a ✓ are selection markers, not focus. Arrows move to the nearest control in that direction and never wrap: Left/Right stay on their row, and when nothing lies directly below or above, Up/Down go to the next row in the same column (to its first control; entering a category or season row lands on the chosen one). Up from the top of a page reaches the tab bar.
+- **Back goes up one level** and returns focus where you came from: a dialog closes to the control that opened it; full screen returns to the guide row of the channel being watched (under All Channels when it is outside the chosen category, e.g. tuned by number), the guide preview it was opened from, the Search result it was opened from, or the movie or series page; a page returns to its tab; another tab's bar returns to Live TV; Live TV's bar asks **Close Tuner?** with **Cancel** focused. In the guide: browsing ahead → back to now → categories → tabs. Entering a page again restores its last focused control (Search, Settings, Multi View, and the guide's category, row and time).
+- **Live TV guide.** From top to bottom: tabs, the hero row (☆ Favorite and the preview), the categories, the channel list. Down on a focused category shows its channels. ← → walk the schedule programme by programme (gaps show "No information"); OK watches, or shows details for a future programme; Hold OK saves a Favorite. **Channel +/−** pages four rows (CH+ is page up), and **number keys** jump to a channel (up to four digits; OK confirms at once, Back cancels). While channels load, focus waits on the categories and moves to the list when they arrive; if loading fails, it moves to **Refresh playlist**. After loading or a Refresh, the guide opens on the channel being watched (or last watched), whichever tab was open meanwhile.
+- **Full screen.** OK shows the controls bar with a button focused; Back hides it, then leaves. Up/Down and **Channel +/−** change channel in every state (CH+ and Down go to the next higher channel within the guide list, or all channels when opened from Search); rapid or held presses move the banner and tune 0.5 s after the last press, and OK tunes at once. In a one-channel list they only show the banner. Number keys tune a channel; the number already playing does not restart it. Movies and episodes: ← → seek 10 seconds, Rewind/Fast forward seek 30 seconds, Up in the bar focuses the seek bar, Stop leaves. A failed stream shows the bar with **↻ Retry** focused. The Guide key returns to the guide on the channel being watched.
+- **Text fields** (Search, Settings, the Multi View channel search) are read-only until OK, so arrows and Back always work on them; OK opens the TV keyboard (yellow ring). Done or Enter moves on, Back or Cancel closes the keyboard, Up/Down close it and move. Typing a character on a focused field also starts editing. A field that is not being edited passes the Guide, Channel +/−, media and color keys on. Unsaved Settings typing survives leaving the page.
+- **Dialogs.** Lists (subtitles, audio, the Multi View channel list) move with Up/Down and open on the current choice; button rows move with Left/Right. CH+/− page eight channels in the Multi View list.
+- **Hints** on screen (top-left label, guide footer, player hint) are computed from the state the next key acts on.
+
+The on-screen keyboard behaviour (a read-only field keeps the Samsung IME closed; refocusing an editable field opens it; IME Done 65376 and Cancel 65385) still needs confirmation on a physical TV.
 
 ## Playback and port limits
 
@@ -88,7 +102,7 @@ The full-screen player always uses the whole 1920x1080 stage (`setDisplayRect(0,
 
 Multiview targets **two live channels**, respecting a two-stream provider limit. On supported Tizen 7.0+ devices it uses two native AVPlayStore managers in Samsung's in-app MAIN/SUB multiview mode, with one audible channel. Ordinary single-channel playback remains available when a Samsung device cannot allocate dual players; the app reports the limitation. The browser preview uses two HTML video surfaces for UI checks, which does not verify native dual playback or the M7's decoder resources. A PC bridge is not required by this port. See the [AVPlayStore API](https://developer.samsung.com/smarttv/develop/api-references/samsung-product-api-references/avplaystore-api.html) for model-dependent native player support.
 
-Active Multi View fills the viewport and hides the app header and setup dashboard. The main Picture in Picture feed covers the full screen; side-by-side feeds use the full width and preserve their picture proportions. Compact controls and channel labels hide after five seconds. OK, arrows or Menu reveals them without changing either stream. PiP borders hide with the controls, and unavailable slots leave no empty box over the main video. Back hides visible controls first; pressing Back while they are hidden leaves Multi View and stops both channels. Choosing a different layout resizes the same native players without reconnecting.
+Active Multi View fills the viewport and hides the app header and setup dashboard. The main Picture in Picture feed covers the full screen; side-by-side feeds use the full width and preserve their picture proportions. Compact controls and channel labels hide after five seconds. OK, arrows or Menu reveals them without changing either stream. PiP borders hide with the controls, and unavailable slots leave no empty box over the main video. Back hides visible controls first; pressing Back while they are hidden stops both channels and returns to the Multi View setup screen with both channels still chosen and **Watch both** focused. Back again reaches the tab bar. Choosing a different layout resizes the same native players without reconnecting.
 
 Native playback also checks for streams that silently stop advancing while AVPlay still reports Playing. After roughly 30 to 35 seconds without progress, only the stalled stream reconnects once, then tries its available backups if another stall occurs. The healthy channel and selected soundtrack are preserved. Recovery uses the same native decoder and closes its old connection first. Paused playback, seeking, background suspension and muted streams whose native clocks still advance do not trigger this recovery.
 

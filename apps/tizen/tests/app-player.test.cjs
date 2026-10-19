@@ -154,7 +154,8 @@ function harness(options = {}) {
     };
 }
 
-function watchFirstChannel(h) { h.key(40); h.key(13); assert.match(h.document.body.className, /fullscreen/); }
+// The guide opens with row 0 highlighted, so OK alone watches the first channel.
+function watchFirstChannel(h) { h.key(13); assert.match(h.document.body.className, /fullscreen/); }
 
 test('live controls hide after 5 seconds even when the stream was still connecting', () => {
     const h = harness();
@@ -193,7 +194,7 @@ test('full-screen playback sets the whole stage before opening, including channe
     const before = (id) => { const i = h.calls.findIndex(call => call[0] === 'play' && call[1] === id); return h.calls.slice(0, i).filter(call => call[0] === 'rect').at(-1)[1]; };
     assert.deepEqual(before('live:0'), FULL);
     h.key(40);
-    assert.deepEqual(before('live:3'), FULL, 'the next visible channel opens full screen');
+    assert.deepEqual(before('live:1'), FULL, 'the next visible channel opens full screen');
     assert.deepEqual(h.calls.filter(call => call[0] === 'rect').at(-1)[1], FULL);
 });
 

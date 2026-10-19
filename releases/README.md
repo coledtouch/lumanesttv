@@ -19,6 +19,7 @@ Later releases:
 | `tuner-roku-1.0.1.zip` | 1.0.1 | Roku app ZIP for developer-mode sideloading, served from the website's public downloads directory; built with `npm run build` in `apps/roku` |
 | `tv.lumanest.tuner_1.0.4_all.ipk` | 1.0.4 | LG development IPK made with `ares-package`, served from the website's downloads: subtitles, passcode-locked adult categories, player controls that always hide |
 | `tuner-roku-1.0.2.zip` | 1.0.2 | Roku sideload ZIP served from the website's downloads: subtitles and passcode-locked adult categories |
+| `tv.lumanest.tuner_1.0.5_all.ipk` | 1.0.5 | LG development IPK served from the website's downloads: remote navigation overhaul (guide focus and placement, channel keys and number entry, Multi View, Search and Settings arrows, dialogs) |
 
 [`SHA256SUMS`](SHA256SUMS) records the installer checksums. GitHub also generates a source archive for each tagged release; it contains the website and all three app source trees.
 
