@@ -32,6 +32,7 @@ export default function Privacy() {
     <ul>
       <li>The site runs on Cloudflare, which processes requests to deliver it.</li>
       <li>Fonts are hosted on this website and delivered by Cloudflare. Loading them does not send a request to Google Fonts.</li>
+      <li>In the web player, posters hosted by TMDB are loaded by your browser directly from TMDB’s image service (image.tmdb.org): those of titles matched to TMDB’s movie and series lists, and any poster your line’s catalogue links there. TMDB then receives your IP address and browser details with those image requests, as any website you load an image from does; no referrer is sent. Every other poster is passed through this website, so other poster hosts never see your address.</li>
     </ul>
     <h2>Your choices</h2>
     <p>You can ask us what we hold about you, or ask us to correct or delete it, by emailing support. We may need to keep payment records where the law requires it.</p>

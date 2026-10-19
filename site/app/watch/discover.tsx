@@ -16,7 +16,7 @@ const PAGE = 60;
  * loaded is kept in the screen's history entry (initialLimit, onLimit), so Back from a title deep in the grid finds
  * that title again.
  */
-export default function Discover({catalog, library, bases, opts, withTmdb, onOpen, onNavigate, error, onRetry, type, list, genre, initialLimit, onLimit}: BrowseBase & {
+export default function Discover({catalog, library, posters, opts, withTmdb, onOpen, onNavigate, error, onRetry, type, list, genre, initialLimit, onLimit}: BrowseBase & {
   type: MediaType; list: ListKey; genre: string; initialLimit?: number; onLimit: (limit: number) => void;
 }) {
   const section = catalog[type];
@@ -33,7 +33,7 @@ export default function Discover({catalog, library, bases, opts, withTmdb, onOpe
   const focusFrom = useRef(-1);
   const result = useMemo(() => pickTitles(section.items, section.lists[listKey], {...opts, genre: genreKey, seen: new Set()}, 0, limit), [section, listKey, opts, genreKey, limit]);
   const more = result.cursor < (section.lists[listKey]?.length || 0);
-  const items = useMemo(() => cardsFor(result.picked.map(idx => ({type, idx})), catalog, library, bases), [result, type, catalog, library, bases]);
+  const items = useMemo(() => cardsFor(result.picked.map(idx => ({type, idx})), catalog, library, posters), [result, type, catalog, library, posters]);
   const report = useRef(onLimit);
   useEffect(() => {report.current = onLimit;});
   useEffect(() => {report.current(limit);}, [limit]);

@@ -1,6 +1,8 @@
 // Popularity rows for Movies & Series browsing in every Tuner app (docs/browse.md), served by
-// GET /api/catalog/rows?v=1. The apps never call TMDB: this Worker builds the lists from TMDB, caches them
-// per Cloudflare location for 12 hours and keeps a stale copy for when TMDB fails.
+// GET /api/catalog/rows?v=1. The apps never call TMDB's API: this Worker builds the lists from TMDB, caches them
+// per Cloudflare location for 12 hours and keeps a stale copy for when TMDB fails. The only TMDB requests a viewer's
+// device makes are the web player's poster images, loaded from TMDB's image CDN (image.tmdb.org) by the lists' poster
+// paths (disclosed on /privacy).
 //
 // TMDB's free API key is licensed for non-commercial use only, and LumaNest TV is a business. TMDB_API_KEY
 // stays unset until the owner has TMDB's commercial terms; without it every answer is
@@ -72,7 +74,13 @@ export const US_PROVIDERS: Readonly<Record<Service, readonly number[]>> = {
 };
 
 export type Media = 'movie' | 'tv';
-export type Item = {id: number; title: string; original_title: string; year: string; origin: string[]; lang: string; genres: number[]; popularity: number};
+/**
+ * One title of a list. poster is TMDB's poster_path ("/abc.jpg"), only when it is a plain file name (TMDB_POSTER_PATH);
+ * clients build https://image.tmdb.org/t/p/<size><poster> from it. Added within v1: clients ignore keys they don't know.
+ */
+export type Item = {id: number; title: string; original_title: string; year: string; origin: string[]; lang: string; genres: number[]; popularity: number; poster?: string};
+/** A TMDB poster_path the endpoint passes on: "/" and a plain image file name, nothing that could leave TMDB's image path. */
+export const TMDB_POSTER_PATH = /^\/[A-Za-z0-9_-]{1,100}\.(?:jpg|jpeg|png|webp)$/;
 export type Genre = {id: number; name: string};
 export type MediaLists = {popular: Item[]; featured: Item[]; top_rated: Item[]; services: Record<Service, Item[]>};
 export type CatalogRows = {v: 1; source: 'tmdb'; generated: string; movie: MediaLists; tv: MediaLists; genres: {movie: Genre[]; tv: Genre[]}};
@@ -138,7 +146,7 @@ function countries(...values: unknown[]) {
 
 /**
  * Maps one TMDB list result. Movie list results carry no countries, so a movie's origin starts as [] and is
- * filled in from the movie's details (fillMovieOrigins).
+ * filled in from the movie's details (fillMovieOrigins). poster_path becomes poster when it is a plain file name.
  */
 export function toItem(media: Media, raw: unknown): Item | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -148,7 +156,8 @@ export function toItem(media: Media, raw: unknown): Item | null {
   if (!title) return null;
   const date = text(media === 'movie' ? r.release_date : r.first_air_date);
   const popularity = typeof r.popularity === 'number' && Number.isFinite(r.popularity) ? Math.round(r.popularity * 10) / 10 : 0;
-  return {
+  const poster = text(r.poster_path);
+  const item: Item = {
     id: r.id,
     title,
     original_title: text(media === 'movie' ? r.original_title : r.original_name) || title,
@@ -158,6 +167,9 @@ export function toItem(media: Media, raw: unknown): Item | null {
     genres: Array.isArray(r.genre_ids) ? r.genre_ids.filter((id): id is number => typeof id === 'number' && Number.isSafeInteger(id) && id > 0) : [],
     popularity,
   };
+  // Only the poster (no backdrop): about 45 bytes per title.
+  if (TMDB_POSTER_PATH.test(poster)) item.poster = poster;
+  return item;
 }
 
 /** A movie's countries of origin from its details (/movie/{id}): origin_country, else production_countries. */

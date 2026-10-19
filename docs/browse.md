@@ -45,7 +45,7 @@ Continue watching, Favorite movies, Favorite series, and Recently watched. Favor
 
 ## Popularity data: the catalog rows endpoint
 
-The apps never call TMDB directly. The website serves the lists, so the TMDB key stays on the server and lists are cached once for everyone.
+The apps never call TMDB's API. The website serves the lists, so the TMDB key stays on the server and lists are cached once for everyone. The only requests to TMDB a viewer's device makes are the web player's poster images, loaded from TMDB's image CDN (`image.tmdb.org`) by the lists' `poster` paths.
 
 `GET https://lumanest.tv/api/catalog/rows?v=1` (public, no login; `Cache-Control: public, max-age=3600`)
 
@@ -65,7 +65,9 @@ The apps never call TMDB directly. The website serves the lists, so the TMDB key
 }
 ```
 
-`Item`: `{"id": 12345, "title": "…", "original_title": "…", "year": "2025", "origin": ["US"], "lang": "en", "genres": [28, 12], "popularity": 123.4}`
+`Item`: `{"id": 12345, "title": "…", "original_title": "…", "year": "2025", "origin": ["US"], "lang": "en", "genres": [28, 12], "popularity": 123.4, "poster": "/abc123.jpg"}`
+
+`poster` is TMDB's `poster_path`, sent only when it is `/` followed by a plain file name of 1 to 100 letters, digits, `_` or `-` with a `.jpg`, `.jpeg`, `.png` or `.webp` extension; otherwise the key is left out. It was added within `v=1`: apps ignore keys they don't know and treat a missing `poster` as none. The image is `https://image.tmdb.org/t/p/<size><poster>` (the web player uses `w342`). No backdrops are sent.
 
 `origin` is TMDB's countries of origin. TMDB's lists give them for series; for movies the server looks them up in each movie's details, a few hundred titles per refresh, so a movie's `origin` can be `[]` (unknown) until the next refresh.
 
@@ -93,3 +95,5 @@ When TMDB data is used, Settings → About shows: "This product uses the TMDB AP
 ## Web player
 
 The web player at `lumanest.tv/watch` follows this design with the same rules as the apps (`site/lib/browse.ts` is a port of the Roku app's `BrowseLogic.brs`, with the same test cases). It works with a mouse, touch and a TV remote's arrow keys. Titles come from the line's Xtream catalogue when `TV_APP_XTREAM_SERVER` is set, otherwise from the movie and series entries of the line's M3U playlist (series entries named "Show S01E02" are grouped into one series per show and category). The Library and the "Movies & Series: USA only / All" switch are kept in the browser (the Library separately for each line). Movies in a format browsers can't play (MKV, AVI and similar) point to the Tuner app.
+
+Posters, in order: a title matched to a TMDB title of the rows (see Matching) whose item has a `poster` shows TMDB's poster from `image.tmdb.org` (`w342`, loaded directly by the browser); otherwise the line's own poster; otherwise a card with the title's initials. If a picture fails to load, the next one is tried. The browser never loads a poster from a provider host or any other third-party host itself: posters on the provider's hosts and on the line's catalogue image host come through `/api/player/image`, and a catalogue image host poster's link carries a tag so only the posters the catalogue listed can be asked for. The catalogue image host is the one `https` name serving at least 20% and at least 50 of the line's posters; see deployment.md.

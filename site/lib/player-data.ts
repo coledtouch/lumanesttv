@@ -65,7 +65,8 @@ export function parseM3U(text: string, portal?: string): PlaylistChannel[] {
   return result;
 }
 
-function safeHTTPHost(host: string) {
+/** A public host name or IPv4 address: no IP literal in a private or reserved range, no IPv6 literal, no local names. */
+export function safeHTTPHost(host: string) {
   if (host.includes(':') || host === 'localhost' || /(?:^|\.)(?:localhost|local|internal|lan|home|invalid|test|example|onion)$/.test(host)) return false;
   if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
     const [a, b, c] = host.split('.').map(Number);

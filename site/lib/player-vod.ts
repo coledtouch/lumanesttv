@@ -7,16 +7,17 @@
 //   GET  /api/player/vod/series?id=        one series' seasons and episodes
 //   GET  /api/player/vod/movie?id=         one movie's details
 //   POST /api/player/vod/play              a stream token for a movie or episode, like a channel's
-//   GET  /api/player/image?t=&f=           a poster on a provider host, edge-cached
+//   GET  /api/player/image?t=&f=           a poster on a provider host or the line's catalogue image host, edge-cached
 import * as workers from 'cloudflare:workers';
 import {settings, ServiceError} from './mybunny';
-import {assertNotRevoked, isDirectProviderAddress, isProviderAddress, limitedText, playerSecret, playlist, providerURL, safeFetch, session} from './player';
+import {assertNotRevoked, isDirectProviderAddress, isProviderAddress, isProviderHost, limitedText, ownHostNames, playerSecret, playlist, providerURL, safeFetch, session} from './player';
 import {digest, mac, open, seal} from './player-crypto';
 import type {PlayerMedia, PlayerSession} from './player-data';
 import {compactCategory, compactXtream, type CompactCategory} from './browse';
 import {
-  VOD_LIMITS, VodError, XTREAM_ID, classifyPoster, compactMovieInfo, compactSeriesInfo, createPosterBook, entryKind, imageAddress, readJsonArray, sniffImage,
-  validImageToken, vodLoginRejected, vodPlayURL, vodTimeout, vodTooLarge, vodUnavailable, xtreamServer, xtreamURL, VOD_EXTENSIONS, type XtreamAction,
+  VOD_LIMITS, VodError, XTREAM_ID, catalogueHostAddress, catalogueImageAddress, classifyPoster, compactMovieInfo, compactSeriesInfo, createCataloguePosters, createPosterBook,
+  createPosterCounter, entryKind, imageAddress, posterTag, readJsonArray, sniffImage, validImageToken, vodLoginRejected, vodPlayURL, vodTimeout, vodTooLarge, vodUnavailable,
+  xtreamServer, xtreamURL, VOD_EXTENSIONS, type XtreamAction,
 } from './player-vod-data';
 import type {CacheLike} from './catalog';
 
@@ -44,6 +45,16 @@ export const VOD_TIMING = {
   /** Series and movie details are cached this long. */
   infoMs: 6 * 60 * 60 * 1000,
   imageMs: 10000,
+  /** An isolate re-reads a line's recorded catalogue image host after this long (imageHostNoneMs when none was recorded). */
+  imageHostMs: 5 * 60 * 1000,
+  imageHostNoneMs: 30 * 1000,
+  /**
+   * A poster on a catalogue image host other than the one this isolate last read for the line has the record read
+   * again, at most this often per line (so a new host works within seconds everywhere, and an old one stops).
+   */
+  imageHostRecheckMs: 10 * 1000,
+  /** After this many failed answers in a row from a line's catalogue image host, it is not asked for 10 minutes. */
+  imageHostFailures: 20,
   now: () => Date.now(),
 };
 const IMAGE_MAX_BYTES = 2 * 1024 * 1024;
@@ -52,6 +63,22 @@ const IMAGE_CACHE_SECONDS = 7 * 24 * 60 * 60;
 const IMAGE_MISSING_SECONDS = 60 * 60;
 /** A poster the provider failed to serve (an error, no answer) is not asked for again for 10 minutes. */
 const IMAGE_FAILED_SECONDS = 10 * 60;
+/** A line's catalogue image host is recorded for as long as a poster token made with it can live (8 days). */
+const IMAGE_HOST_SECONDS = 8 * 24 * 60 * 60;
+/** Sent to a catalogue image host (many sit behind bot rules that challenge requests with no User-Agent). */
+const IMAGE_HOST_AGENT = 'Mozilla/5.0 (compatible; LumaNestPosters/1.0; +https://lumanest.tv)';
+
+/**
+ * Hosts a catalogue image host can never be, for a request to this origin: a provider or relay host by any scheme
+ * (lib/player.ts isProviderHost), or one of this site's own hosts or anything under them (ownHostNames).
+ */
+function refusedImageHost(origin: string) {
+  const own = ownHostNames(origin);
+  return (url: URL) => {
+    const name = url.hostname.toLowerCase();
+    return own.some(root => name === root || name.endsWith('.' + root)) || isProviderHost(url);
+  };
+}
 
 function toService(error: unknown): unknown {
   if (error instanceof VodError) return new ServiceError(error.status, error.code, error.message);
@@ -140,16 +167,21 @@ type Section = {categories: CompactCategory[]; items: string[]; bytes: number; t
 const sectionJson = (section: Section) => '{"categories":' + JSON.stringify(section.categories) + ',"items":[' + section.items.join(',') + '],"truncated":' + section.truncated + '}';
 
 type Bytes = Uint8Array<ArrayBuffer>;
+/** The key of a line's catalogue (and of its recorded catalogue image host) in the cache: a keyed hash of the line. */
+const catalogueKey = (server: string, credentials: PlayerSession, secret: string) => mac(server + '\n' + credentials.username + '\n' + credentials.password, secret, 'player-cache');
 /**
  * Fetches and compacts one line's four lists in turn (categories and titles, movies then series) and returns the
- * catalogue as UTF-8 bytes, encoded once for both the cache and the viewer. Every request ends by deadlineMs.
+ * catalogue as UTF-8 bytes, encoded once for both the cache and the viewer, with the line's catalogue image host (or
+ * null). origin: the site origin the request came to (its hosts are never an image host). Every request ends by
+ * deadlineMs.
  */
-async function buildCatalogue(server: string, credentials: PlayerSession, secret: string, deadlineMs: number): Promise<Bytes> {
+async function buildCatalogue(server: string, credentials: PlayerSession, secret: string, deadlineMs: number, origin: string): Promise<{body: Bytes; imageHost: string | null}> {
   const started = Date.now();
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(), deadlineMs);
   try {
-    const posters = createPosterBook(isDirectProviderAddress, [credentials.username, credentials.password]);
+    const line = await mac(credentials.username, secret, 'player-line');
+    const posters = createCataloguePosters(isDirectProviderAddress, refusedImageHost(origin), [credentials.username, credentials.password], {tag: address => posterTag(secret, line, address)});
     let used = 0;
     const read = async (kind: 'movie' | 'series', budget: number): Promise<Section> => {
       const categories: CompactCategory[] = [];
@@ -163,13 +195,21 @@ async function buildCatalogue(server: string, credentials: PlayerSession, secret
       const result = await readJsonArray(titles.body, raw => {
         const item = compactXtream(kind, raw);
         if (!item) return;
+        // A poster that may be on the catalogue image host waits for the end of the lists. It takes no room meanwhile:
+        // titles come first, and finish adds posters only in the room the titles leave.
+        let waiting: Exclude<ReturnType<typeof posters.place>, string | undefined> | null = null;
         if (item.poster) {
-          const poster = posters.add(item.poster);
-          if (poster) item.poster = poster; else delete item.poster;
+          const poster = posters.place(item.poster);
+          if (typeof poster === 'string') item.poster = poster;
+          else {
+            waiting = poster || null;
+            delete item.poster;
+          }
         }
         const text = JSON.stringify(item);
         // Past the byte budget the list is cut, like a list past VOD_LIMITS.items.
         if (section.bytes + text.length + 1 > budget) return false;
+        if (waiting) posters.wait(section.items, section.items.length, waiting, kind === 'movie' ? 0 : 1);
         section.items.push(text);
         section.bytes += text.length + 1;
       }, {maxBytes: VOD_LIMITS.listBytes, maxItems: VOD_LIMITS.items, signal: deadline.signal});
@@ -179,12 +219,16 @@ async function buildCatalogue(server: string, credentials: PlayerSession, secret
     };
     const movies = await read('movie', Math.min(VOD_LIMITS.moviesBytes, VOD_LIMITS.catalogueBytes));
     const series = await read('series', VOD_LIMITS.catalogueBytes - used);
-    const posterBases = await posters.seal(await mac(credentials.username, secret, 'player-line'), secret, VOD_TIMING.now());
+    // The catalogue image host's posters fit in what is left of catalogueBytes once every title is in. moviesBytes only
+    // keeps room for the series titles, which are in by now, so movie posters may use it too.
+    const host = posters.finish({room: VOD_LIMITS.catalogueBytes - movies.bytes - series.bytes});
+    const posterBases = await posters.book.seal(line, secret, VOD_TIMING.now());
     const generated = new Date(VOD_TIMING.now()).toISOString().replace(/\.\d{3}Z$/, 'Z');
     const body = new TextEncoder().encode('{"v":1,"source":"xtream","generated":' + JSON.stringify(generated) + ',"posterBases":' + JSON.stringify(posterBases) +
       ',"movies":' + sectionJson(movies) + ',"series":' + sectionJson(series) + '}') as Bytes;
-    console.log('lumanest_vod_build', JSON.stringify({ms: Date.now() - started, movies: movies.items.length, series: series.items.length, bytes: body.byteLength, truncated: movies.truncated || series.truncated}));
-    return body;
+    // Counts only: never the host.
+    console.log('lumanest_vod_build', JSON.stringify({ms: Date.now() - started, movies: movies.items.length, series: series.items.length, bytes: body.byteLength, truncated: movies.truncated || series.truncated, imageHost: Boolean(host.host), imageHostPosters: host.placed, imageHostSkipped: host.skipped}));
+    return {body, imageHost: host.host};
   } catch (error) {
     console.error('lumanest_vod_failed', JSON.stringify({code: error instanceof VodError ? error.code : 'vod_unavailable'}));
     throw error instanceof VodError ? error : vodUnavailable();
@@ -194,13 +238,39 @@ async function buildCatalogue(server: string, credentials: PlayerSession, secret
 type Snapshot = {body: ReadableStream<Uint8Array> | Bytes; freshUntil: number};
 type HoldName = 'building' | 'refresh' | 'failed';
 type Store = {
+  /** The site origin the request came to. */
+  origin: string;
   read(): Promise<Snapshot | null>;
-  write(body: Bytes, freshUntil: number): Promise<void>;
+  /** imageHost: the catalogue image host this catalogue's posters use, kept with it (X-Vod-Image-Host). */
+  write(body: Bytes, freshUntil: number, imageHost?: string | null): Promise<void>;
   hold(name: HoldName, seconds: number, value?: string): Promise<void>;
   /** The hold's value ('1' unless one was given), or null when it is not held. */
   held(name: HoldName): Promise<string | null>;
   release(name: HoldName): Promise<void>;
+  /**
+   * The line's catalogue image host (an origin) as its catalogue in this location has it, or null. wanted: the host a
+   * poster asks for; when this isolate's copy names another one, the location is asked again (at most every
+   * imageHostRecheckMs).
+   */
+  imageHost(wanted?: string): Promise<string | null>;
+  recordImageHost(origin: string | null): Promise<void>;
 };
+
+/** This isolate's copy of each line's catalogue image host ('' for none): when it was read, and until when it holds. */
+const imageHosts = new Map<string, {origin: string; read: number; until: number}>();
+function rememberImageHost(key: string, origin: string, ms: number) {
+  imageHosts.delete(key);
+  if (imageHosts.size >= 5000) imageHosts.delete(imageHosts.keys().next().value!);
+  imageHosts.set(key, {origin, read: Date.now(), until: Date.now() + ms});
+}
+/** This isolate's copy, unless it has run out, or names a host other than wanted and may be checked again. */
+function knownImageHost(key: string, wanted?: string) {
+  const known = imageHosts.get(key);
+  if (!known || known.until <= Date.now()) return null;
+  if (wanted !== undefined && known.origin !== wanted && Date.now() - known.read >= VOD_TIMING.imageHostRecheckMs) return null;
+  return known;
+}
+const IMAGE_HOST_HEADER = 'X-Vod-Image-Host';
 
 // Without the Workers Cache API (local preview, workers.dev, some tests) a line's catalogue is kept in this isolate,
 // two at most.
@@ -209,6 +279,7 @@ const memoHolds = new Map<string, {until: number; value: string}>();
 function store(origin: string, key: string): Store {
   const cache = sharedCache(origin);
   if (!cache) return {
+    origin,
     async read() {
       const entry = memo.get(key);
       return entry && entry.expires > VOD_TIMING.now() ? {body: entry.body, freshUntil: entry.freshUntil} : null;
@@ -227,17 +298,26 @@ function store(origin: string, key: string): Store {
       return hold && hold.until > Date.now() ? hold.value : null;
     },
     async release(name) {memoHolds.delete(key + name);},
+    async imageHost() {
+      const known = imageHosts.get(key);
+      return known && known.until > Date.now() ? known.origin || null : null;
+    },
+    async recordImageHost(host) {rememberImageHost(key, host || '', IMAGE_HOST_SECONDS * 1000);},
   };
   const dataKey = origin + '/__lumanest-cache/vod-v1/' + key;
   return {
+    origin,
     async read() {
       const response = await cache.match(dataKey);
       if (!response) return null;
       const freshUntil = Number(response.headers.get('X-Vod-Fresh-Until'));
       return {body: response.body || new Uint8Array(0) as Bytes, freshUntil: Number.isFinite(freshUntil) ? freshUntil : 0};
     },
-    async write(body, freshUntil) {
-      await cache.put(dataKey, new Response(body, {headers: {'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=' + Math.ceil(VOD_TIMING.staleMs / 1000), 'X-Vod-Fresh-Until': String(freshUntil)}}));
+    async write(body, freshUntil, imageHost = null) {
+      await cache.put(dataKey, new Response(body, {headers: {
+        'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=' + Math.ceil(VOD_TIMING.staleMs / 1000), 'X-Vod-Fresh-Until': String(freshUntil),
+        ...(imageHost ? {[IMAGE_HOST_HEADER]: imageHost} : {}),
+      }}));
     },
     async hold(name, seconds, value = '1') {
       await cache.put(dataKey + '-' + name, new Response(value, {headers: {'Content-Type': 'text/plain', 'Cache-Control': 'public, max-age=' + Math.max(1, Math.ceil(seconds))}}));
@@ -248,6 +328,28 @@ function store(origin: string, key: string): Store {
       return (await response.text().catch(() => '1')).slice(0, 40) || '1';
     },
     async release(name) {await cache.delete(dataKey + '-' + name);},
+    // The catalogue copy itself says which host its posters use (written with it, so the two can't disagree). The
+    // small record is kept 8 days, as long as the poster links: it answers once the copy has expired (12 hours).
+    async imageHost(wanted) {
+      const known = knownImageHost(key, wanted);
+      if (known) return known.origin || null;
+      let host = '';
+      const copy = await cache.match(dataKey);
+      if (copy) {
+        host = (copy.headers.get(IMAGE_HOST_HEADER) || '').slice(0, 300);
+        await copy.body?.cancel().catch(() => {});
+      } else {
+        const record = await cache.match(dataKey + '-imagehost');
+        host = record ? (await record.text()).slice(0, 300) : '';
+      }
+      rememberImageHost(key, host, host ? VOD_TIMING.imageHostMs : VOD_TIMING.imageHostNoneMs);
+      return host || null;
+    },
+    async recordImageHost(host) {
+      rememberImageHost(key, host || '', VOD_TIMING.imageHostMs);
+      if (host) await cache.put(dataKey + '-imagehost', new Response(host, {headers: {'Content-Type': 'text/plain', 'Cache-Control': 'public, max-age=' + IMAGE_HOST_SECONDS}}));
+      else await cache.delete(dataKey + '-imagehost');
+    },
   };
 }
 
@@ -291,9 +393,11 @@ function startBuild(key: string, server: string, credentials: PlayerSession, cac
   const job = (async () => {
     await cacheStore.hold('building', Math.ceil(deadlineMs / 1000) + 5).catch(() => {});
     try {
-      const body = await buildCatalogue(server, credentials, playerSecret(), deadlineMs);
+      const {body, imageHost} = await buildCatalogue(server, credentials, playerSecret(), deadlineMs, cacheStore.origin);
       failures.delete(key);
-      await cacheStore.write(body, VOD_TIMING.now() + VOD_TIMING.freshMs).catch(() => {});
+      // Recorded before the catalogue is served or stored, so its posters work as soon as the viewer has it.
+      await cacheStore.recordImageHost(imageHost).catch(() => {});
+      await cacheStore.write(body, VOD_TIMING.now() + VOD_TIMING.freshMs, imageHost).catch(() => {});
       await cacheStore.release('failed').catch(() => {});
       return body;
     } catch (error) {
@@ -385,7 +489,7 @@ export async function vodCatalogue(req: Request): Promise<Response> {
     const config = configuredXtream();
     if ('reason' in config) return new Response(NONE(config.reason), {headers: catalogueHeaders()});
     const secret = playerSecret();
-    const key = await mac(config.server + '\n' + credentials.username + '\n' + credentials.password, secret, 'player-cache');
+    const key = await catalogueKey(config.server, credentials, secret);
     const cacheStore = store(url.origin, key);
     if (url.searchParams.get('refresh') === '1') {
       const last = refreshedAt.get(key) || 0;
@@ -451,9 +555,12 @@ async function details(req: Request, kind: 'series' | 'movie') {
     if (kind === 'series') {
       const info = compactSeriesInfo(raw, id);
       if (!info.seasons.length) throw new ServiceError(404, 'title_not_found', 'This series has no episodes on your line.');
-      const posters = createPosterBook(isDirectProviderAddress, [credentials.username, credentials.password]);
-      const poster = info.poster ? posters.add(info.poster) : undefined;
-      const posterBases = posters.size ? await posters.seal(await mac(credentials.username, secret, 'player-line'), secret, VOD_TIMING.now()) : [];
+      const line = await mac(credentials.username, secret, 'player-line');
+      const posters = createPosterBook(isDirectProviderAddress, [credentials.username, credentials.password], VOD_LIMITS.posterBases, address => posterTag(secret, line, address));
+      // A cover on the line's catalogue image host is proxied like the catalogue's posters.
+      const imageHost = info.poster ? await store(url.origin, await catalogueKey(config.server, credentials, secret)).imageHost().catch(() => null) : null;
+      const poster = info.poster ? posters.add(info.poster, imageHost) : undefined;
+      const posterBases = posters.size ? await posters.seal(line, secret, VOD_TIMING.now()) : [];
       body = JSON.stringify({...info, poster: poster || '', posterBases});
     } else body = JSON.stringify(compactMovieInfo(raw, id));
     if (cache) waitUntil(cache.put(cacheKey, new Response(body, {headers: {'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=' + Math.ceil(VOD_TIMING.infoMs / 1000)}})).catch(() => {}));
@@ -526,21 +633,65 @@ async function readBytes(response: Response, max: number): Promise<Uint8Array<Ar
 
 /** Posters this isolate recently failed to get, by cache key, until when (also kept in the edge cache when there is one). */
 const imageMisses = new Map<string, number>();
+function rememberMiss(key: string, until: number) {
+  imageMisses.delete(key);
+  // The oldest go first, so a burst of new misses can't wipe out the ones being remembered.
+  if (imageMisses.size >= 5000) imageMisses.delete(imageMisses.keys().next().value!);
+  imageMisses.set(key, until);
+}
 
 /**
- * A poster from a provider host, for a signed-in viewer of the line it was listed for. The token names the poster's
- * directory (with a plain image file name) or whole address, sealed for that line. The host is checked again against
- * the provider allowlists and must be one this Worker reaches directly (the stream relay passes only media); only
- * JPEG, PNG, GIF, WebP and AVIF up to 2 MB come back. Each poster is kept in the edge cache for a week; a missing one
- * for an hour and one the provider failed to serve for 10 minutes, so a poster is asked for at most that often.
- * A signed-out session gets nothing (the sign-out check is cached for 20 seconds per isolate).
+ * Lines whose catalogue image host keeps failing (an error, a failed status, not an image), by line and host: failed
+ * answers in a row, and until when that host is not asked at all for that line. VOD_TIMING.imageHostFailures in a row
+ * rest it for IMAGE_FAILED_SECONDS (per isolate), so a host that blocks the Worker costs a few requests, not one per
+ * poster on every page.
+ */
+const hostTrouble = new Map<string, {failures: number; until: number}>();
+function hostAnswered(key: string, ok: boolean) {
+  const known = hostTrouble.get(key);
+  hostTrouble.delete(key);
+  if (ok) return;
+  if (hostTrouble.size >= 5000) hostTrouble.delete(hostTrouble.keys().next().value!);
+  const failures = (known?.failures || 0) + 1;
+  hostTrouble.set(key, failures >= VOD_TIMING.imageHostFailures ? {failures: 0, until: Date.now() + IMAGE_FAILED_SECONDS * 1000} : {failures, until: known?.until || 0});
+}
+const hostResting = (key: string) => (hostTrouble.get(key)?.until || 0) > Date.now();
+
+/**
+ * Fetches a poster on the line's catalogue image host. Redirects are followed by hand, at most 4, and only to the same
+ * host with the same checks (catalogueHostAddress); no cookie, referrer or login is ever sent.
+ */
+async function imageHostFetch(source: URL, host: string, refused: (url: URL) => boolean, secrets: string[], init: RequestInit, hops = 0): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set('User-Agent', IMAGE_HOST_AGENT);
+  const response = await fetch(source.href, {...init, headers, redirect: 'manual'});
+  if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+  await response.body?.cancel();
+  const target = response.headers.get('Location');
+  let next: URL | null = null;
+  try {next = target ? catalogueHostAddress(new URL(target, source).href, host, refused, secrets) : null;} catch {next = null;}
+  if (!next || hops >= 4) throw new ServiceError(502, 'image_redirect', 'This poster is not available.');
+  return imageHostFetch(next, host, refused, secrets, init, hops + 1);
+}
+
+/**
+ * A poster from a provider host or the line's catalogue image host, for a signed-in viewer of the line it was listed
+ * for. The token names the poster's directory (with a plain image file name) or whole address, sealed for that line.
+ * A provider host is checked again against the provider allowlists and must be one this Worker reaches directly (the
+ * stream relay passes only media). A catalogue image host poster (h) must be an address the catalogue listed for this
+ * line (its tag: catalogueImageAddress), on the host recorded for this line's catalogue right now, still pass the
+ * catalogue host rules (https, default port, a public name, not a provider, relay or own host) and carry neither the
+ * username nor the password. Only JPEG, PNG, GIF, WebP and AVIF up to 2 MB come back. Each poster is kept in the edge
+ * cache for a week; a missing one for an hour and one the host failed to serve for 10 minutes, so a poster is asked for
+ * at most that often, and a catalogue image host that keeps failing for a line rests (hostTrouble). A signed-out
+ * session gets nothing (the sign-out check is cached for 20 seconds per isolate).
  */
 export async function posterImage(req: Request): Promise<Response> {
   try {
     const url = new URL(req.url);
     const {credentials} = await session(req);
     const raw = url.searchParams.get('t') || '', file = url.searchParams.get('f') || '';
-    if (!raw || raw.length > 2048 || file.length > 160) throw imageForbidden();
+    if (!raw || raw.length > 2048 || file.length > 320) throw imageForbidden();
     imageLimit(credentials.sid);
     await assertNotRevoked(credentials);
     const secret = playerSecret();
@@ -548,11 +699,31 @@ export async function posterImage(req: Request): Promise<Response> {
     try {item = await open<unknown>(raw, secret, 'player-image');} catch {throw imageForbidden();}
     const line = await mac(credentials.username, secret, 'player-line');
     if (!validImageToken(item, line, VOD_TIMING.now())) throw imageForbidden();
-    const address = imageAddress(item, file);
-    if (!address) throw imageForbidden();
     let source: URL;
-    try {source = providerURL(address);} catch {throw imageForbidden();}
-    if (!isDirectProviderAddress(source)) throw imageForbidden();
+    let get: (init: RequestInit) => Promise<Response>;
+    // For a catalogue image host poster: this line and host, for hostTrouble.
+    let trouble = '';
+    if (item.h === 1) {
+      const address = catalogueImageAddress(item, file, value => posterTag(secret, line, value));
+      const config = configuredXtream();
+      if (!address || 'reason' in config) throw imageForbidden();
+      const refused = refusedImageHost(url.origin), secrets = [credentials.username, credentials.password];
+      let wanted: string;
+      try {wanted = new URL(address).origin;} catch {throw imageForbidden();}
+      const host = await store(url.origin, await catalogueKey(config.server, credentials, secret)).imageHost(wanted).catch(() => null);
+      const checked = host ? catalogueHostAddress(address, host, refused, secrets) : null;
+      if (!host || !checked) throw imageForbidden();
+      source = checked;
+      trouble = line + '\n' + host;
+      get = init => imageHostFetch(checked, host, refused, secrets, init);
+    } else {
+      const address = imageAddress(item, file);
+      if (!address) throw imageForbidden();
+      try {source = providerURL(address);} catch {throw imageForbidden();}
+      if (!isDirectProviderAddress(source)) throw imageForbidden();
+      const checked = source;
+      get = init => safeFetch(checked.href, init);
+    }
     const cache = sharedCache(url.origin);
     const cacheKey = url.origin + '/__lumanest-cache/img-v1/' + await digest(source.href);
     if ((imageMisses.get(cacheKey) || 0) > Date.now()) throw imageMissing();
@@ -561,18 +732,18 @@ export async function posterImage(req: Request): Promise<Response> {
       if (hit.headers.get('X-Image-Missing')) {await hit.body?.cancel(); throw imageMissing();}
       return new Response(hit.body, {headers: imageHeaders(hit.headers.get('Content-Type') || 'application/octet-stream')});
     }
+    // A catalogue image host that keeps failing for this line is left alone for a while: nothing is sent to it.
+    if (trouble && hostResting(trouble)) throw imageMissing();
     if (await lineLimited('image:' + line)) throw new ServiceError(429, 'too_many_requests', 'Too many requests.', '60');
     const remember = (body: Uint8Array<ArrayBuffer> | null, type: string, seconds = IMAGE_CACHE_SECONDS) => {
-      if (!body) {
-        if (imageMisses.size >= 5000) imageMisses.clear();
-        imageMisses.set(cacheKey, Date.now() + seconds * 1000);
-      }
+      if (trouble) hostAnswered(trouble, Boolean(body));
+      if (!body) rememberMiss(cacheKey, Date.now() + seconds * 1000);
       if (!cache) return;
       const headers: Record<string, string> = body ? {'Content-Type': type, 'Cache-Control': 'public, max-age=' + seconds} : {'Content-Type': 'text/plain', 'Cache-Control': 'public, max-age=' + seconds, 'X-Image-Missing': '1'};
       waitUntil(cache.put(cacheKey, new Response(body ? body.slice() : '', {headers})).catch(() => {}));
     };
     let upstream: Response;
-    try {upstream = await safeFetch(source.href, {headers: {Accept: 'image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8'}, signal: AbortSignal.any([req.signal, AbortSignal.timeout(VOD_TIMING.imageMs)])});}
+    try {upstream = await get({headers: {Accept: 'image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8'}, signal: AbortSignal.any([req.signal, AbortSignal.timeout(VOD_TIMING.imageMs)])});}
     catch {
       if (!req.signal.aborted) remember(null, '', IMAGE_FAILED_SECONDS);
       imageFailed('image_fetch_failed'); throw imageMissing();
@@ -600,6 +771,24 @@ export async function posterImage(req: Request): Promise<Response> {
 // ---------------------------------------------------------------- owner diagnostics
 
 /**
+ * Asks the catalogue image host for one of its posters the way the image route does (not cached, nothing kept), so the
+ * owner can see whether the host answers the Worker with an image: the status, the image type found ('' when the
+ * answer is not a raster image up to 2 MB) and the time. Never the address.
+ */
+async function probeImageHost(sample: string, host: string, refused: (url: URL) => boolean, secrets: string[], signal: AbortSignal) {
+  const started = Date.now();
+  const source = sample ? catalogueHostAddress(sample, host, refused, secrets) : null;
+  if (!source) return {status: 0, image: '', ms: 0};
+  try {
+    const response = await imageHostFetch(source, host, refused, secrets, {headers: {Accept: 'image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8'}, signal: AbortSignal.any([signal, AbortSignal.timeout(VOD_TIMING.imageMs)])});
+    const bytes = response.ok ? await readBytes(response, IMAGE_MAX_BYTES).catch(() => null) : (await response.body?.cancel().catch(() => {}), null);
+    return {status: response.status, image: bytes ? sniffImage(bytes) || '' : '', ms: Date.now() - started};
+  } catch {
+    return {status: 0, image: '', ms: Date.now() - started};
+  }
+}
+
+/**
  * GET /api/player/diagnostics?profile=vod (owner and a signed-in player): whether the Xtream server is set and
  * approved, how big each list is, how long it took, where posters live and which containers titles use. Counts,
  * sizes, times and origins only: never titles, logins or full addresses.
@@ -617,9 +806,13 @@ export async function vodDiagnostics(req: Request) {
     catch (error) {report.m3uError = error instanceof ServiceError ? error.code : 'playlist_unavailable';}
     report.m3u = m3u;
     if ('reason' in config) return report;
-    // provider: through /api/player/image; tmdb: loaded directly; relay_host and other_host: title cards (a relay host
-    // can't serve images, and other hosts would see the viewer's address).
-    const posters = {none: 0, provider: 0, tmdb: 0, relay_host: 0, other_host: 0};
+    // provider: through /api/player/image; tmdb: loaded directly; catalogue_host: through /api/player/image, on the host
+    // the catalogue build would choose as the line's catalogue image host (CATALOGUE_HOST); relay_host and other_host:
+    // title cards (a relay host can't serve images, and other hosts would see the viewer's address).
+    const posters = {none: 0, provider: 0, tmdb: 0, catalogue_host: 0, relay_host: 0, other_host: 0};
+    const secrets = [credentials.username, credentials.password];
+    const refused = refusedImageHost(new URL(req.url).origin);
+    const hosts = createPosterCounter(refused, secrets, {diagnostics: true});
     const origins = new Map<string, number>(), containers = new Map<string, number>();
     const actions = [];
     for (const action of ['get_vod_categories', 'get_vod_streams', 'get_series_categories', 'get_series'] as const) {
@@ -632,7 +825,8 @@ export async function vodDiagnostics(req: Request) {
           if (action === 'get_vod_categories' || action === 'get_series_categories' || !item || typeof item !== 'object') return;
           const row = item as Record<string, unknown>;
           const poster = String((action === 'get_vod_streams' ? row.stream_icon : row.cover) ?? '').trim();
-          const kind = classifyPoster(poster, isDirectProviderAddress, [credentials.username, credentials.password]);
+          const kind = classifyPoster(poster, isDirectProviderAddress, secrets);
+          hosts.add(poster, kind.kind !== 'none');
           let origin = '', parsedPoster: URL | null = null;
           try {parsedPoster = new URL(poster); origin = parsedPoster.origin;} catch {}
           if (kind.kind === 'proxy') posters.provider++;
@@ -655,7 +849,16 @@ export async function vodDiagnostics(req: Request) {
       actions.push(entry);
     }
     report.actions = actions;
-    report.posters = {...posters, topOrigins: [...origins.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8)};
+    // The catalogue image host's posters were counted as other_host above (no host is known until every list is read).
+    const imageHost = hosts.elect();
+    posters.catalogue_host = hosts.count(imageHost);
+    posters.other_host -= posters.catalogue_host;
+    const recorded = await store(new URL(req.url).origin, await catalogueKey(config.server, credentials, playerSecret())).imageHost().catch(() => null);
+    report.posters = {
+      ...posters, catalogue_host_origin: imageHost, catalogue_host_dirs: hosts.directories(imageHost), catalogue_host_recorded: recorded,
+      ...(imageHost ? {catalogue_host_probe: await probeImageHost(hosts.sample(imageHost), imageHost, refused, secrets, signal)} : {}),
+      topOrigins: [...origins.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8),
+    };
     report.containers = Object.fromEntries([...containers.entries()].sort((a, b) => b[1] - a[1]));
     return report;
   } catch (error) {throw toService(error);}

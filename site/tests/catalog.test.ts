@@ -2,7 +2,7 @@ import test, {type TestContext} from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CATALOG_VERSION, FRESH_MS, INFLIGHT_MAX_MS, LIST_MAX, NO_ROWS_BODY, ORIGIN_LOOKUPS, PARTIAL_FRESH_MS, RETRY_MS, SERVICES, US_PROVIDERS,
-  cacheStore, createCatalog, movieOrigin, tmdbAuth, tmdbPlan, tmdbRequest, toItem, type CacheLike, type CatalogOptions,
+  TMDB_POSTER_PATH, cacheStore, createCatalog, movieOrigin, tmdbAuth, tmdbPlan, tmdbRequest, toItem, type CacheLike, type CatalogOptions,
 } from '../lib/catalog.ts';
 
 const V3 = '0123456789abcdef0123456789ABCDEF';
@@ -69,7 +69,9 @@ function tmdb(options: {generation?: () => number; fail?: (url: URL) => number |
       const named = media === 'movie'
         ? {title: `Movie ${id} g${generation}`, original_title: `Film ${id}`, release_date: '2025-06-01', ...(i === 3 ? {production_countries: [{iso_3166_1: 'gb'}]} : {})}
         : {name: `Series ${id} g${generation}`, original_name: `Serie ${id}`, first_air_date: '2024-01-05', origin_country: ['US', 'CA']};
-      results.push({id, adult: false, original_language: 'EN', genre_ids: [28, 12], popularity: 123.456, ...named});
+      // TMDB's own poster paths look like "/qJ2tW6WMUDux911r6m7haRef0WH.jpg"; every seventh one here is not a plain file name.
+      const art = {poster_path: i % 7 === 6 ? '/../' + id + '.jpg' : '/' + 'q'.repeat(20) + id + '.jpg', backdrop_path: '/backdrop' + id + '.jpg'};
+      results.push({id, adult: false, original_language: 'EN', genre_ids: [28, 12], popularity: 123.456, ...named, ...art});
     }
     results.push({id: base + 50, adult: true, title: 'Adult', name: 'Adult'}, {id: 'nope'}, null);
     return Response.json({page, total_pages: 500, results});
@@ -178,7 +180,14 @@ test('the response has the documented shape, US lists of up to 100 deduplicated 
       assert.equal(new Set(list.map(item => item.id)).size, list.length);
     }
     const first = rows[media].popular[0];
-    assert.deepEqual(Object.keys(first), ['id', 'title', 'original_title', 'year', 'origin', 'lang', 'genres', 'popularity']);
+    assert.deepEqual(Object.keys(first), ['id', 'title', 'original_title', 'year', 'origin', 'lang', 'genres', 'popularity', 'poster']);
+    assert.equal(first.poster, '/' + 'q'.repeat(20) + first.id + '.jpg');
+    // Every item: the poster path when it is a plain file name, otherwise none; never a backdrop.
+    for (const item of lists.flat() as {id: number; poster?: string}[]) {
+      if (item.id % 1000 === 6 || item.id % 1000 === 13 || item.id % 1000 === 20) assert.equal(item.poster, undefined, String(item.id));
+      else assert.match(item.poster || '', /^\/q{20}\d+\.jpg$/, String(item.id));
+    }
+    assert.ok(!answer.body.includes('backdrop') && !answer.body.includes('/../'));
     assert.equal(first.lang, 'en');
     assert.deepEqual(first.genres, [28, 12]);
     assert.equal(first.popularity, 123.5);
@@ -214,6 +223,42 @@ test('the response has the documented shape, US lists of up to 100 deduplicated 
   }
   assert.deepEqual([...new Set(calls.filter(c => c.url.pathname === '/3/movie/popular').map(c => c.url.searchParams.get('page')))], ['1', '2', '3', '4', '5']);
   assert.equal(cache.entries.size, 1);
+});
+
+test('toItem keeps TMDB poster_path as poster only when it is "/" and a plain image file name', () => {
+  const base = {id: 7, title: 'X', release_date: '2020-01-01'};
+  assert.equal(toItem('movie', {...base, poster_path: '/qJ2tW6WMUDux911r6m7haRef0WH.jpg'})?.poster, '/qJ2tW6WMUDux911r6m7haRef0WH.jpg');
+  assert.equal(toItem('tv', {id: 8, name: 'Y', poster_path: ' /a-b_C.png '})?.poster, '/a-b_C.png', 'trimmed');
+  for (const path of ['/x.jpeg', '/x.webp']) assert.equal(toItem('movie', {...base, poster_path: path})?.poster, path);
+  for (const path of [undefined, null, '', 42, 'abc.jpg', '/', '/.jpg', '/a/b.jpg', '/../a.jpg', '/a.jpg?x=1', '/a.jpg#x', '/a b.jpg', '/a%20b.jpg', '/a.svg', '/a.JPG.php',
+    '//evil.example/a.jpg', 'https://image.tmdb.org/t/p/w342/a.jpg', 'javascript:alert(1)', '/' + 'a'.repeat(101) + '.jpg', '/a\\b.jpg', '/a"b.jpg', '/ä.jpg']) {
+    const item = toItem('movie', {...base, poster_path: path});
+    assert.ok(item, String(path));
+    assert.equal(item.poster, undefined, String(path));
+    assert.ok(!('poster' in item), 'the key is left out: ' + String(path));
+  }
+  assert.ok(!('backdrop' in toItem('movie', {...base, backdrop_path: '/b.jpg'})!) && toItem('movie', {...base, backdrop_path: '/b.jpg'})!.poster === undefined, 'no backdrop, and no poster from it');
+  assert.ok(TMDB_POSTER_PATH.test('/qJ2tW6WMUDux911r6m7haRef0WH.jpg'));
+});
+
+test('the poster adds about 45 bytes per title (no backdrop): a full answer stays far below the apps\' limits', async () => {
+  const {options} = setup();
+  const {send} = tmdb();
+  const body = (await createCatalog().rows(options(send))).body;
+  const rows = JSON.parse(body);
+  const items = (['movie', 'tv'] as const).flatMap(media => [rows[media].popular, rows[media].featured, rows[media].top_rated, ...Object.values(rows[media].services)].flat()) as {poster?: string}[];
+  const withPoster = items.filter(item => item.poster).length;
+  const without = JSON.stringify({...rows, movie: strip(rows.movie), tv: strip(rows.tv)}).length;
+  const perTitle = (body.length - without) / withPoster;
+  assert.ok(perTitle > 30 && perTitle <= 50, String(perTitle));
+  // Android reads up to 8 MB, the web player keeps a copy of up to 1 MB in the browser; 2,200 titles of real TMDB
+  // size (about 190 bytes each with the poster) are about 420 KB.
+  assert.ok(body.length < 1024 * 1024, String(body.length));
+  function strip(section: Record<string, unknown>) {
+    const drop = (list: unknown) => (list as {poster?: string}[]).map(item => {const copy = {...item}; delete copy.poster; return copy;});
+    return {popular: drop(section.popular), featured: drop(section.featured), top_rated: drop(section.top_rated),
+      services: Object.fromEntries(Object.entries(section.services as Record<string, unknown>).map(([key, list]) => [key, drop(list)]))};
+  }
 });
 
 test('toItem skips adult and malformed results and never invents a title', () => {

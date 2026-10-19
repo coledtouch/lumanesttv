@@ -6,6 +6,7 @@ import type {MovieInfo, SeasonInfo} from '../../lib/player-vod-data';
 import type {Episode, LocalSeries} from './local-series';
 import FilterMenu from './filter-menu';
 import {PosterArt, posterSrc} from './poster';
+import {posterChoices, type PosterSources} from './poster-choice';
 import {MAYBE_MESSAGE, TUNER_MESSAGE, vodPlan} from './vod-format';
 import {focusElement, keysMode} from './use-spatial-navigation';
 
@@ -96,8 +97,8 @@ function FormatNote({mode}: {mode: 'tuner' | 'maybe'}) {
   </div>;
 }
 
-export function TitleDetails({title, library, bases, onPlay, onToggleFavorite, busy, error}: {
-  title: IndexedTitle; library: Library; bases: string[]; onPlay: (request: PlayRequest) => void; onToggleFavorite: () => void; busy: boolean; error: string;
+export function TitleDetails({title, library, posters, onPlay, onToggleFavorite, busy, error}: {
+  title: IndexedTitle; library: Library; posters: PosterSources; onPlay: (request: PlayRequest) => void; onToggleFavorite: () => void; busy: boolean; error: string;
 }) {
   const details = useDetails(title);
   const series = details.series?.data;
@@ -109,7 +110,7 @@ export function TitleDetails({title, library, bases, onPlay, onToggleFavorite, b
   const [season, setSeason] = useState<number | null>(null);
   const seasonShown = season ?? progressEpisode?.season ?? series?.seasons[0]?.season ?? 0;
   const seasonEpisodes = episodes.filter(episode => episode.season === seasonShown);
-  const src = series?.poster || posterSrc(title.poster, bases);
+  const srcs = posterChoices(title, posters, series?.poster);
   const facts = [yearShown(title.name, title.year || series?.year), movie?.duration ? minutes(movie.duration) : '', (title.rating || movie?.rating || series?.rating) ? '★ ' + (title.rating || movie?.rating || series?.rating) : '', movie?.genre || series?.genre].filter(Boolean);
   const plot = movie?.plot || series?.plot || '';
 
@@ -153,7 +154,7 @@ export function TitleDetails({title, library, bases, onPlay, onToggleFavorite, b
 
   return <article className="watch-browse title-details" aria-labelledby="title-name">
     <div className="title-hero">
-      <div className="title-poster"><PosterArt src={src} name={title.name} eager/></div>
+      <div className="title-poster"><PosterArt srcs={srcs} name={title.name} eager/></div>
       <div className="title-info">
         <p className="eyebrow">{title.kind === 'movie' ? 'MOVIE' : title.kind === 'series' ? 'SERIES' : 'EPISODE'}</p>
         <h1 id="title-name">{title.name}</h1>
@@ -198,8 +199,8 @@ export function TitleDetails({title, library, bases, onPlay, onToggleFavorite, b
 }
 
 /** Beside the player while a movie or episode plays: what it is, the Library, and the season's other episodes. */
-export function PlayAside({title, episodeId, library, bases, onPlay, onToggleFavorite, onDetails}: {
-  title: IndexedTitle; episodeId?: string; library: Library; bases: string[]; onPlay: (request: PlayRequest) => void; onToggleFavorite: () => void; onDetails: () => void;
+export function PlayAside({title, episodeId, library, posters, onPlay, onToggleFavorite, onDetails}: {
+  title: IndexedTitle; episodeId?: string; library: Library; posters: PosterSources; onPlay: (request: PlayRequest) => void; onToggleFavorite: () => void; onDetails: () => void;
 }) {
   const details = useDetails(title);
   const episodes = details.series?.data?.episodes || [];
@@ -208,7 +209,7 @@ export function PlayAside({title, episodeId, library, bases, onPlay, onToggleFav
   const favorite = library.fav.includes(title.key);
   return <aside className="channel-panel play-aside" aria-label={title.kind === 'series' ? 'Episodes' : 'About this title'}>
     <div className="play-aside-head">
-      <div className="play-aside-poster"><PosterArt src={details.series?.data?.poster || posterSrc(title.poster, bases)} name={title.name}/></div>
+      <div className="play-aside-poster"><PosterArt srcs={posterChoices(title, posters, details.series?.data?.poster)} name={title.name}/></div>
       <div><h2>{title.name}</h2><p>{playing ? playing.label + (playing.title ? ' · ' + playing.title : '') : yearShown(title.name, title.year)}</p></div>
     </div>
     <div className="play-aside-actions">

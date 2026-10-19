@@ -3,23 +3,14 @@ import {useRef, useState, type Ref} from 'react';
 import {ChevronLeft, ChevronRight, Check} from 'lucide-react';
 import type {IndexedTitle} from '../../lib/browse';
 import {posterFocusKey} from './watch-route';
+import {posterFailed, shownPoster} from './poster-choice';
+export {providerPosterSrc as posterSrc} from './poster-choice';
 
 // Posters, rows of posters and poster grids for the web player's browsing. Every poster is a plain button, so a
 // mouse, a finger or a TV remote (arrow keys and Enter, through use-spatial-navigation) can open it.
 
-/**
- * A poster's address for an <img>: a direct https URL as it is, or "~<base>:<file>" through /api/player/image with
- * the sealed base the catalogue sent (lib/player-vod-data.ts createPosterBook). '' when there is none.
- */
-export function posterSrc(poster: string, bases: string[]) {
-  if (!poster) return '';
-  if (poster.startsWith('https://')) return poster;
-  const match = /^~(\d{1,5}):(.*)$/.exec(poster);
-  const base = match ? bases[Number(match[1])] : undefined;
-  return base ? '/api/player/image?t=' + encodeURIComponent(base) + '&f=' + encodeURIComponent(match![2]) : '';
-}
-
-export type CardItem = {title: IndexedTitle; src: string; favorite: boolean; progress: number; subtitle?: string};
+/** srcs: the pictures to try, best first (poster-choice.ts posterChoices); none shows the initials card. */
+export type CardItem = {title: IndexedTitle; srcs: string[]; favorite: boolean; progress: number; subtitle?: string};
 
 function initials(name: string) {
   const words = name.replace(/\([^)]*\)|\[[^\]]*\]/g, ' ').split(/\s+/).filter(word => /^[\p{L}\p{N}]/u.test(word));
@@ -31,11 +22,13 @@ export function TitleCard({name}: {name: string}) {
   return <span className="poster-fallback" aria-hidden="true"><b>{initials(name)}</b><span>{name}</span></span>;
 }
 
-export function PosterArt({src, name, eager = false}: {src: string; name: string; eager?: boolean}) {
-  const [failed, setFailed] = useState('');
-  if (!src || failed === src) return <TitleCard name={name}/>;
-  // eslint-disable-next-line @next/next/no-img-element -- posters come from the line's catalogue (direct https or /api/player/image), not static assets next/image could optimise
-  return <img src={src} alt="" loading={eager ? 'eager' : 'lazy'} decoding="async" referrerPolicy="no-referrer" width={200} height={300} onError={() => setFailed(src)}/>;
+/** The first of srcs that loads (a failed one gives way to the next), else the initials card. */
+export function PosterArt({srcs, name, eager = false}: {srcs: string[]; name: string; eager?: boolean}) {
+  const [failed, setFailed] = useState<readonly string[]>([]);
+  const src = shownPoster(srcs, failed);
+  if (!src) return <TitleCard name={name}/>;
+  // eslint-disable-next-line @next/next/no-img-element -- posters come from TMDB or the line's catalogue (direct https or /api/player/image), not static assets next/image could optimise
+  return <img key={src} src={src} alt="" loading={eager ? 'eager' : 'lazy'} decoding="async" referrerPolicy="no-referrer" width={200} height={300} onError={() => setFailed(current => posterFailed(current, src))}/>;
 }
 
 export function cardLabel(item: CardItem) {
@@ -54,7 +47,7 @@ export function PosterCard({item, onOpen, eager, scope}: {item: CardItem; onOpen
   const focusKey = posterFocusKey(scope, item.title.key);
   return <button type="button" className="poster-card" data-focus-key={focusKey} aria-label={cardLabel(item)} onClick={() => onOpen(item.title.key, focusKey)}>
     <span className="poster-art">
-      <PosterArt src={item.src} name={item.title.name} eager={eager}/>
+      <PosterArt srcs={item.srcs} name={item.title.name} eager={eager}/>
       {item.favorite && <span className="poster-check" aria-hidden="true"><Check size={14} strokeWidth={3}/></span>}
       {item.progress > 0 && <span className="poster-progress" aria-hidden="true"><i style={{width: Math.max(4, Math.round(item.progress * 100)) + '%'}}/></span>}
     </span>

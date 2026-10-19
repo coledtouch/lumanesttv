@@ -691,8 +691,8 @@ export default function Player({portal, support, castAppId}: {portal: string; su
   const stageMounted = stageView || Boolean(selected && (castHold || castLive));
   const section = route ? sectionOf(route, router.from) : 'live';
   const adultLock = (hasAdult || adultUnlocked) ? <AdultLock unlocked={adultUnlocked} onUnlock={() => {setAdultUnlocked(true); setAnnouncement('Adult content unlocked');}} onLock={lockAdult}/> : null;
-  const bases = catalogue.state.posterBases;
-  const browseBase = catalog ? {catalog, library: library.library, bases, opts, withTmdb: catalogue.state.withTmdb, onOpen: openTitle, onNavigate: go, error: catalogue.state.error, onRetry: catalogue.retry} : null;
+  const posters = catalogue.state.posters;
+  const browseBase = catalog ? {catalog, library: library.library, posters, opts, withTmdb: catalogue.state.withTmdb, onOpen: openTitle, onNavigate: go, error: catalogue.state.error, onRetry: catalogue.retry} : null;
 
   const shownError = (key: string) => titleError && titleError.key === key && titleError.change === router.changes ? titleError.message : '';
   const browseView = route && !stageView ? route : null;
@@ -772,7 +772,7 @@ export default function Player({portal, support, castAppId}: {portal: string; su
               {playError && <div className="watch-error" role="alert"><p>{playError}</p>{vodSelected && selected?.ext === 'mkv' && <p>{MAYBE_MESSAGE} <a href="/apps">Get the Tuner app ↗</a></p>}<button className="small-button" onClick={() => setRetry(current => current + 1)}>{vodSelected ? 'Try again' : 'Try this channel again'}</button></div>}
               <div className="watch-bottom"><p>Playback uses one of your plan’s simultaneous screens. Available channels and formats depend on your line.</p><div className="watch-bottom-links"><button type="button" className="watch-shortcuts-open" aria-keyshortcuts="Shift+?" onClick={() => shortcutsDialog.current?.showModal()}>Keyboard shortcuts</button>{adultLock}<a href={'mailto:' + support}>Need a hand? Contact support ↗</a></div></div>
             </section>
-            {view === 'play' && playingTitle ? <PlayAside title={playingTitle} episodeId={selected?.episode?.id} library={library.library} bases={bases}
+            {view === 'play' && playingTitle ? <PlayAside title={playingTitle} episodeId={selected?.episode?.id} library={library.library} posters={posters}
               onPlay={request => void playTitle(playingTitle, request)} onToggleFavorite={() => library.toggleFavorite(playingTitle.key)} onDetails={() => go({view: 'title', key: playingTitle.key})}/> :
               <LiveLineup channels={liveChannels} filtered={filtered} groups={groups} checking={checking} signingOut={signingOut} error={error} query={query} group={group} favoriteOnly={favoriteOnly} favorites={favorites} limit={limit}
                 selectedId={selected?.kind === 'live' ? selected.id : undefined} searchInput={searchInput} channelList={channelList} onRefresh={() => {void loadChannels();}}
@@ -783,7 +783,7 @@ export default function Player({portal, support, castAppId}: {portal: string; su
             start={startView} onStart={value => setStartView(value)} titles={caps.titles && catalogue.state.status === 'ready'} source={catalogue.state.source} withTmdb={catalogue.state.withTmdb}
             onRefresh={catalogue.refresh} adultLock={adultLock || <p className="settings-muted">Your line has no adult categories.</p>} onShortcuts={() => shortcutsDialog.current?.showModal()}
             onSignOut={() => void logout()} signingOut={signingOut} saveError={library.error}/>}
-          {browseView?.view === 'search' && <Search key="search" query={browseView.q} catalog={catalog} library={library.library} bases={bases} opts={opts} channels={visible}
+          {browseView?.view === 'search' && <Search key="search" query={browseView.q} catalog={catalog} library={library.library} posters={posters} opts={opts} channels={visible}
             error={catalogue.state.error} onRetry={catalogue.retry} onQuery={q => router.navigate({view: 'search', q}, {replace: true, silent: true})} onOpen={openTitle} onChannel={onSearchChannel}/>}
           {browseView && browseView.view !== 'settings' && browseView.view !== 'search' && !catalogueReady && <BrowseLoading label="Loading movies and series…"/>}
           {catalogueReady && browseBase && browseView?.view === 'home' && <Home {...browseBase} continueRefs={continueRefs}/>}
@@ -792,7 +792,7 @@ export default function Player({portal, support, castAppId}: {portal: string; su
           {catalogueReady && browseBase && browseView?.view === 'library' && <LibraryView {...browseBase} saveError={library.error}/>}
           {catalogueReady && browseView?.view === 'title' && !browseTitle && <div className="watch-browse browse-empty"><h1 className="browse-title">Not available</h1><p>This title is no longer on your line.</p><button type="button" className="small-button" data-nav-start="" onClick={() => go({view: 'home'})}>Back to Home</button></div>}
           {catalogueReady && browseTitle && browseTitle.adult && !adultUnlocked && <div className="watch-browse browse-empty"><h1 className="browse-title">Locked</h1><p>This title is in an adult category. Unlock adult content in Settings to see it.</p><button type="button" className="small-button" data-nav-start="" onClick={() => go({view: 'settings'})}>Open Settings</button></div>}
-          {catalogueReady && browseTitle && (!browseTitle.adult || adultUnlocked) && <TitleDetails key={browseTitle.key} title={browseTitle} library={library.library} bases={bases} busy={titleBusy} error={shownError(browseTitle.key)} onPlay={onTitlePlay} onToggleFavorite={onTitleFavorite}/>}
+          {catalogueReady && browseTitle && (!browseTitle.adult || adultUnlocked) && <TitleDetails key={browseTitle.key} title={browseTitle} library={library.library} posters={posters} busy={titleBusy} error={shownError(browseTitle.key)} onPlay={onTitlePlay} onToggleFavorite={onTitleFavorite}/>}
         </main>
       </div>}
     {username && <dialog ref={shortcutsDialog} className="watch-shortcuts" aria-labelledby="watch-shortcuts-title">

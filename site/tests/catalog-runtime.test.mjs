@@ -23,8 +23,10 @@ function tmdb(request) {
   const page = Number(url.searchParams.get('page')), tv = url.pathname.includes('/tv');
   const results = Array.from({length: 20}, (_, i) => {
     const id = page * 100 + i + 1;
-    return tv ? {id, name: 'Series ' + id, original_name: 'Series ' + id, first_air_date: '2024-02-03', origin_country: ['US'], original_language: 'en', genre_ids: [18], popularity: 50}
-      : {id, title: 'Movie ' + id, original_title: 'Movie ' + id, release_date: '2025-07-04', original_language: 'en', genre_ids: [28], popularity: 50};
+    // TMDB sends poster_path (and backdrop_path, which the endpoint leaves out); every fifth one is not a plain file name.
+    const art = {poster_path: i % 5 === 4 ? 'https://evil.example/p.jpg' : '/p' + id + 'Xy_-z.jpg', backdrop_path: '/b' + id + '.jpg'};
+    return tv ? {id, name: 'Series ' + id, original_name: 'Series ' + id, first_air_date: '2024-02-03', origin_country: ['US'], original_language: 'en', genre_ids: [18], popularity: 50, ...art}
+      : {id, title: 'Movie ' + id, original_title: 'Movie ' + id, release_date: '2025-07-04', original_language: 'en', genre_ids: [28], popularity: 50, ...art};
   });
   return Response.json({page, total_pages: 9, results});
 }
@@ -93,9 +95,12 @@ test('with a key the rows come from TMDB once and are kept in the Workers Cache 
   assert.equal(rows.source, 'tmdb');
   assert.equal(rows.movie.popular.length, 100);
   assert.equal(rows.tv.services.peacock.length, 100);
-  assert.deepEqual(rows.tv.featured[0], {id: 101, title: 'Series 101', original_title: 'Series 101', year: '2024', origin: ['US'], lang: 'en', genres: [18], popularity: 50});
+  assert.deepEqual(rows.tv.featured[0], {id: 101, title: 'Series 101', original_title: 'Series 101', year: '2024', origin: ['US'], lang: 'en', genres: [18], popularity: 50, poster: '/p101Xy_-z.jpg'});
   // Movie list results carry no countries; they come from each movie's details, looked up once per title.
-  assert.deepEqual(rows.movie.popular[0], {id: 101, title: 'Movie 101', original_title: 'Movie 101', year: '2025', origin: ['US'], lang: 'en', genres: [28], popularity: 50});
+  assert.deepEqual(rows.movie.popular[0], {id: 101, title: 'Movie 101', original_title: 'Movie 101', year: '2025', origin: ['US'], lang: 'en', genres: [28], popularity: 50, poster: '/p101Xy_-z.jpg'});
+  // The poster path only when it is a plain file name, and never the backdrop.
+  assert.equal(rows.movie.popular[4].poster, undefined);
+  assert.ok(!first.text.includes('backdrop') && !first.text.includes('evil.example') && !first.text.includes('/b101.jpg'));
   assert.deepEqual(rows.genres, {movie: [{id: 28, name: 'Action'}], tv: [{id: 28, name: 'Action'}]});
   assert.equal(listCalls(), 112);
   assert.equal(detailCalls(), 100);
