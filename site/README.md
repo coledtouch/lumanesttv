@@ -55,6 +55,7 @@ The following environment variable names describe the runtime contract. Supply r
 | `PLAYER_STREAM_RELAY_URL`, `PLAYER_STREAM_RELAY_KEY` | First-party stream bridge endpoint and shared authentication secret. |
 | `STREAM_RELAY_KEY` | Matching shared secret on the separate relay Worker; requires 64 lowercase hexadecimal characters. |
 | `CAST_RECEIVER_APP_ID` | Google Cast custom receiver app ID; leave unset to use Google's Default Media Receiver. Set only after the receiver app is published (unpublished apps run only on registered test devices). See [`docs/casting.md`](../docs/casting.md). |
+| `TMDB_API_KEY` | TMDB v3 API key or v4 API Read Access Token for the Tuner apps' Movies & Series rows (`/api/catalog/rows`). Leave it unset until LumaNest has TMDB's commercial terms, because the free key is for non-commercial use only. While it is unset, the endpoint answers `source: "none"`. See [`docs/deployment.md`](../docs/deployment.md#movies--series-rows-tmdb). |
 | `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | Private operator configuration when deploying the standalone Cloudflare workers. |
 | `ADMIN_USER_ID` | Legacy hosting-owned bootstrap identity only. Keep unset on a standalone deployment; ordinary owner sign-in uses its private D1 credential record. |
 | `OWNER_SETUP_TOKEN` | One-time secret (at least 32 random characters) required by `/manage/setup` to create the first owner login. Without it, first-owner setup is disabled (503). Remove it after setup; it has no effect once owner credentials exist. |

@@ -39,7 +39,7 @@ Continue watching, Favorite movies, Favorite series, and Recently watched. Favor
 
 - **Only playable titles.** The customer's own catalogue (the Xtream `get_vod_streams` / `get_series` lists) is the only source of titles. Popularity lists only order and pick from it; a title that isn't in the catalogue is never shown.
 - **USA only by default.** A Settings switch, "Movies & Series: USA only / All", defaults to USA only (separate from the existing live-channel switch). With it on:
-  - a title matched to TMDB is shown only if its `origin` countries include `US`;
+  - a title matched to TMDB is shown only if its `origin` countries include `US` and its provider category also passes the category filter below. An empty `origin` (TMDB gave no country) means unknown, so the category filter alone decides. The category check keeps out US titles filed in foreign-language categories, which are usually dubbed copies;
   - an unmatched title is shown only if its provider category passes the category filter: categories whose names carry a non-US country or language tag (for example `FR`, `DE`, `IT`, `ES`, `LAT`, `MX`, `BR`, `PT`, `TR`, `AR`, `IN`, `HINDI`, `PK`, `NL`, `PL`, `RO`, `RU`, `UK`, `CA` as a whole word or a `XX |` / `|XX|` / `XX:` prefix) are excluded; everything else is kept.
 - **Adult content** follows the existing rules (hidden by default, passcode unlock on sideload builds, never shown in store builds).
 
@@ -67,8 +67,11 @@ The apps never call TMDB directly. The website serves the lists, so the TMDB key
 
 `Item`: `{"id": 12345, "title": "…", "original_title": "…", "year": "2025", "origin": ["US"], "lang": "en", "genres": [28, 12], "popularity": 123.4}`
 
-- Lists are US-region, `en-US`, up to 100 items each. Featured is TMDB trending (week). Service lists use TMDB discover with the service's US watch-provider id, sorted by popularity.
-- When the server has no TMDB key, it answers `{"v": 1, "source": "none", "movie": {}, "tv": {}, "genres": {}}` and the apps fall back (below). Apps must treat any missing list as empty.
+`origin` is TMDB's countries of origin. TMDB's lists give them for series; for movies the server looks them up in each movie's details, a few hundred titles per refresh, so a movie's `origin` can be `[]` (unknown) until the next refresh.
+
+- Lists are `en-US`, up to 100 items each. Movie Popular and Top rated use TMDB's US region. Popular – Series is TMDB discover for series that stream in the US (subscription, free or with ads), by popularity, because TMDB's own series Popular list is worldwide. Featured is TMDB trending (week) and Top rated – Series is TMDB's top-rated series list; both are worldwide, as TMDB offers no region for them. Service lists use TMDB discover with the service's US watch-provider id, sorted by popularity.
+- When the server has no TMDB key, it answers `{"v": 1, "source": "none", "movie": {}, "tv": {}, "genres": {}}` with HTTP 200 and the apps fall back (below). Apps must treat any missing list as empty.
+- When TMDB fails and the server has no copy yet, it answers HTTP 503 with `Cache-Control: no-store` and `Retry-After: 300`. This is a failed request: apps keep their copy (or fall back when they have none) and never store it.
 - Apps cache the response for 12 hours and keep using a stale copy when the request fails.
 
 ## Matching catalogue titles to TMDB
