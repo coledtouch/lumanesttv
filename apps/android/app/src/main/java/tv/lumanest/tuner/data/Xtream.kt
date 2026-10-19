@@ -4,6 +4,7 @@ import android.net.Uri
 import android.util.Base64
 import java.io.File
 import java.net.URLEncoder
+import kotlin.math.floor
 
 /** Xtream Codes "player_api.php" client: URL building plus parsers for each list endpoint. */
 class Xtream(private val src: Source) {
@@ -90,18 +91,14 @@ class Xtream(private val src: Source) {
 
     private fun adultOf(o: JMap) = AdultFilter.isAdultFlag(o.str("is_adult"))
 
-    /** A TMDB id in `tmdb`, `tmdb_id` or `info.tmdb_id` (docs/browse.md), digits only; "0" and blanks are no id. */
-    private fun tmdbOf(o: JMap): String? {
-        val info = o.obj("info")
-        return sequenceOf(o.str("tmdb"), o.str("tmdb_id"), info?.str("tmdb_id"), info?.str("tmdb"))
-            .mapNotNull { it?.removeSuffix(".0")?.trim()?.takeIf { v -> v.length in 1..12 && v.all(Char::isDigit) && v.trimStart('0').isNotEmpty() } }
-            .firstOrNull()
-    }
+    /**
+     * The release year (docs/browse.md): the first of `year`, `releaseDate`, `release_date` and `releasedate` that
+     * starts with a year from 1800 to 2099 not followed by another digit, as four digits.
+     */
+    private fun yearOf(o: JMap): String? = YEAR_FIELDS.firstNotNullOfOrNull { key -> TitleMatch.yearOf(o.str(key)).takeIf { it > 0 }?.toString() }
 
-    /** The release year from `year` or a release date, as four digits. */
-    private fun yearOf(o: JMap): String? = sequenceOf("year", "releaseDate", "release_date", "releasedate")
-        .mapNotNull { key -> o.str(key)?.trim()?.take(4)?.takeIf { it.length == 4 && it.all(Char::isDigit) && it.toInt() in 1870..2200 } }
-        .firstOrNull()
+    /** `added` and `last_modified` are Unix seconds; some panels send milliseconds. */
+    private fun unixSeconds(value: String?): Long = value?.toLongOrNull()?.let { if (it > 100_000_000_000L) it / 1000 else it } ?: 0
     private fun countryOf(o: JMap) = metadata(o, COUNTRY_FIELDS)
     private fun languageOf(o: JMap) = metadata(o, LANGUAGE_FIELDS)
     private fun mergeMetadata(first: String?, second: String?): String? = when {
@@ -136,7 +133,7 @@ class Xtream(private val src: Source) {
                 rating = o.str("rating")?.takeIf { it != "0" && it != "0.0" },
                 categoryId = cats.firstOrNull() ?: "",
                 url = o.str("direct_source")?.takeIf { it.startsWith("http") } ?: movie(id, o.str("container_extension") ?: "mp4"),
-                added = o.str("added")?.toLongOrNull() ?: 0,
+                added = unixSeconds(o.str("added")),
                 categoryIds = cats,
                 country = countryOf(o),
                 language = languageOf(o),
@@ -169,9 +166,9 @@ class Xtream(private val src: Source) {
                 rating = o.str("rating")?.takeIf { it != "0" && it != "0.0" },
                 categoryId = cats.firstOrNull() ?: "",
                 genre = o.str("genre"),
-                year = (o.str("releaseDate") ?: o.str("release_date"))?.take(4) ?: yearOf(o),
+                year = yearOf(o),
                 backdrop = o.str("backdrop_path"),
-                added = o.str("last_modified")?.toLongOrNull() ?: 0,
+                added = unixSeconds(o.str("last_modified")),
                 categoryIds = cats,
                 country = countryOf(o),
                 language = languageOf(o),
@@ -290,10 +287,35 @@ class Xtream(private val src: Source) {
         private val COMMON_FIELDS = (COUNTRY_FIELDS + LANGUAGE_FIELDS + listOf("name", "category_id", "category_ids", "is_adult")).toSet()
         private val CATEGORY_FIELDS = setOf("category_id", "category_name", "is_adult")
         private val LIVE_FIELDS = COMMON_FIELDS + setOf("stream_id", "num", "stream_icon", "epg_channel_id", "direct_source")
+        /** Release years, in the order docs/browse.md reads them. */
+        private val YEAR_FIELDS = listOf("year", "releaseDate", "release_date", "releasedate")
         /** TMDB ids and years for matching titles to the popularity lists (docs/browse.md). */
-        private val TMDB_FIELDS = setOf("tmdb", "tmdb_id", "info", "year", "releaseDate", "release_date", "releasedate")
+        private val TMDB_FIELDS = setOf("tmdb", "tmdb_id", "info") + YEAR_FIELDS
         private val MOVIE_FIELDS = COMMON_FIELDS + TMDB_FIELDS + setOf("stream_id", "stream_icon", "rating", "direct_source", "container_extension", "added", "genre")
         private val SERIES_FIELDS = COMMON_FIELDS + TMDB_FIELDS + setOf("series_id", "cover", "plot", "rating", "genre", "backdrop_path", "last_modified")
+
+        /** docs/browse.md, "Patterns for titles, years and countries": ASCII digits only, the id is group 1. */
+        private val TMDB_ID = Regex("^([0-9]{1,12})(\\.0)?$")
+
+        /**
+         * The provider TMDB id of a catalogue row (docs/browse.md, Matching step 1): the first of `tmdb`, `tmdb_id`,
+         * `info.tmdb_id` and `info.tmdb` (the last two only when `info` is an object) whose value gives one, without
+         * leading zeros. A string gives one when, trimmed as a provider field, it matches [TMDB_ID] and is not all zeros;
+         * a number ([JsonNumber], never its text read as a string) when it is a whole number from 1 to 999999999999.
+         * Anything else (an array such as `["123"]`, an object, `true`, `null`) gives none, and the next key is read.
+         */
+        internal fun tmdbOf(o: JMap): String? {
+            val info = o["info"] as? Map<*, *>
+            return sequenceOf(o["tmdb"], o["tmdb_id"], info?.get("tmdb_id"), info?.get("tmdb")).firstNotNullOfOrNull(::tmdbId)
+        }
+
+        private fun tmdbId(value: Any?): String? = when (value) {
+            // Not trim(), isDigit() or toLong(): they take U+001C to U+001F, other scripts' digits and signs.
+            is String -> TMDB_ID.matchEntire(BrowseText.trimField(value))?.groupValues?.get(1)?.trimStart('0')?.ifEmpty { null }
+            // A 64-bit double, as JavaScript reads it: 123.0 and 1e3 are ids, 1.5, -5, 0 and 1e12 are not.
+            is JsonNumber -> value.text.toDoubleOrNull()?.takeIf { it >= 1 && it <= 999_999_999_999.0 && it == floor(it) }?.toLong()?.toString()
+            else -> null
+        }
 
         fun normalizeServer(raw: String): String {
             var s = raw.trim()

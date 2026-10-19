@@ -185,9 +185,9 @@ public enum XtreamParser {
     private static let commonFields: Set<String> = Set(countryFields + languageFields + ["name", "category_id", "category_ids", "is_adult"])
     private static let liveFields = commonFields.union(["stream_id", "num", "stream_icon", "epg_channel_id", "direct_source"])
     private static let movieFields = commonFields.union(["stream_id", "stream_icon", "rating", "direct_source", "container_extension", "added",
-                                                         "year", "releaseDate", "release_date", "releasedate", "tmdb", "tmdb_id", "genre"])
-    private static let seriesFields = commonFields.union(["series_id", "cover", "plot", "rating", "genre", "releaseDate", "release_date", "year",
-                                                          "backdrop_path", "last_modified", "tmdb", "tmdb_id"])
+                                                         "year", "releaseDate", "release_date", "releasedate", "tmdb", "tmdb_id", "info", "genre"])
+    private static let seriesFields = commonFields.union(["series_id", "cover", "plot", "rating", "genre", "year", "releaseDate", "release_date",
+                                                          "releasedate", "backdrop_path", "last_modified", "tmdb", "tmdb_id", "info"])
 
     public static func accountInfo(_ data: Data) throws -> XtreamAccountInfo {
         let root = try parse(data)
@@ -236,7 +236,7 @@ public enum XtreamParser {
         return Renumber.apply(order.compactMap { byID[$0] })
     }
 
-    /// Reads `year`, `releaseDate`/`release_date`/`releasedate`, `tmdb`/`tmdb_id`, `genre` when present.
+    /// Reads the year (`yearOf`), the TMDB id (`tmdb`), `genre` and `added` (`unixSeconds`) when present.
     public static func movies(_ data: Data, login: XtreamLogin) throws -> [Movie] {
         var order: [String] = []
         var byID: [String: Movie] = [:]
@@ -254,11 +254,9 @@ public enum XtreamParser {
             let ext = row["container_extension"]?.text
             guard let url = Xtream.movieURL(login, streamID: id, containerExtension: ext, directSource: row["direct_source"]?.text) else { return }
             let name = row["name"]?.text ?? "Movie"
-            let year = yearText(row["year"]?.text) ?? yearText(row["releaseDate"]?.text) ?? yearText(row["release_date"]?.text)
-                ?? yearText(row["releasedate"]?.text) ?? TitleNormalizer.year(in: name)
             byID[id] = Movie(id: "m:\(id)", name: name, poster: webURL(row["stream_icon"]?.text), rating: ratingText(row["rating"]?.text),
-                             categoryID: categories.first ?? "", categoryIDs: categories, url: url, added: Int64(row["added"]?.int ?? 0),
-                             containerExtension: ext?.lowercased(), year: year, tmdbID: tmdb(row), genre: row["genre"]?.text,
+                             categoryID: categories.first ?? "", categoryIDs: categories, url: url, added: unixSeconds(row["added"]),
+                             containerExtension: ext?.lowercased(), year: yearOf(row, name: name), tmdbID: tmdb(row), genre: row["genre"]?.text,
                              country: metadata(row, countryFields), language: metadata(row, languageFields),
                              adult: AdultFilter.isAdultFlag(row["is_adult"]?.text))
             order.append(id)
@@ -266,7 +264,7 @@ public enum XtreamParser {
         return order.compactMap { byID[$0] }
     }
 
-    /// Reads `tmdb`/`tmdb_id` when present; `last_modified` → `added`.
+    /// Reads the year (`yearOf`) and the TMDB id (`tmdb`) when present; `last_modified` → `added` (`unixSeconds`).
     public static func series(_ data: Data) throws -> [Series] {
         var order: [String] = []
         var byID: [String: Series] = [:]
@@ -282,11 +280,9 @@ public enum XtreamParser {
                 return
             }
             let name = row["name"]?.text ?? "Series"
-            let year = yearText(row["releaseDate"]?.text) ?? yearText(row["release_date"]?.text) ?? yearText(row["year"]?.text)
-                ?? TitleNormalizer.year(in: name)
             byID[id] = Series(id: "s:\(id)", seriesID: id, name: name, cover: webURL(row["cover"]?.text), plot: row["plot"]?.text,
-                              rating: ratingText(row["rating"]?.text), genre: row["genre"]?.text, year: year,
-                              backdrop: webURL(row["backdrop_path"]?.text), added: Int64(row["last_modified"]?.int ?? 0),
+                              rating: ratingText(row["rating"]?.text), genre: row["genre"]?.text, year: yearOf(row, name: name),
+                              backdrop: webURL(row["backdrop_path"]?.text), added: unixSeconds(row["last_modified"]),
                               categoryID: categories.first ?? "", categoryIDs: categories, tmdbID: tmdb(row),
                               country: metadata(row, countryFields), language: metadata(row, languageFields),
                               adult: AdultFilter.isAdultFlag(row["is_adult"]?.text))
@@ -299,7 +295,8 @@ public enum XtreamParser {
         let root = try parse(data)
         guard case .object = root else { throw TunerError.invalidResponse }
         let info = root["info"] ?? .object([:])
-        let year = yearText(info["releasedate"]?.text) ?? yearText(info["release_date"]?.text) ?? yearText(info["year"]?.text)
+        let year = TitleNormalizer.year(field: info["releasedate"]?.text) ?? TitleNormalizer.year(field: info["release_date"]?.text)
+            ?? TitleNormalizer.year(field: info["year"]?.text)
         let subtitles = unique(subtitles(info["subtitles"]) + subtitles(root["movie_data"]?["subtitles"]))
         return MovieInfo(plot: info["plot"]?.text ?? info["description"]?.text, cast: info["cast"]?.text ?? info["actors"]?.text,
                          director: info["director"]?.text, genre: info["genre"]?.text, year: year,
@@ -347,15 +344,10 @@ public enum XtreamParser {
                 a.element.number != b.element.number ? a.element.number < b.element.number : a.offset < b.offset
             }.map(\.element)
         }
-        let year = yearText(info["releaseDate"]?.text) ?? yearText(info["release_date"]?.text) ?? yearText(info["year"]?.text)
+        let year = TitleNormalizer.year(field: info["releaseDate"]?.text) ?? TitleNormalizer.year(field: info["release_date"]?.text)
+            ?? TitleNormalizer.year(field: info["year"]?.text)
         return SeriesInfo(plot: info["plot"]?.text, cast: info["cast"]?.text, genre: info["genre"]?.text, year: year,
                           backdrop: webURL(info["backdrop_path"]?.text), seasons: cleaned)
-    }
-
-    /// TMDB id inside get_vod_info / get_series_info (`info.tmdb_id`, `info.tmdb`), for matching after a detail load.
-    public static func tmdbID(inInfo data: Data) -> Int? {
-        guard let root = try? parse(data), let info = root["info"] else { return nil }
-        return tmdb(info) ?? (root["movie_data"].flatMap(tmdb))
     }
 
     /// get_short_epg: base64 title/description (raw text fallback), start/stop(end)_timestamp, end > start, sorted.
@@ -459,18 +451,27 @@ public enum XtreamParser {
         return text
     }
 
-    static func yearText(_ text: String?) -> String? {
-        guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), text.count >= 4 else { return nil }
-        let prefix = String(text.prefix(4))
-        guard prefix.allSatisfy({ $0.isASCII && $0.isNumber }), let value = Int(prefix), (1870...2200).contains(value) else { return nil }
-        return prefix
+    /// The year of a list row (docs/browse.md): the first of `year`, `releaseDate`, `release_date` and `releasedate`
+    /// that starts with a year from 1800 to 2099 not followed by another digit, else the year in `name`.
+    static func yearOf(_ row: JSONValue, name: String) -> String? {
+        TitleNormalizer.year(fields: ["year", "releaseDate", "release_date", "releasedate"].map { row[$0]?.text }, name: name)
     }
 
+    /// The first usable TMDB id of `tmdb`, `tmdb_id`, `info.tmdb_id` and `info.tmdb` (docs/browse.md Matching step 1; the
+    /// last two only when `info` is an object): a string of 1 to 12 ASCII digits (a trailing ".0" allowed) or a whole
+    /// number from 1 to 999999999999, not zero (`TitleNormalizer.tmdbID`). Any other value is skipped.
     static func tmdb(_ row: JSONValue) -> Int? {
-        for key in ["tmdb_id", "tmdb"] {
-            if let value = row[key]?.int, value > 0 { return value }
+        let info = row["info"]
+        for value in [row["tmdb"], row["tmdb_id"], info?["tmdb_id"], info?["tmdb"]] {
+            if let id = TitleNormalizer.tmdbID(value) { return id }
         }
         return nil
+    }
+
+    /// `added` / `last_modified`: Unix seconds; a value above 100000000000 is in milliseconds and is divided by 1000.
+    static func unixSeconds(_ value: JSONValue?) -> Int64 {
+        guard let seconds = value?.int else { return 0 }
+        return Int64(seconds > 100_000_000_000 ? seconds / 1000 : seconds)
     }
 
     /// "01:45:00" / "45:00" → seconds.
@@ -626,11 +627,17 @@ public enum M3UParser {
             return id
         }
 
-        for rawLine in text.split(omittingEmptySubsequences: true, whereSeparator: { $0 == "\n" || $0 == "\r" }) {
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
+        // Lines end with "\n", "\r\n" or "\r". Split on Unicode scalars: "\r\n" is one `Character`, so a split on the
+        // characters "\n" and "\r" finds no line end in a playlist written with Windows line endings.
+        for rawLine in text.unicodeScalars.split(omittingEmptySubsequences: true, whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+            // Spaces and the Unicode spaces only (BrowseText.trimField, docs/browse.md "Trimming"): Foundation's
+            // `.whitespaces` also removes U+200B, which changes how a name reads.
+            let line = BrowseText.trimField(String(rawLine))
             if line.isEmpty { continue }
-            let upper = line.prefix(8).uppercased()
-            if upper.hasPrefix("#EXTM3U") {
+            // Tags compared scalar by scalar too: a combining mark after "#EXTGRP:" or "#" joins its `Character`.
+            let upper = String(line.unicodeScalars.prefix(8)).uppercased().unicodeScalars
+            func tag(_ name: String) -> Bool { upper.starts(with: name.unicodeScalars) }
+            if tag("#EXTM3U") {
                 let header = parseAttributes(line)
                 if let value = header["url-tvg"] ?? header["x-tvg-url"],
                    let first = value.split(separator: ",").first.map({ $0.trimmingCharacters(in: .whitespaces) }),
@@ -639,17 +646,17 @@ public enum M3UParser {
                 }
                 continue
             }
-            if upper.hasPrefix("#EXTINF") {
+            if tag("#EXTINF") {
                 attributes = parseAttributes(line)
                 title = nameAfterComma(line)
                 groupOverride = nil
                 continue
             }
-            if upper.hasPrefix("#EXTGRP:") {
-                groupOverride = String(line.dropFirst(8)).trimmingCharacters(in: .whitespaces)
+            if tag("#EXTGRP:") {
+                groupOverride = BrowseText.trimField(String(line.unicodeScalars.dropFirst(8)))
                 continue
             }
-            if line.hasPrefix("#") { continue }
+            if line.unicodeScalars.first == "#" { continue }
             defer { attributes = [:]; title = nil; groupOverride = nil }
             guard let link = Xtream.httpLink(line), let url = Xtream.makeURL(link) else { continue }
 
@@ -711,7 +718,7 @@ public enum M3UParser {
     }
 
     private static func nonBlank(_ text: String?) -> String? {
-        guard let trimmed = text?.trimmingCharacters(in: .whitespaces), !trimmed.isEmpty else { return nil }
+        guard let trimmed = text.map(BrowseText.trimField), !trimmed.isEmpty else { return nil }
         return trimmed
     }
 
@@ -749,15 +756,17 @@ public enum M3UParser {
         return result
     }
 
-    /// The display name follows the first comma that is not inside a quoted attribute.
+    /// The display name follows the first comma that is not inside a quoted attribute. Read scalar by scalar: a comma
+    /// or quote followed by a combining mark or U+200D is one `Character` with it, and would not be found.
     static func nameAfterComma(_ line: String) -> String? {
-        var quote: Character?
-        for index in line.indices {
-            let c = line[index]
+        let scalars = line.unicodeScalars
+        var quote: Unicode.Scalar?
+        for index in scalars.indices {
+            let c = scalars[index]
             if c == "\"" || c == "'" {
                 if quote == nil { quote = c } else if quote == c { quote = nil }
             } else if c == ",", quote == nil {
-                let name = line[line.index(after: index)...].trimmingCharacters(in: .whitespaces)
+                let name = BrowseText.trimField(String(scalars[scalars.index(after: index)...]))
                 return name.isEmpty ? nil : name
             }
         }

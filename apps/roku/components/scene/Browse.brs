@@ -462,7 +462,7 @@ end sub
 ' The grid grows as the focus nears its end, so a long list never builds thousands of tiles at once.
 sub appendDiscover(count as integer)
     section = m.catalog[m.discover.type]
-    result = pickTitles(section.items, section.lists[m.discover.list], m.discoverOpts, m.discoverCursor, count)
+    result = pickTitles(section, section.lists[m.discover.list], m.discoverOpts, m.discoverCursor, count)
     m.discoverCursor = result.cursor
     content = m.discoverGrid.content
     for each idx in result.picked
@@ -569,7 +569,7 @@ sub runSearch()
         return
     end if
     for each refType in ["movies", "series"]
-        for each idx in searchTitles(m.catalog[refType].items, query, browseOpts(""), 40)
+        for each idx in searchTitles(m.catalog[refType], query, browseOpts(""), 40)
             addTitleTile(content, refType, idx)
         end for
     end for

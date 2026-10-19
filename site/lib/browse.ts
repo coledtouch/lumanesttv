@@ -1,7 +1,10 @@
-// Movies & Series browsing rules (docs/browse.md) for the web player, ported line for line from the Roku app's
-// apps/roku/source/lib/BrowseLogic.brs so every Tuner app and the web player pick, match and order titles the same
-// way. Pure: no DOM, no Workers APIs. The server (lib/player-vod.ts) uses the compaction helpers; the browser
-// (app/watch) builds the browse index from the compact catalogue and GET /api/catalog/rows?v=1.
+// Movies & Series browsing rules (docs/browse.md) for the web player, so every Tuner app and the web player pick,
+// match and order titles the same way. The category filter, title normalization, years, TMDB matching and USA only
+// are the shared rules of docs/browse.md, checked against every case in docs/browse-cases.json
+// (tests/browse.test.ts); lists, Home rows and the Library follow the Roku app's apps/roku/source/lib/BrowseLogic.brs.
+// Pure: no DOM, no Workers APIs. The server (lib/player-vod.ts) uses the compaction helpers; the browser (app/watch)
+// builds the browse index from the compact catalogue and GET /api/catalog/rows?v=1. It runs in viewers' browsers, so
+// no pattern uses lookbehind (Safari before 16.4 rejects it).
 import {isAdultGroup} from './player-data.ts';
 
 // ------------------------------------------------------------------ values
@@ -31,6 +34,9 @@ function integerOf(value: unknown) {
   return Number.isSafeInteger(number) && number > 0 ? number : 0;
 }
 
+/** added and last_modified are Unix seconds; a value above 100000000000 is in milliseconds (docs/browse.md). */
+const unixSeconds = (value: number) => value > 100000000000 ? Math.floor(value / 1000) : value;
+
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 const arrayOrEmpty = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 
@@ -55,82 +61,200 @@ const SERVICE_RX: Record<ServiceKey, RegExp> = {
   paramount: /PARAMOUNT/,
   peacock: /PEACOCK/,
 };
-// The same list as the Android app (VodRegion) and Roku, plus "arab" ("ARAB MOVIES" carries no AR code).
-const FOREIGN_WORDS = 'french|france|german|germany|deutsch|italian|italiano|italia|italy|spanish|espanol|español|spain|castellano|latino|latina|latam|mexico|mexican|brazil|brasil|brazilian|portuguese|portugal|turkish|turkey|arabic|arab|india|indian|hindi|bollywood|tamil|telugu|malayalam|punjabi|pakistan|pakistani|urdu|dutch|netherlands|polish|poland|polska|romanian|romania|russian|russia|british|canada|canadian|quebec';
-// Separators that make "IN" or "IT" a tag rather than an English word.
-const TAG_SEP = '(?:[|:\\[\\]()/-]|–)';
 const RX = {
-  // Bracketed, pipe-delimited and short parenthesised tags: [4K], {EN}, |US|, (US), (2019).
-  tags: /\[[^\]]*\]|\{[^}]*\}|\|[^|]*\||\([0-9]{4}\)|\([A-Z0-9 +]{1,4}\)/g,
-  // A short upper-case tag in front of the title: "US - ", "EN| ", "NF: ".
-  prefix: /^\s*[A-Z0-9+]{2,4}\s*(?:\|\s*|[:-]\s+)/,
-  // The same kind of tag after the title: " | EN", " - US".
-  suffix: /\s(?:\||-)\s*[A-Z0-9+]{2,4}\s*$/,
-  year: /[([]\s*((?:19|20)[0-9][0-9])\s*[)\]]/,
-  yearText: /^\s*((?:19|20)[0-9][0-9])/,
-  digits: /^[0-9]+$/,
-  apostrophe: /['`´’]/g,
   nonWord: /[^a-z0-9]+/g,
   nonAscii: /[^\x00-\x7F]/,
   genreSplit: /[,/|&;]+/,
   // Parts of a category name that can each name a genre: "EN | Action Movies", "Kids & Family".
   categorySplit: /[,/|&;:()[\]]+|\s+-\s+|–/,
   spaces: /\s+/g,
-  // Country and language tags (upper case, as a whole word or a "XX |", "|XX|", "XX:" prefix)...
-  foreignCode: /(?:^|[^A-Za-z0-9])(?:FR|DE|ES|LAT|MX|BR|PT|TR|AR|HINDI|PK|NL|PL|RO|RU|UK|CA)(?:[^A-Za-z0-9]|$)/,
-  // ...IN and IT only as a tag: at the start or end of the name or next to a separator ("IT: Serie", "Films (IN)"),
-  // never as the English word in "MOVIES IN 4K" or "NEW IN CINEMAS"...
-  foreignTag: new RegExp('^\\s*(?:IN|IT)(?:[^A-Za-z0-9]|$)|(?:^|[^A-Za-z0-9])(?:IN|IT)\\s*$|' + TAG_SEP + '\\s*(?:IN|IT)(?:[^A-Za-z0-9]|$)|(?:^|[^A-Za-z0-9])(?:IN|IT)\\s*' + TAG_SEP),
-  // ...and the same countries and languages written out.
-  foreignWord: new RegExp('(?:^|[^a-z])(?:' + FOREIGN_WORDS + ')(?:[^a-z]|$)', 'i'),
 };
-const QUALITY = new Set(['4k', 'uhd', 'hd', 'fhd', 'hdr', 'hdr10', '1080p', '720p', '2160p']);
-const ACCENTS: [string, string][] = [['á', 'a'], ['à', 'a'], ['â', 'a'], ['ä', 'a'], ['ã', 'a'], ['å', 'a'], ['é', 'e'], ['è', 'e'], ['ê', 'e'], ['ë', 'e'], ['í', 'i'], ['ì', 'i'], ['î', 'i'], ['ï', 'i'], ['ó', 'o'], ['ò', 'o'], ['ô', 'o'], ['ö', 'o'], ['õ', 'o'], ['ø', 'o'], ['ú', 'u'], ['ù', 'u'], ['û', 'u'], ['ü', 'u'], ['ñ', 'n'], ['ç', 'c'], ['ý', 'y'], ['ÿ', 'y'], ['æ', 'ae'], ['œ', 'oe'], ['ß', 'ss']];
+
+// Unicode spaces (docs/browse.md, "Spaces and letter case"): each is replaced with a space before any rule below reads
+// a category name, an origin entry, a title's name or a provider's year field. \s in the patterns then means tab, line
+// feed, vertical tab, form feed, carriage return and space, as it does in every app's regular expression engine.
+// Written out because \s, \p{Z} and trim() each cover a different set (JavaScript's \s lacks U+0085).
+const UNICODE_SPACES = /[\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]/g;
+
+/** A text with the Unicode spaces of docs/browse.md replaced with U+0020. */
+export function unicodeSpaces(text: string) {
+  return RX.nonAscii.test(text) ? text.replace(UNICODE_SPACES, ' ') : text;
+}
+
+/** Tab, line feed, vertical tab, form feed, carriage return and space: [ \t\n\x0B\f\r]. */
+const isEdgeSpace = (code: number) => code === 32 || (code >= 9 && code <= 13);
+
+/**
+ * Normalize step 1 and the year from a name (docs/browse.md, "Trimming"): [ \t\n\x0B\f\r] off both ends of a text
+ * whose Unicode spaces are already replaced, and nothing else, so a name made only of tags gives one result whether or
+ * not the provider trimmed it (" - 1999" is read as "- 1999"). Not trim(), whose set depends on the engine (the oldest
+ * TV browsers' also removes U+180E), and a loop rather than [ \t\n\x0B\f\r]+$, which takes time in proportion to
+ * the square of a long run of spaces inside a name.
+ */
+export function trimEnds(text: string) {
+  let start = 0, end = text.length;
+  while (start < end && isEdgeSpace(text.charCodeAt(start))) start++;
+  while (end > start && isEdgeSpace(text.charCodeAt(end - 1))) end--;
+  return start === 0 && end === text.length ? text : text.slice(start, end);
+}
+
+// The category filter (docs/browse.md, "The category filter"), written exactly as the shared patterns there. Rules 3
+// and 4 ignore the case of ASCII letters only: the i flag without u canonicalizes no other character to an ASCII
+// letter, so "ſ" (U+017F) is not "s" and the Kelvin sign (U+212A) is not "k". Never add the u flag to them.
+const CODES = 'FR|DE|ES|LAT|MX|BR|PT|TR|AR|PK|NL|PL|RO|RU|UK|CA|AF';
+const WORDS = 'french|france|german|germany|deutsch|italian|italiano|italia|italy|spanish|espa(n|ñ|Ñ)ol|spain|castellano|latino|latina|latam|' +
+  'mexico|mexican|brazil|brasil|brazilian|portuguese|portugal|turkish|turkey|arab|arabic|india|indian|hindi|bollywood|tamil|telugu|' +
+  'malayalam|kannada|bengali|punjabi|pakistan|pakistani|urdu|dutch|netherlands|polish|poland|polska|romanian|romania|russian|russia|' +
+  'british|canada|canadian|quebec|korean|japanese|chinese|filipino|vietnamese|thai|persian|farsi|greek|albanian|kurdish';
+const FOREIGN = [
+  // 1. An upper-case code as a whole word: "FR | Films", "VOD - TR", "4K-FR Movies", "AF| AFRICAN".
+  new RegExp('(^|[^A-Za-z0-9])(' + CODES + ')([^A-Za-z0-9]|$)'),
+  // 2. Upper-case IN or IT only as a tag ("IN | Movies", "Serie IT"), never the English word ("EN | IN THEATERS").
+  new RegExp('(^|[^A-Za-z0-9])(IN|IT)\\s*([|:\\[\\]()/-]|–|$)'),
+  // 3. A code in any ASCII letter case written as a tag: "Fr | Films", "(Pt) Novelas", "[ru] Kino".
+  new RegExp('^[^A-Za-z0-9]*(' + CODES + ')\\s*([|:\\])/-]|–)|\\|\\s*(' + CODES + ')\\s*\\||\\[\\s*(' + CODES + ')\\s*\\]|\\(\\s*(' + CODES + ')\\s*\\)', 'i'),
+  // 4. A country or language written out, in any ASCII letter case: "French Cinema", "FRENCH4K", not "Indiana Jones".
+  new RegExp('(^|[^A-Za-z])(' + WORDS + ')([^A-Za-z]|$)', 'i'),
+];
+
+// Title normalization, years and origin countries (docs/browse.md, "Patterns for titles, years and countries"),
+// written exactly as given there. All are case-sensitive.
+// TAG: a short upper-case code, or a quality word where no short upper-case code followed by \s or the end fits, so
+// every tag matches in one way only and YEAR_END takes time in proportion to the name (with two ways for 4K, HD, SD,
+// UHD, FHD and HDR it doubled with every further tag of "Movie - 1999 - 4K - … - 4K - Extended").
+const TAG = '[A-Z0-9+]{2,4}|(?![A-Z0-9+]{2,4}(\\s|$))([48][Kk]|[UuFf]?[Hh][Dd]|[Ss][Dd]|[Hh][Dd][Rr](10)?|(1080|720|2160)[Pp])';
+const TITLE = {
+  // Step 2: [...], {...}, a year in parentheses, and a short upper-case tag in parentheses ((US), (U.S.), (MULTI)).
+  brackets: /\[[^\]]*\]|\{[^}]*\}|\(\s*(18|19|20)[0-9]{2}\s*\)|\([A-Z0-9 +.]{1,6}\)/g,
+  // Step 3.1: a leading tag between pipes ("|US| ", "| EN | ") or a short upper-case code, never a year, followed by
+  // |, : or a dash ("US - ", "EN| ", "NF: ", "4K-NF - ", "4K-NF-EN | ").
+  leading: /^\s*(\|\s*[A-Z0-9+]{1,6}\s*\|\s*|(?!(18|19|20)[0-9]{2}([^A-Z0-9+]|$))[A-Z0-9+]{2,4}(\s*[-_]\s*[A-Z0-9+]{2,4})*\s*(\|\s*|([:-]|–)\s+))/,
+  // Step 3.2: a trailing tag (" | EN", " - 4K", " | 1999", " – 1080p"). Group 2 is the tag.
+  trailing: new RegExp('\\s(\\||-|–)\\s*(' + TAG + ')\\s*$'),
+  // Step 3.3: a short upper-case tag between pipes (|US|, | 4K |, not | The Matrix |).
+  pipes: /\|\s*[A-Z0-9+]{1,6}\s*\|/g,
+  apostrophes: /['`´’]/g,
+  // Step 7: exactly U+0300 to U+036F, not \p{M}; other combining marks become a space in step 8.
+  marks: /[\u0300-\u036F]/g,
+  unfolded: /[æœøßđłðþ]/g,
+  // YEAR_BRACKETS, group 1: the first (YYYY) or [YYYY], also (YYYY] and [YYYY).
+  yearBrackets: /[([]\s*((18|19|20)[0-9]{2})\s*[)\]]/,
+  // YEAR_END, group 2: the year among the trailing tags of step 3.2 ("EN | Wonka | 2023", "Heat - 1995 - 4K").
+  yearEnd: new RegExp('\\s(\\||-|–)\\s*((18|19|20)[0-9]{2})(\\s+(\\||-|–)\\s*(?!(18|19|20)[0-9]{2}(\\s|$))(' + TAG + '))*\\s*$'),
+  // YEAR_FIELD, group 1: a provider year field: "2021", "2021-05-01", "2021.0"; not "20211".
+  yearField: /^\s*((18|19|20)[0-9]{2})([^0-9]|$)/,
+  // COUNTRY, group 1: an origin entry that is two ASCII letters with nothing but \s around them.
+  country: /^\s*([A-Za-z]{2})\s*$/,
+};
+// Letters NFKD leaves whole (step 7).
+const FOLDED: Record<string, string> = {'æ': 'ae', 'œ': 'oe', 'ø': 'o', 'ß': 'ss', 'đ': 'd', 'ł': 'l', 'ð': 'd', 'þ': 'th'};
+const QUALITY = new Set(['4k', '8k', 'uhd', 'fhd', 'hd', 'sd', 'hdr', 'hdr10', '1080p', '720p', '2160p']);
+// TMDB_ID, group 1: a provider TMDB id given as a string, trimmed: 1 to 12 ASCII digits, a trailing ".0" allowed.
+const TMDB_ID = /^([0-9]{1,12})(?:\.0)?$/;
 
 // ------------------------------------------------------------------ titles
 
-/**
- * Normalized title for matching (docs/browse.md): lower case; no trailing (YYYY), bracketed or pipe-delimited tags
- * or "US -" style prefixes; no quality words; & becomes and; no punctuation; single spaces; no leading "the ".
- */
-export function normalizeTitle(name: string): string {
-  let s = name;
-  if (/[[{|(]/.test(s)) s = s.replace(RX.tags, ' ');
-  if (/[|:-]/.test(s)) {
-    for (let i = 0; i < 3; i++) {
-      const stripped = s.replace(RX.prefix, '');
-      if (stripped === s) break;
-      s = stripped;
-    }
-    s = s.replace(RX.suffix, '');
+/** Normalize steps 3.1 and 3.2: up to three leading tags, then trailing tags, the last one first, while one ends the name. */
+function withoutEndTags(text: string) {
+  let s = text;
+  for (let i = 0; i < 3; i++) {
+    const stripped = s.replace(TITLE.leading, '');
+    if (stripped === s) break;
+    s = stripped;
   }
+  for (;;) {
+    const stripped = s.replace(TITLE.trailing, '');
+    if (stripped === s) return s;
+    s = stripped;
+  }
+}
+
+/**
+ * A title's matching key, normalize steps 1 to 10 of docs/browse.md: "EN | The Matrix | 1999" -> "matrix",
+ * "Dune | 4K | EN" -> "dune", "Æon Flux (2005)" -> "aeon flux". whole leaves out steps 3.1, 3.2 and 3.4 (leading and
+ * trailing tags), for the second lookup; it still applies steps 2 and 3.3.
+ */
+export function normalizeTitle(name: string, whole = false): string {
+  // 1.
+  let s = trimEnds(unicodeSpaces(name));
+  // 2. Every pattern needs one of these characters; most names have none.
+  if (/[[{(]/.test(s)) s = s.replace(TITLE.brackets, ' ');
+  // 3. The same: every tag of step 3 holds |, :, - or –.
+  if (/[|:\u2013-]/.test(s)) {
+    if (!whole) s = withoutEndTags(s);
+    s = s.replace(TITLE.pipes, ' ');
+    if (!whole) s = withoutEndTags(s);
+  }
+  // 4. to 6. toLowerCase does not depend on the browser's language.
   s = s.toLowerCase();
   if (s.includes('&')) s = s.split('&').join(' and ');
-  s = s.replace(RX.apostrophe, '');
-  if (RX.nonAscii.test(s)) for (const [from, to] of ACCENTS) s = s.split(from).join(to);
-  const words = s.replace(RX.nonWord, ' ').split(' ').filter(word => word && !QUALITY.has(word));
+  s = s.replace(TITLE.apostrophes, '');
+  // 7.
+  if (RX.nonAscii.test(s)) s = s.normalize('NFKD').replace(TITLE.marks, '').replace(TITLE.unfolded, letter => FOLDED[letter]);
+  // 8. to 10.
+  const words = s.split(RX.nonWord).filter(word => word && !QUALITY.has(word));
   if (words.length > 1 && words[0] === 'the') words.shift();
   return words.join(' ');
 }
 
-/** "Dune (2021)" or "Dune [2021]" -> "2021". */
+/**
+ * The year in a title's name, with its ends trimmed as in normalize step 1: the first year in brackets ("Dune (2021)",
+ * "Dune [2021]"), else YEAR_END's: taking the trailing tags of step 3.2 off the end one at a time, the first that is a
+ * year ("EN | Wonka | 2023", "Heat - 1995 - 4K", "2012 | 1999 | EN" -> 1999). "Blade Runner 2049" and "- 1999" have
+ * none (no space before the dash).
+ */
 export function titleYearOf(name: string) {
-  if (!name.includes('(') && !name.includes('[')) return '';
-  return RX.year.exec(name)?.[1] || '';
+  const s = trimEnds(unicodeSpaces(name));
+  return TITLE.yearBrackets.exec(s)?.[1] || TITLE.yearEnd.exec(s)?.[2] || '';
 }
 
-/** "2021-05-01", "2021" or 2021 -> "2021". */
+/** A provider year field: "2021-05-01", "2021" or 2021 -> "2021"; "20211" or "1799" -> "". */
 export function yearOfText(value: unknown) {
-  return RX.yearText.exec(asText(value))?.[1] || '';
+  return TITLE.yearField.exec(unicodeSpaces(asText(value)))?.[1] || '';
 }
 
-/** The TMDB id a provider item carries in tmdb, tmdb_id or info.tmdb_id (numbers only), or "". */
+/**
+ * The countries of a TMDB origin (docs/browse.md, "Origin countries"): each entry that is two ASCII letters with only
+ * \s around them once the Unicode spaces are replaced, upper-cased. Anything else ("USA", "U.S.", "uſ", a fullwidth
+ * "ＵＳ", a value that is not a string) is ignored.
+ */
+export function originCountries(origin: unknown): string[] {
+  const countries: string[] = [];
+  for (const entry of arrayOrEmpty(origin)) {
+    if (typeof entry !== 'string') continue;
+    // Checked before upper-casing: "uſ".toUpperCase() is "US".
+    const country = TITLE.country.exec(unicodeSpaces(entry));
+    if (country) countries.push(country[1].toUpperCase());
+  }
+  return countries;
+}
+
+/** The largest provider TMDB id: 12 digits. */
+const TMDB_ID_MAX = 999999999999;
+
+/**
+ * The TMDB id one provider value gives (docs/browse.md, Matching step 1), told apart by the type JSON.parse gave it,
+ * never by its text: String(["123"]) is "123", and the string "1e3" is no id while the number 1e3 is 1000.
+ * - A string, its ends trimmed as a provider field (the Unicode spaces, then [ \t\n\x0B\f\r]; not trim(), which keeps
+ *   U+0085), that is TMDB_ID in ASCII digits: group 1 without its leading zeros ("" when all zeros).
+ * - A number that is a whole number from 1 to 999999999999, in decimal digits (String() writes no exponent below 1e21).
+ * - Anything else (an array, an object, a boolean, null, a missing key): "".
+ */
+function tmdbValue(value: unknown) {
+  if (typeof value === 'string') return TMDB_ID.exec(trimEnds(unicodeSpaces(value)))?.[1].replace(/^0+/, '') ?? '';
+  if (typeof value === 'number') return Number.isInteger(value) && value >= 1 && value <= TMDB_ID_MAX ? String(value) : '';
+  return '';
+}
+
+/**
+ * The provider TMDB id of an Xtream row as JSON.parse gave it: the first of tmdb, tmdb_id, info.tmdb_id and info.tmdb
+ * (the last two only when info is an object) whose value gives one (see tmdbValue). "" when there is none.
+ */
 export function providerTmdbId(row: Record<string, unknown>) {
-  const values = [row.tmdb, row.tmdb_id];
-  if (isRecord(row.info)) values.push(row.info.tmdb_id);
-  for (const value of values) {
-    const text = asText(value).trim();
-    if (text && text !== '0' && RX.digits.test(text) && text.length <= 12) return text;
+  const info = isRecord(row.info) ? row.info : {};
+  for (const value of [row.tmdb, row.tmdb_id, info.tmdb_id, info.tmdb]) {
+    const id = tmdbValue(value);
+    if (id) return id;
   }
   return '';
 }
@@ -148,14 +272,17 @@ export function ratingOf(row: Record<string, unknown>) {
  * One Xtream title as the web player's catalogue sends it: only what browsing needs. poster is a direct https URL,
  * or "~<base>:<file>" for a poster served through /api/player/image (see lib/player-vod.ts).
  */
-export type CompactTitle = {id: string; name: string; year?: string; cat?: string; poster?: string; rating?: number; added?: number; tmdb?: string; ext?: string; genre?: string; adult?: true};
+export type CompactTitle = {id: string; name: string; year?: string; cat?: string; cats?: string[]; poster?: string; rating?: number; added?: number; tmdb?: string; ext?: string; genre?: string; adult?: true};
 export type CompactCategory = {id: string; name: string; adult?: true};
 const XTREAM_ID = /^\d{1,10}$/;
 const EXTENSION = /^[a-z0-9]{2,5}$/;
+/** category_ids beyond category_id kept per title (USA only reads every category of a title). */
+const MORE_CATEGORIES = 10;
 
 /**
  * One Xtream get_vod_streams (kind "movie") or get_series (kind "series") row, or null when it has no numeric id.
- * Everything else the provider sends (direct_source, custom_sid, num, stream_type, category_ids…) is dropped.
+ * Everything else the provider sends (direct_source, custom_sid, num, stream_type…) is dropped. cats holds the
+ * category_ids other than category_id.
  */
 export function compactXtream(kind: 'movie' | 'series', raw: unknown): CompactTitle | null {
   if (!isRecord(raw)) return null;
@@ -164,14 +291,20 @@ export function compactXtream(kind: 'movie' | 'series', raw: unknown): CompactTi
   const name = asText(raw.name).trim().slice(0, 150);
   const year = yearOfText(raw.year) || yearOfText(raw.releaseDate) || yearOfText(raw.release_date) || yearOfText(raw.releasedate) || titleYearOf(name);
   const cat = asText(raw.category_id).trim().slice(0, 40);
+  const cats: string[] = [];
+  for (const value of arrayOrEmpty(raw.category_ids)) {
+    const other = asText(value).trim().slice(0, 40);
+    if (other && other !== cat && !cats.includes(other) && cats.length < MORE_CATEGORIES) cats.push(other);
+  }
   const poster = asText(kind === 'movie' ? raw.stream_icon : raw.cover).trim();
   const rating = ratingOf(raw);
-  const added = integerOf(kind === 'movie' ? raw.added : raw.last_modified);
+  const added = unixSeconds(integerOf(kind === 'movie' ? raw.added : raw.last_modified));
   const tmdb = providerTmdbId(raw);
   const genre = asText(raw.genre).trim().slice(0, 100);
   const item: CompactTitle = {id, name};
   if (year) item.year = year;
   if (cat) item.cat = cat;
+  if (cats.length) item.cats = cats;
   if (poster && poster.length <= 1024) item.poster = poster;
   if (rating) item.rating = rating;
   if (added) item.added = added;
@@ -206,7 +339,10 @@ export type BrowseTitle = {
   key: string;
   id: string;
   name: string;
+  /** The provider category id (M3U: the group-title). */
   cat: string;
+  /** More provider category ids (Xtream category_ids). */
+  cats?: string[];
   adult: boolean;
   year: string;
   rating: number;
@@ -221,11 +357,13 @@ export type BrowseTitle = {
 };
 
 export function titleFromCompact(kind: 'movie' | 'series', item: CompactTitle): BrowseTitle {
-  return {
+  const title: BrowseTitle = {
     kind, key: kind[0] + item.id, id: item.id, name: item.name, cat: item.cat || '__other', adult: Boolean(item.adult),
     year: item.year || '', rating: item.rating || 0, hint: item.tmdb || '', genre: item.genre || '', poster: item.poster || '',
-    ext: item.ext || (kind === 'movie' ? 'mp4' : ''), added: item.added || 0,
+    ext: item.ext || (kind === 'movie' ? 'mp4' : ''), added: unixSeconds(item.added || 0),
   };
+  if (Array.isArray(item.cats) && item.cats.length) title.cats = item.cats;
+  return title;
 }
 
 /** One M3U movie or series entry. An M3U series entry is one episode that plays on its own. */
@@ -238,10 +376,10 @@ export function titleFromM3u(kind: 'movie' | 'episode', channel: string, name: s
 
 // ------------------------------------------------------------------ USA only and adult rules
 
-/** A category fails the USA filter when its name carries a non-US country or language tag. */
+/** A category is foreign (fails the USA filter) when any of the four rules of docs/browse.md matches its name. */
 export function isForeignCategory(name: string) {
-  if (!name) return false;
-  return RX.foreignCode.test(name) || RX.foreignTag.test(name) || RX.foreignWord.test(name);
+  const text = unicodeSpaces(name);
+  return Boolean(text) && FOREIGN.some(rule => rule.test(text));
 }
 
 /** XXX, Adult, Adults, 18+ or Porn, but not Adult Swim: the web player's live-channel rule (lib/player-data.ts). */
@@ -301,13 +439,10 @@ function tmdbEntry(raw: unknown): TmdbEntry | null {
   if (!isRecord(raw)) return null;
   const id = asText(raw.id);
   if (!id) return null;
-  // known is false when TMDB gave no country (origin []); USA only then goes by the category alone.
-  let us = false, known = false;
-  for (const country of arrayOrEmpty(raw.origin)) {
-    const code = asText(country).toUpperCase();
-    if (code) known = true;
-    if (code === 'US') us = true;
-  }
+  // known is false when the origin holds no country (origin [], or only entries such as "USA" that are not one); USA
+  // only then goes by the category alone.
+  const origin = originCountries(raw.origin);
+  const us = origin.includes('US'), known = origin.length > 0;
   let g = '';
   for (const genre of arrayOrEmpty(raw.genres)) {
     const text = asText(genre);
@@ -339,22 +474,32 @@ export function tmdbIndex(section: RowsSection): TmdbIndex {
   return {byId, byTitle, count: byId.size};
 }
 
-/**
- * 1. A provider TMDB id matches on the id alone. 2. Otherwise the normalized title must match and the years may
- * differ by 1. A title without a year matches only when exactly one TMDB title has that name.
- */
-export function matchTmdb(index: TmdbIndex, hint: string, norm: string, year: string): TmdbEntry | null {
-  if (hint) return index.byId.get(hint) || null;
-  const candidates = norm ? index.byTitle.get(norm) : undefined;
+function matchKey(index: TmdbIndex, key: string, year: number): TmdbEntry | null {
+  const candidates = key ? index.byTitle.get(key) : undefined;
   if (!candidates) return null;
-  const wanted = parseInt(year, 10) || 0;
-  if (wanted <= 0) return candidates.length === 1 ? candidates[0] : null;
-  let best: TmdbEntry | null = null;
+  if (year <= 0) return candidates.length === 1 ? candidates[0] : null;
+  let near: TmdbEntry | null = null;
   for (const candidate of candidates) {
-    if (candidate.year === wanted) return candidate;
-    if (!best && candidate.year > 0 && Math.abs(candidate.year - wanted) <= 1) best = candidate;
+    if (candidate.year === year) return candidate;
+    if (!near && candidate.year > 0 && Math.abs(candidate.year - year) <= 1) near = candidate;
   }
-  return best;
+  return near;
+}
+
+/**
+ * 1. A provider TMDB id matches on the id alone. 2. Otherwise the title's normalized name (norm), and when that
+ * finds nothing its name normalized without its leading and trailing tags (steps 3.1, 3.2 and 3.4: "CSI: Miami" as
+ * "csi miami"), must match a TMDB title: of the same year, else the first whose year differs by 1. A title without a
+ * year matches only when exactly one TMDB title has that name.
+ */
+export function matchTmdb(index: TmdbIndex, hint: string, name: string, year: string, norm = normalizeTitle(name)): TmdbEntry | null {
+  if (hint) return index.byId.get(hint) || null;
+  const wanted = parseInt(year, 10) || 0;
+  const found = matchKey(index, norm, wanted);
+  // Steps 3.1, 3.2 and 3.4 change nothing in a name without |, :, - or –.
+  if (found || !/[|:\u2013-]/.test(name)) return found;
+  const whole = normalizeTitle(name, true);
+  return whole !== norm ? matchKey(index, whole, wanted) : null;
 }
 
 // ------------------------------------------------------------------ genres
@@ -442,6 +587,8 @@ export function categoryGenreKeys(name: string, table: GenreTable) {
 export type IndexedTitle = {
   kind: TitleKind; key: string; id: string; name: string; year: string; rating: number; poster: string; ext: string;
   adult: boolean; us: boolean; tmdb: string; g: string; channel?: string;
+  /** Titles matched to the same TMDB title, when there are several: their indices, best first (see titleSectionSteps). */
+  copies?: number[];
 };
 export type ListKey = 'popular' | 'featured' | 'recent' | 'rated' | 'az' | ServiceKey;
 export type TitleSection = {items: IndexedTitle[]; lists: Record<ListKey, number[]>; byKey: Map<string, number>; genres: GenreOption[]; matched: number};
@@ -478,10 +625,23 @@ export function* titleSectionSteps(titles: BrowseTitle[], categories: CategoryIn
   const catInfo = new Map<string, CategoryInfo>();
   for (const cat of categories) catInfo.set(cat.id, {foreign: isForeignCategory(cat.name), adult: isFlagOn(cat.adult) || cat.adult === true || isAdultName(cat.name), services: categoryServices(cat.name), g: categoryGenreKeys(cat.name, genres)});
   const plain: CategoryInfo = {foreign: false, adult: false, services: [], g: ''};
+  // USA only, the category half (docs/browse.md): a title's categories are those of every row with its key (category_id
+  // and category_ids), leaving out ids missing from the category list. They pass when none is left or one of them is
+  // not foreign; foreignOnly marks the titles whose known categories are all foreign.
+  const foreignOnly = new Map<string, boolean>();
+  for (const title of titles) {
+    if (foreignOnly.get(title.key) === false) continue;
+    for (const id of title.cats ? [title.cat, ...title.cats] : [title.cat]) {
+      const known = catInfo.get(id);
+      if (!known) continue;
+      foreignOnly.set(title.key, known.foreign);
+      if (!known.foreign) break;
+    }
+  }
   const usedGenres = new Set<string>();
   // Provider genre texts repeat across thousands of titles ("Action, Drama"); each is worked out once.
   const genreCache = new Map<string, string>();
-  const items: IndexedTitle[] = [], byKey = new Map<string, number>(), byTmdb = new Map<string, number[]>();
+  const items: IndexedTitle[] = [], byKey = new Map<string, number>(), byTmdb = new Map<string, number[]>(), addedOf: number[] = [];
   const byService = new Map<ServiceKey, Pair<number>[]>(SERVICES.map(key => [key, []]));
   const recent: Pair<number>[] = [], rated: Pair<number>[] = [], az: Pair<string>[] = [];
   let matched = 0;
@@ -490,10 +650,10 @@ export function* titleSectionSteps(titles: BrowseTitle[], categories: CategoryIn
     const title = titles[n];
     const info = catInfo.get(title.cat) || plain;
     const norm = normalizeTitle(title.name);
-    const entry = index.count > 0 ? matchTmdb(index, title.hint, norm, title.year) : null;
-    // USA only keeps a title only if its category passes the filter and, when it is matched to TMDB and TMDB gave its
-    // countries, they include US. A match with no countries (origin []) is judged by its category alone.
-    let us = !info.foreign, tmdb = '', g = '';
+    const entry = index.count > 0 ? matchTmdb(index, title.hint, title.name, title.year, norm) : null;
+    // USA only keeps a title only if its categories pass the filter and, when it is matched to TMDB and TMDB gave its
+    // countries, they include US. A match with no countries (origin []) is judged by its categories alone.
+    let us = foreignOnly.get(title.key) !== true, tmdb = '', g = '';
     if (entry) {
       tmdb = entry.id; g = entry.g;
       if (entry.known) us = us && entry.us;
@@ -511,6 +671,7 @@ export function* titleSectionSteps(titles: BrowseTitle[], categories: CategoryIn
     const item: IndexedTitle = {kind: title.kind, key: title.key, id: title.id, name: title.name, year: title.year, rating: title.rating, poster: title.poster, ext: title.ext, adult: title.adult || info.adult, us, tmdb, g};
     if (title.channel) item.channel = title.channel;
     items.push(item);
+    addedOf.push(title.added);
     if (!byKey.has(title.key)) byKey.set(title.key, i);
     if (tmdb) {
       const group = byTmdb.get(tmdb);
@@ -522,9 +683,12 @@ export function* titleSectionSteps(titles: BrowseTitle[], categories: CategoryIn
     // Catalogue order breaks ties, so copies of one title always sort the same way.
     az.push({i, k: norm || title.name.toLowerCase()});
   }
-  // Copies of one TMDB title: the ones in categories that pass the USA filter come first.
-  for (const [id, group] of byTmdb) {
-    if (group.length > 1) byTmdb.set(id, [...group.filter(i => items[i].us), ...group.filter(i => !items[i].us)]);
+  // Copies of one TMDB title are one poster (docs/browse.md, "Copies of one title"). They rank: those that pass USA
+  // only first, then the newest, then catalogue order; pickTitles opens the best-ranked visible copy.
+  for (const group of byTmdb.values()) {
+    if (group.length < 2) continue;
+    group.sort((a, b) => Number(items[b].us) - Number(items[a].us) || addedOf[b] - addedOf[a] || a - b);
+    for (const i of group) items[i].copies = group;
   }
   yield;
   const lists = {
@@ -574,7 +738,10 @@ export function titleVisible(item: IndexedTitle, opts: PickOptions) {
   return true;
 }
 
-/** Walks indices from cursor and returns up to limit visible titles, one per TMDB title. */
+/**
+ * Walks indices from cursor and returns up to limit visible titles, one per TMDB title: a TMDB title stands where its
+ * first visible copy stands and opens its best-ranked visible copy.
+ */
 export function pickTitles(items: IndexedTitle[], indices: number[] | undefined | null, opts: PickOptions, cursor: number, limit: number) {
   const picked: number[] = [], list = indices || [], seen = opts.seen || (opts.seen = new Set());
   let i = cursor;
@@ -585,7 +752,7 @@ export function pickTitles(items: IndexedTitle[], indices: number[] | undefined 
     const seenKey = item.tmdb ? 'tmdb:' + item.tmdb : item.key;
     if (seen.has(seenKey)) continue;
     seen.add(seenKey);
-    picked.push(index);
+    picked.push(item.copies?.find(copy => titleVisible(items[copy], opts)) ?? index);
   }
   return {picked, cursor: i};
 }

@@ -528,14 +528,22 @@ public enum Cleanup {
         return LineupCleanup(channels: out, merged: merged)
     }
 
-    /// Groups by lowercase alphanumeric name, keeps the newest playable upload; other playable uploads become backups
-    /// (newest first); categoryIDs unioned; tmdbID/year/genre taken from the first upload that has them.
-    public static func movies(_ movies: [Movie]) -> [Movie] {
+    /// Folds re-uploads of a film into one movie (docs/browse.md, "Copies of one title"): playable uploads whose names
+    /// are equal once lower-cased and stripped of everything but a-z and 0-9. Uploads listed only in foreign
+    /// `categories` (every one of their categories found there fails `TitleRegion.isForeignCategory`, usually dubbed
+    /// copies) fold among themselves and never into the others, so "Movies & Series: USA only" can still tell them
+    /// apart. Each group keeps its newest upload (largest `added`; on a tie, the first in `movies`); the other uploads
+    /// become its backups, newest first; the group's categories are merged; a missing TMDB id, year or genre (and
+    /// poster or rating) comes from the newest copy that has one.
+    public static func movies(_ movies: [Movie], categories: [Category] = []) -> [Movie] {
+        let foreign = TitleRegion.foreignByID(categories)
         var order: [String] = []
         var groups: [String: [Movie]] = [:]
         for movie in movies where PlaybackSupport.isPlayableVOD(url: movie.url, containerExtension: movie.containerExtension) {
             let alnum = String(movie.name.lowercased().unicodeScalars.filter { ($0 >= "a" && $0 <= "z") || ($0 >= "0" && $0 <= "9") }.map(Character.init))
-            let key = alnum.isEmpty ? "id:" + movie.id : alnum
+            var key = alnum.isEmpty ? "id:" + movie.id : alnum
+            // Ids missing from `categories` are left out; a movie with no category left passes.
+            if !TitleRegion.categoriesPass(movie.categoryIDs, foreign: foreign) { key += "|foreign" }
             if groups[key] == nil { order.append(key) }
             groups[key, default: []].append(movie)
         }

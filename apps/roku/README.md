@@ -17,7 +17,7 @@ This is the Roku app in the LumaNest TV monorepo. It is a SceneGraph app with th
 ## Which movies and series appear
 
 - **Only titles on the line.** The line's own lists (`get_vod_streams`, `get_series`) are the only source of titles. The popularity lists only pick and order titles from them.
-- **Movies & Series: USA only** (Settings, on by default, separate from the Channels switch). A title is shown only if its provider category has no other country or language tag (`FR`, `DE`, `IT`, `ES`, `LAT`, `MX`, `BR`, `PT`, `TR`, `AR`, `IN`, `HINDI`, `PK`, `NL`, `PL`, `RO`, `RU`, `UK` or `CA` in capitals as a whole word or a `XX |`, `|XX|` or `XX:` prefix, or the country or language written out, such as French, Latino or Tamil) and, when it is matched to TMDB and TMDB gives its countries, only if they include the US. A match with no countries (`"origin": []`) goes by its category alone. `IN` and `IT` count only as a tag (at the start or end of the name or next to `|`, `:`, `-`, `/`, brackets or parentheses), so "MOVIES IN 4K" is kept, the same rule as the Android app. **All** shows every movie and series on the line.
+- **Movies & Series: USA only** (Settings, on by default, separate from the Channels switch). A title is shown only if its provider category has no other country or language tag (`FR`, `DE`, `IT`, `ES`, `LAT`, `MX`, `BR`, `PT`, `TR`, `AR`, `IN`, `HINDI`, `PK`, `NL`, `PL`, `RO`, `RU`, `UK` or `CA` in capitals as a whole word or a `XX |`, `|XX|` or `XX:` prefix, or the country or language written out, such as French, Latino or Tamil) and, when it is matched to TMDB and TMDB gives its countries, only if they include the US. A match with no country (`"origin": []`, or only entries that are not two letters, such as `USA`) goes by its category alone. `IN` and `IT` count only as a tag (at the start or end of the name or next to `|`, `:`, `-`, `/`, brackets or parentheses), so "MOVIES IN 4K" is kept, the same rule as the Android app. **All** shows every movie and series on the line.
 - **Adult content** follows the same rules as Live TV: hidden until unlocked with the passcode.
 
 ## Popular, Featured and streaming-service lists
@@ -52,11 +52,11 @@ npm run check
 npm run build
 ```
 
-`check` compiles every BrightScript and SceneGraph file, and the unit tests, with BrighterScript and fails on errors. `build` writes the sideload package to the ignored `output/roku/tuner-roku.zip`.
+`check` compiles every BrightScript and SceneGraph file, and the unit tests, with BrighterScript and fails on errors. It also fails when `tests/BrowseCases.brs` is out of date (below). `build` writes the sideload package to the ignored `output/roku/tuner-roku.zip`.
 
 ## Unit tests (on a Roku)
 
-The browsing rules have BrightScript unit tests in `tests/`. They run on a Roku in Developer Mode:
+The browsing rules have BrightScript unit tests in `tests/`. They include the test cases every Tuner app runs, `docs/browse-cases.json`. A Roku can't read that file, so `npm run cases` (`tools/browse-cases.mjs`) writes it into `tests/BrowseCases.brs`; run it after the JSON changes. The `tmdb` cases hold a provider row as JSON text, which the test reads with `ParseJson`, as the catalog task does, before it reads the row's TMDB id. One test also times a name that ends in 40 quality tags and a word (`Movie - 1999 - 4K - … - 4K - Extended`), and another a name with 16,000 spaces inside it (`A`, the spaces, `B`): normalizing each and reading its year must take under 50 ms. The tests run on a Roku in Developer Mode:
 
 1. `npm run build:tests` writes `output/roku/tuner-roku-tests.zip` (the tests and `source/lib`, without the app's screens).
 2. Upload it to the Roku as below, then open a terminal on the same network and run `telnet <roku-ip> 8085` to see the debug console.

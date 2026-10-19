@@ -579,7 +579,7 @@ public actor CatalogService {
 
     static func movieLibrary(_ movies: [Movie], _ categories: [Category], edition: Edition, date: Date) -> MovieLibrary {
         let policy = ContentPolicy.movies(movies, categories: categories, edition: edition)
-        let folded = Cleanup.movies(policy.items)
+        let folded = Cleanup.movies(policy.items, categories: policy.categories)
         let used = Set(folded.flatMap(\.categoryIDs))
         return MovieLibrary(movies: folded, categories: policy.categories.filter { used.contains($0.id) }, updated: date)
     }

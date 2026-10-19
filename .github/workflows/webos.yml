@@ -3,9 +3,9 @@ name: LG webOS
 on:
   push:
     branches: [main]
-    paths: ['apps/webos/**', 'apps/tizen/js/**', 'apps/tizen/css/**', '.github/workflows/webos.yml']
+    paths: ['apps/webos/**', 'apps/tizen/js/**', 'apps/tizen/css/**', 'docs/browse-cases.json', '.github/workflows/webos.yml']
   pull_request:
-    paths: ['apps/webos/**', 'apps/tizen/js/**', 'apps/tizen/css/**', '.github/workflows/webos.yml']
+    paths: ['apps/webos/**', 'apps/tizen/js/**', 'apps/tizen/css/**', 'docs/browse-cases.json', '.github/workflows/webos.yml']
   workflow_dispatch:
 
 permissions:
@@ -32,6 +32,8 @@ jobs:
           package-manager-cache: false
       - name: Install the pinned validation dependency
         run: npm install --ignore-scripts --no-package-lock --no-audit --no-fund
+      - name: Check the LG runtime files are generated from the Samsung sources
+        run: npm run sync -- --check
       - name: Check webOS source
         run: npm run check
       - name: Test

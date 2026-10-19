@@ -481,6 +481,24 @@ final class CleanupTests: XCTestCase {
         XCTAssertEqual(borrowed.first?.genre, "Crime")
     }
 
+    func testDubbedUploadsNeverFoldIntoTheOthers() {
+        let categories = [Category(id: "en", name: "EN | Movies"), Category(id: "fr", name: "FR | Films"), Category(id: "de", name: "DE | Filme"),
+                          Category(id: "kids", name: "Kids")]
+        let movies = [movie("m:1", "Dune (2021)", category: "en", added: 10),
+                      movie("m:2", "Dune (2021)", category: "fr", added: 40, year: "2021", tmdb: 438631, genre: "Drama"),
+                      movie("m:3", "DUNE 2021", category: "de", added: 30),
+                      movie("m:4", "Dune: 2021", categories: ["fr", "kids"], added: 20),
+                      movie("m:5", "Dune 2021", category: "gone", added: 5)]
+        let out = Cleanup.movies(movies, categories: categories)
+        XCTAssertEqual(out.map(\.id), ["m:4", "m:2"], "copies listed only in foreign categories fold among themselves")
+        XCTAssertEqual(out[0].backups.map(\.lastPathComponent), ["m_1.mp4", "m_5.mp4"], "one category that passes is enough; unknown ids are left out")
+        XCTAssertEqual(out[0].categoryIDs, ["fr", "kids", "en", "gone"])
+        XCTAssertNil(out[0].tmdbID, "nothing comes from the dubbed copies")
+        XCTAssertEqual(out[1].backups.map(\.lastPathComponent), ["m_3.mp4"])
+        XCTAssertEqual(out[1].categoryIDs, ["fr", "de"])
+        XCTAssertEqual(Cleanup.movies(movies).map(\.id), ["m:2"], "without the category list every upload folds together")
+    }
+
     func testChannelMatchKeysNormalizeProviderNoise() {
         let cnn = ChannelMatch.key("CNN")
         XCTAssertEqual(cnn, "cnn")
