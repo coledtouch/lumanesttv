@@ -1,13 +1,17 @@
 ' Unit tests for source/lib/BrowseLogic.brs (docs/browse.md). They run on a Roku in the test package
 ' (npm run build:tests, see apps/roku/README.md) and print every failure to the debug console.
+' testSharedCases runs docs/browse-cases.json, which tools/browse-cases.mjs writes into BrowseCases.brs.
 
 function runBrowseLogicTests() as object
     t = {passed: 0, failed: 0, failures: []}
     rx = browseRx()
+    testSharedCases(t, rx)
     testNormalizeTitle(t, rx)
     testYears(t, rx)
+    testTrimming(t, rx)
+    testTagChainTime(t, rx)
+    testSpaceRunTime(t, rx)
     testProviderTmdbId(t, rx)
-    testUsaCategoryFilter(t, rx)
     testAdultNames(t, rx)
     testCategoryServices(t, rx)
     testRowsPayload(t)
@@ -16,8 +20,11 @@ function runBrowseLogicTests() as object
     testGenres(t, rx)
     testBuildTitleSection(t, rx)
     testUnknownOrigin(t, rx)
+    testOrigins(t, rx)
+    testCategoryMemberships(t, rx)
     testCategoryGenres(t, rx)
     testPickTitles(t, rx)
+    testCopies(t, rx)
     testHomeRows(t, rx)
     testSearchTitles(t, rx)
     testDiscoverLists(t)
@@ -79,60 +86,237 @@ end function
 
 ' ------------------------------------------------------------------ tests
 
+' The cases every Tuner app runs (docs/browse-cases.json): the category filter, normalized titles with the year
+' in the name, USA only through buildTitleSection, and the provider TMDB id of a row read with ParseJson.
+sub testSharedCases(t as object, rx as object)
+    cases = browseCases()
+    expectTrue(t, cases.Count() > 0, "shared cases are loaded")
+    for each c in cases
+        if c.kind = "category"
+            expectEqual(t, isForeignCategory(c.name, rx), c.foreign, "shared category " + FormatJson(c.name))
+        else if c.kind = "normalize"
+            expectEqual(t, [normalizeTitle(c.input, rx), titleYearOf(c.input, rx)], [c.title, c.year], "shared normalize " + FormatJson(c.input))
+        else if c.kind = "usa"
+            expectEqual(t, sharedUsaCase(c, rx), c.expect, "shared usa " + FormatJson(c.category) + " origin " + FormatJson(c.origin))
+        else if c.kind = "tmdb"
+            expected = c.expect
+            if expected = invalid then expected = ""
+            expectEqual(t, sharedTmdbCase(c.json, rx), expected, "shared tmdb " + FormatJson(c.json))
+        else
+            expectEqual(t, c.kind, "category, normalize, usa or tmdb", "shared case kind")
+        end if
+    end for
+end sub
+
+' One tmdb case as the catalog task reads it: the row's JSON text through ParseJson (ApiTask), then providerTmdbId,
+' and the hint titleFromXtream keeps for the row (with a stream id and a name added when the row has none). Returns
+' the id, "" for none, or a text saying what went wrong.
+function sharedTmdbCase(json as string, rx as object) as string
+    row = ParseJson(json)
+    if not isAssoc(row) then return "ParseJson gave " + type(row)
+    id = providerTmdbId(row, rx)
+    if row.stream_id = invalid then row.stream_id = 1
+    if row.name = invalid then row.name = "Case Title"
+    title = titleFromXtream("movie", row, rx)
+    if title = invalid then return "titleFromXtream gave no title"
+    if title.hint <> id then return "providerTmdbId gave " + FormatJson(id) + ", the title's hint " + FormatJson(title.hint)
+    return id
+end function
+
+' One usa case as the catalog task builds it: a movie in the case's categories, given as the category_id and
+' category_ids of one row and, for several categories, also as one row per category with the same stream id.
+' With an origin it carries the TMDB id of a Popular title with that origin; with none (null) it is unmatched.
+' Returns whether USA only keeps it, or a text saying what went wrong.
+function sharedUsaCase(c as object, rx as object) as dynamic
+    names = c.category
+    if type(names) <> "roArray"
+        if names = "" then names = [] else names = [names]
+    end if
+    categories = []
+    for each name in names
+        categories.Push({id: (101 + categories.Count()).ToStr(), name: name, adult: false})
+    end for
+    movie = {}
+    extra = {}
+    if c.origin <> invalid
+        movie = {popular: [tmdbItem(77, "Case Title", "2020", c.origin, [])]}
+        extra = {tmdb: "77"}
+    end if
+    payload = rowsPayloadWith(movie, {})
+    row = movieRow("1", "Case Title", "", extra)
+    others = []
+    for i = 0 to categories.Count() - 1
+        if i = 0 then row.category_id = categories[0].id else others.Push(categories[i].id.ToInt())
+    end for
+    row.category_ids = others
+    variants = [[row]]
+    if categories.Count() > 1
+        rows = []
+        for each category in categories
+            rows.Push(movieRow("1", "Case Title", category.id, extra))
+        end for
+        variants.Push(rows)
+    end if
+    results = []
+    for each rows in variants
+        section = buildTitleSection(sectionTitles(rows, "movie", rx), categories, payload.movie, payload.genres.movie, rx)
+        for each item in section.items
+            if (item.tmdb = "77") <> (c.origin <> invalid) then return "matched " + FormatJson(item.tmdb)
+            results.Push(item.us)
+        end for
+    end for
+    for each result in results
+        if result <> results[0] then return "rows with one id disagree"
+    end for
+    return results[0]
+end function
+
 sub testNormalizeTitle(t as object, rx as object)
-    expectEqual(t, normalizeTitle("The Matrix (1999)", rx), "matrix", "trailing year and leading the")
     expectEqual(t, normalizeTitle("|US| Dune: Part Two [4K]", rx), "dune part two", "pipe and bracket tags")
-    expectEqual(t, normalizeTitle("US - Fast & Furious 7 HD", rx), "fast and furious 7", "prefix, & and quality word")
-    expectEqual(t, normalizeTitle("EN| Spider-Man: No Way Home (2021) UHD", rx), "spider man no way home", "punctuation becomes spaces")
-    expectEqual(t, normalizeTitle("Ocean's Eleven", rx), "oceans eleven", "apostrophes are dropped")
-    expectEqual(t, normalizeTitle("The Office (US)", rx), "office", "short parenthesised tag")
-    expectEqual(t, normalizeTitle("Amélie", rx), "amelie", "accents folded")
     expectEqual(t, normalizeTitle("  Blade   Runner 2049  ", rx), "blade runner 2049", "years inside the title stay")
-    expectEqual(t, normalizeTitle("The", rx), "the", "a lone 'the' stays")
-    expectEqual(t, normalizeTitle("WALL-E", rx), "wall e", "hyphenated title is not a prefix")
-    expectEqual(t, normalizeTitle("X-MEN: APOCALYPSE", rx), "x men apocalypse", "upper-case title with a colon keeps its first word")
-    expectEqual(t, normalizeTitle("4K | NF | Stranger Things - EN", rx), "stranger things", "stacked prefixes and suffix")
-    expectEqual(t, normalizeTitle("Mission: Impossible – Dead Reckoning", rx), "mission impossible dead reckoning", "dashes and colons")
-    expectEqual(t, normalizeTitle("", rx), "", "empty title")
+    expectEqual(t, normalizeTitle("Dune – Part Two", rx), "dune part two", "en dash")
+    expectEqual(t, normalizeTitle("Rock ’n’ Roll", rx), "rock n roll", "typographic apostrophes are dropped")
+    expectEqual(t, normalizeTitle("Dune 8K", rx), "dune", "8K is a quality word")
+    ' LCase may leave non-ASCII letters alone on a Roku, so the fold table has the upper-case letters too.
+    expectEqual(t, normalizeTitle("ÉCOLE", rx), "ecole", "upper-case accented letter")
+    expectEqual(t, normalizeTitle("ŁÓDŹ", rx), "lodz", "Latin Extended-A in upper case")
+    expectEqual(t, normalizeTitle("Straße", rx), "strasse", "sharp s")
+    expectEqual(t, normalizeTitle("ŒUVRE", rx), "oeuvre", "upper-case oe")
+    expectEqual(t, normalizeTitle("Ærø", rx), "aero", "ae and o with stroke")
+    expectEqual(t, normalizeTitle("ǄEMAL", rx), "dzemal", "a letter NFKD splits in two")
+    expectEqual(t, normalizeTitle("İstanbul", rx), "istanbul", "I with a dot")
+    expectEqual(t, normalizeTitle("Ŀlobregat", rx), "l lobregat", "L with a middle dot keeps NFKD's separator")
+    expectEqual(t, normalizeTitle(Chr(&hFB01) + "nding Nemo", rx), "finding nemo", "fi ligature")
+    expectEqual(t, normalizeTitle("Ame" + Chr(&h301) + "lie", rx), "amelie", "a combining mark is dropped")
+    expectEqual(t, normalizeTitle("Ħal", rx), "al", "a letter NFKD keeps becomes a space")
+    expectEqual(t, normalizeKey("CSI: Miami", false, rx), "csi miami", "without tag removal")
+    expectEqual(t, normalizeKey("EN | The Matrix | 1999", false, rx), "en the matrix 1999", "without tag removal, tags stay as words")
+    expectEqual(t, normalizeKey("Dune | 4K | EN [x]", false, rx), "dune en", "without tag removal, brackets and pipe tags still go")
+    fold = foldTable()
+    expectEqual(t, [fold["é"], fold["É"], fold["ǅ"], fold[Chr(&h36F)], fold["a"], fold["Ħ"]], ["e", "e", "dz", "", invalid, invalid], "fold table")
+    ' Fullwidth, Roman numerals, circled numbers and letters, the Kelvin sign; marks beyond U+0300 to U+036F stay.
+    expectEqual(t, [fold[Chr(&hFF10)], fold[Chr(&hFF21)], fold[Chr(&hFF5A)], fold[Chr(&h2163)], fold[Chr(&h217F)], fold[Chr(&h2460)], fold[Chr(&h2473)], fold[Chr(&h24B6)], fold[Chr(&h24E9)], fold[Chr(&h212A)]], ["0", "a", "z", "iv", "m", "1", "20", "a", "z", "k"], "fold table beyond Latin")
+    expectEqual(t, [fold[Chr(&h483)], fold[Chr(&h1AB0)], fold[Chr(&h20D7)], fold[Chr(&hFE20)], fold[Chr(&h2474)], fold[Chr(&h2180)]], [invalid, invalid, invalid, invalid, invalid, invalid], "fold table leaves other characters")
+    ' Rules that ignore case lower-case A to Z only.
+    expectEqual(t, asciiLower("ÉCOLE ſ " + Chr(&h212A) + "İX", rx), "École ſ " + Chr(&h212A) + "İx", "only ASCII letters are lower-cased")
 end sub
 
 sub testYears(t as object, rx as object)
     expectEqual(t, titleYearOf("Dune (2021)", rx), "2021", "year in parentheses")
     expectEqual(t, titleYearOf("Dune [2021] [4K]", rx), "2021", "year in brackets")
     expectEqual(t, titleYearOf("Blade Runner 2049", rx), "", "bare number is not a year")
+    expectEqual(t, titleYearOf("Heat (1995) | 2001", rx), "1995", "a bracket year comes first")
+    expectEqual(t, titleYearOf("Heat |" + Chr(160) + "1995", rx), "1995", "no-break space before an ending year")
     expectEqual(t, yearOfText("2021-05-01", rx), "2021", "release date")
     expectEqual(t, yearOfText(1999, rx), "1999", "numeric year")
+    expectEqual(t, yearOfText(" 1895", rx), "1895", "a year from 1800")
+    expectEqual(t, yearOfText("1799", rx), "", "before 1800")
+    expectEqual(t, yearOfText("20211", rx), "", "five digits are not a year")
+    expectEqual(t, yearOfText("N/A", rx), "", "not a year")
     expectEqual(t, yearOfText(invalid, rx), "", "missing year")
+    ' Provider year fields are read with the Unicode spaces replaced; U+200B and U+180E are not spaces.
+    expectEqual(t, [yearOfText(Chr(&hA0) + "2021-05-01", rx), yearOfText(Chr(&h3000) + Chr(&h2002) + "1999", rx), yearOfText(Chr(&hFEFF) + "2001", rx), yearOfText(Chr(&h85) + "1984", rx), yearOfText(Chr(&h2028) + Chr(&h1680) + "1900", rx)], ["2021", "1999", "2001", "1984", "1900"], "Unicode spaces before a provider year")
+    expectEqual(t, [yearOfText(Chr(&h200B) + "2021", rx), yearOfText(Chr(&h180E) + "2021", rx), yearOfText(Chr(&h1F) + "2021", rx)], ["", "", ""], "characters that are not spaces before a provider year")
+    title = titleFromXtream("movie", movieRow("6", "Heat (1995)", "1", {year: Chr(&h202F) + "1996"}), rx)
+    expectEqual(t, title.year, "1996", "a provider year after a narrow no-break space")
+    expectEqual(t, [titleYearOf("Heat (1995]", rx), titleYearOf("Heat - 1995 - 4K", rx), titleYearOf("2012 | 1999 | EN", rx), titleYearOf("EN | 1984 | 2010", rx), titleYearOf("Heat-1995", rx)], ["1995", "1995", "1999", "2010", ""], "years among brackets and trailing tags")
     title = titleFromXtream("movie", movieRow("7", "Heat (1995)", "1", {}), rx)
     expectEqual(t, title.year, "1995", "year taken from the name when the row has none")
+    title = titleFromXtream("movie", movieRow("8", "EN | Wonka | 2023", "1", {year: "N/A"}), rx)
+    expectEqual(t, title.year, "2023", "a year after a pipe in the name")
+    title = titleFromXtream("movie", movieRow("9", "Heat (1995)", "1", {year: "", releaseDate: "soon", release_date: "", releasedate: "1996-02-03"}), rx)
+    expectEqual(t, title.year, "1996", "releasedate is the last provider field, before the name")
     title = titleFromXtream("series", {series_id: 9, name: "Show", category_id: "2", releaseDate: "2019-01-02", last_modified: "1700000000", rating: "8.1", cover: "c.jpg"}, rx)
     expectEqual(t, [title.key, title.id, title.year, title.added, title.icon, title.rating], ["s9", "9", "2019", 1700000000, "c.jpg", 8.1], "series row")
     title = titleFromXtream("movie", movieRow("12", "EN| Heat", "3", {added: "1700000123", rating_5based: "4", tmdb: "949", container_extension: ""}), rx)
-    expectEqual(t, [title.key, title.cat, title.ext, title.added, title.rating, title.hint, title.year], ["m12", "3", "mp4", 1700000123, 8, "949", ""], "movie row")
+    expectEqual(t, [title.key, title.cats, title.ext, title.added, title.rating, title.hint, title.year], ["m12", ["3"], "mp4", 1700000123, 8, "949", ""], "movie row")
+    title = titleFromXtream("movie", movieRow("13", "Heat", "", {category_ids: [4, "5", ""]}), rx)
+    expectEqual(t, title.cats, ["4", "5"], "category_ids")
     expectEqual(t, titleFromXtream("movie", {name: "No id"}, rx), invalid, "a row without an id")
+    expectEqual(t, [unixSeconds("1700000123456"), unixSeconds(ParseJson("1700000123456")), unixSeconds("100000000001"), unixSeconds("1700000123.0"), unixSeconds(1700000123), unixSeconds(""), unixSeconds(invalid)], [1700000123, 1700000123, 100000000, 1700000123, 1700000123, 0, 0], "dates in milliseconds")
+    title = titleFromXtream("series", {series_id: 10, name: "Show", last_modified: "1700000000000"}, rx)
+    expectEqual(t, title.added, 1700000000, "series last_modified in milliseconds")
+end sub
+
+' Normalize step 1 and the year from a name take space, tab, line feed, vertical tab, form feed and carriage return
+' off both ends once the Unicode spaces are replaced, and nothing else; M3U lines and titles lose those and the
+' Unicode spaces (trimField). U+001C to U+001F, U+180E and U+200B stay: Trim may remove some of them.
+sub testTrimming(t as object, rx as object)
+    ascii = Chr(9) + Chr(10) + Chr(11) + Chr(12) + Chr(13) + " "
+    expectEqual(t, [normalizeTitle(ascii + "- 1999" + ascii, rx), titleYearOf(ascii + " - 1999" + ascii, rx), titleYearOf(Chr(&h3000) + "- 1999", rx)], ["1999", "", ""], "a tag-only name is read with its ends trimmed")
+    expectEqual(t, [titleYearOf("Heat - 1995" + Chr(13) + Chr(10), rx), titleYearOf(Chr(9) + "Heat | 1995 " + Chr(11), rx)], ["1995", "1995"], "a year before trimmed ends")
+    expectEqual(t, [normalizeTitle(Chr(&h1F) + " - 1999", rx), titleYearOf(Chr(&h1F) + " - 1999", rx), titleYearOf(Chr(&h180E) + " - 1999", rx), titleYearOf(Chr(&h200B) + " - 1999", rx)], ["", "1999", "1999", "1999"], "characters that are not spaces are not trimmed")
+    expectEqual(t, trimEnds(" " + Chr(&h1C) + " Heat " + Chr(&h1F) + Chr(13)), Chr(&h1C) + " Heat " + Chr(&h1F), "trimEnds stops at U+001C and U+001F")
+    expectEqual(t, [trimEnds(""), trimEnds(ascii), trimEnds("Heat"), trimEnds(ascii + "H" + ascii), trimEnds(" A  B" + Chr(9))], ["", "", "Heat", "H", "A  B"], "trimEnds takes the ends only")
+    expectEqual(t, [trimField(""), trimField("Heat"), trimField(ascii), trimField(Chr(&h3000) + Chr(&hFEFF) + " Heat" + Chr(&hA0) + Chr(&h2029) + Chr(13))], ["", "Heat", "", "Heat"], "trimField takes spaces off the ends")
+    expectEqual(t, [trimField(Chr(&h1F) + " - 1999" + Chr(13)), trimField(Chr(&h180E) + "Heat" + Chr(&h200B) + " "), trimField(" " + Chr(&h1C) + "|EN" + Chr(&h1E))], [Chr(&h1F) + " - 1999", Chr(&h180E) + "Heat" + Chr(&h200B), Chr(&h1C) + "|EN" + Chr(&h1E)], "trimField keeps U+001C to U+001F, U+180E and U+200B")
+    expectEqual(t, titleFromM3u("movie", "m~1", trimField(Chr(&h1F) + " - 1999" + Chr(13)), "", "Movies", "u", rx).year, "1999", "an M3U title keeps U+001F")
+end sub
+
+' docs/browse.md, "Test cases": a name ending in 40 quality tags and a word that is not a tag. yearEnd tries the
+' whole chain and fails; with a TAG that matched a tag in two ways this took longer with each tag.
+sub testTagChainTime(t as object, rx as object)
+    chain = "Movie - 1999"
+    for i = 1 to 40
+        chain = chain + " - 4K"
+    end for
+    name = chain + " - Extended"
+    timer = CreateObject("roTimespan")
+    timer.Mark()
+    result = [normalizeTitle(name, rx), normalizeKey(name, false, rx), titleYearOf(name, rx)]
+    elapsed = timer.TotalMilliseconds()
+    expectEqual(t, result, ["movie 1999 extended", "movie 1999 extended", ""], "40 quality tags and a word")
+    expectTrue(t, elapsed < 50, "40 quality tags take well under 50 ms (took " + elapsed.ToStr() + " ms)")
+    expectEqual(t, [normalizeTitle(chain, rx), titleYearOf(chain, rx)], ["movie", "1999"], "40 quality tags after a year")
+end sub
+
+' docs/browse.md, "Test cases" and "Trimming": a name with a long run of spaces inside it. A trim written as the pattern
+' ^[ \t\n\x0B\f\r]+|[ \t\n\x0B\f\r]+$ tries its second half again at every space of the run, so its time grew with
+' the square of the run (over half a second here for 16,000 spaces). trimEnds reads the ends only. The run is timed
+' with spaces at the ends of the name too, since the old trim ran its pattern only then.
+sub testSpaceRunTime(t as object, rx as object)
+    spaces = String(16000, " ")
+    for each name in ["A" + spaces + "B", " A" + spaces + "B" + Chr(13)]
+        timer = CreateObject("roTimespan")
+        timer.Mark()
+        result = [normalizeTitle(name, rx), titleYearOf(name, rx)]
+        elapsed = timer.TotalMilliseconds()
+        label = "16,000 spaces inside a name of " + Len(name).ToStr() + " characters"
+        expectEqual(t, result, ["a b", ""], label)
+        expectTrue(t, elapsed < 50, label + " take well under 50 ms (took " + elapsed.ToStr() + " ms)")
+    end for
 end sub
 
 sub testProviderTmdbId(t as object, rx as object)
     expectEqual(t, providerTmdbId({tmdb: "603"}, rx), "603", "tmdb field")
     expectEqual(t, providerTmdbId({tmdb_id: 603}, rx), "603", "numeric tmdb_id")
     expectEqual(t, providerTmdbId({info: {tmdb_id: "603"}}, rx), "603", "tmdb_id inside info")
-    expectEqual(t, providerTmdbId({tmdb: "0"}, rx), "", "zero is no id")
+    expectEqual(t, providerTmdbId({info: {tmdb: "603"}}, rx), "603", "tmdb inside info")
+    expectEqual(t, providerTmdbId({tmdb: " 603.0 "}, rx), "603", "a trailing .0")
+    expectEqual(t, providerTmdbId({tmdb: "0603"}, rx), "603", "leading zeros")
+    expectEqual(t, providerTmdbId({tmdb: "abc", tmdb_id: "", info: {tmdb_id: "0", tmdb: "77"}}, rx), "77", "the first usable field")
+    expectEqual(t, providerTmdbId({tmdb: "123456789012"}, rx), "123456789012", "12 digits")
+    expectEqual(t, providerTmdbId({tmdb: "1234567890123"}, rx), "", "13 digits")
+    expectEqual(t, providerTmdbId({tmdb: "000"}, rx), "", "zero is no id")
+    expectEqual(t, providerTmdbId({tmdb: "603.5"}, rx), "", "a fraction")
     expectEqual(t, providerTmdbId({tmdb: "tt0133093"}, rx), "", "IMDb ids are ignored")
-end sub
-
-sub testUsaCategoryFilter(t as object, rx as object)
-    for each name in ["FR | Films", "|DE| Action", "IT: Serie TV", "LAT - Peliculas", "MX Novelas", "BR: Filmes", "TR | Diziler", "AR | Movies", "IN | Bollywood", "HINDI MOVIES", "PK Dramas", "NL Films", "PL | Filmy", "RO: Filme", "RU Kino", "UK | Drama", "CA | Movies", "PT | Filmes", "ES | Cine", "Peliculas Latino", "French Movies", "Arabic Series", "Movies (Spanish)", "|IT| Film", "Movies (IN)", "Serie IT", "IN-Movies", "Films – IT", "ITALIANO", "Cine Castellano", "Tamil Movies", "TELUGU HD", "Malayalam", "Quebec Films", "ARAB MOVIES"]
-        expectTrue(t, isForeignCategory(name, rx), "foreign category " + name)
-    end for
-    ' All-caps IN and IT are English words unless they stand as a tag.
-    for each name in ["Movies in 4K", "MOVIES IN 4K", "NEW IN CINEMAS", "WATCH IT ALL", "NETFLIX MOVIES", "US | Action", "EN | Comedy", "Kids", "4K UHD", "Documentaries", "Free Movies", "Canalplus", "Drama", "Adventure", "Top Picks", "INDIE FILMS", "IT CHAPTER TWO", ""]
-        if name = "IT CHAPTER TWO"
-            ' At the start of the name IT counts as a tag, as on Android.
-            expectTrue(t, isForeignCategory(name, rx), "leading IT is a tag " + name)
-        else
-            expectFalse(t, isForeignCategory(name, rx), "US category " + name)
-        end if
-    end for
+    ' Strings are trimmed as provider fields (trimField), not with Trim: U+0085 and U+3000 are spaces, U+001F and
+    ' U+200B are not.
+    expectEqual(t, [providerTmdbId({tmdb: Chr(&h85) + "123"}, rx), providerTmdbId({tmdb: Chr(&h3000) + "123" + Chr(&hA0)}, rx), providerTmdbId({tmdb: Chr(11) + "123.0" + Chr(12)}, rx)], ["123", "123", "123"], "a string trimmed as a provider field")
+    expectEqual(t, [providerTmdbId({tmdb: Chr(&h1F) + "123"}, rx), providerTmdbId({tmdb: "123" + Chr(&h1F)}, rx), providerTmdbId({tmdb: Chr(&h200B) + "123"}, rx), providerTmdbId({tmdb: "123 .0"}, rx), providerTmdbId({tmdb: Chr(&h661) + Chr(&h662) + Chr(&h663)}, rx)], ["", "", "", "", ""], "strings that are not ids")
+    ' Numbers by type: ParseJson gives an Integer or LongInteger, or a single-precision Float for a number with a
+    ' fraction or an exponent (whole numbers are exact below 16777216). Double is taken alike.
+    expectEqual(t, [providerTmdbId({tmdb: 123}, rx), providerTmdbId({tmdb: 999999999999&}, rx), providerTmdbId({tmdb: 2147483648&}, rx), providerTmdbId({tmdb: 1000000000000&}, rx), providerTmdbId({tmdb: 0}, rx), providerTmdbId({tmdb: -5}, rx)], ["123", "999999999999", "2147483648", "", "", ""], "integers from 1 to 999999999999")
+    expectEqual(t, [providerTmdbId({tmdb: 123.0}, rx), providerTmdbId({tmdb: 1000!}, rx), providerTmdbId({tmdb: 1234567.0}, rx), providerTmdbId({tmdb: 1e7}, rx), providerTmdbId({tmdb: 16777216.0}, rx), providerTmdbId({tmdb: 1.5}, rx), providerTmdbId({tmdb: 0.5}, rx), providerTmdbId({tmdb: -123.0}, rx), providerTmdbId({tmdb: 1e12}, rx)], ["123", "1000", "1234567", "10000000", "", "", "", "", ""], "whole Floats below 16777216")
+    expectEqual(t, [providerTmdbId({tmdb: 123#}, rx), providerTmdbId({tmdb: 2.5#}, rx)], ["123", ""], "Doubles")
+    ' ParseJson's types, read from JSON text: a number with a fraction or an exponent is a Float on a Roku.
+    expectEqual(t, [providerTmdbId(ParseJson("{""tmdb"":1e3}"), rx), providerTmdbId(ParseJson("{""tmdb"":""1e3""}"), rx), providerTmdbId(ParseJson("{""tmdb"":123.0}"), rx), providerTmdbId(ParseJson("{""tmdb"":999999999999}"), rx)], ["1000", "", "123", "999999999999"], "numbers and strings from ParseJson")
+    ' Anything else gives no id, and the next key is read; info counts only as an object.
+    expectEqual(t, [providerTmdbId({tmdb: ["123"]}, rx), providerTmdbId({tmdb: {id: "123"}}, rx), providerTmdbId({tmdb: true}, rx), providerTmdbId({tmdb: invalid}, rx), providerTmdbId({}, rx)], ["", "", "", "", ""], "values that are not strings or numbers")
+    expectEqual(t, [providerTmdbId({tmdb: ["", "77"], tmdb_id: 8}, rx), providerTmdbId({tmdb: true, tmdb_id: "true", info: {tmdb: "12"}}, rx), providerTmdbId({info: "123"}, rx), providerTmdbId({info: [{tmdb_id: "5"}]}, rx), providerTmdbId({tmdb: 1.5, tmdb_id: "7.0"}, rx)], ["8", "12", "", "", "7"], "the next key after a value that is no id")
+    boxed = CreateObject("roString")
+    boxed.SetString(" 0123 ")
+    expectEqual(t, [providerTmdbId({tmdb: boxed}, rx), providerTmdbId({tmdb: CreateObject("roInt")}, rx)], ["123", ""], "boxed values")
 end sub
 
 sub testAdultNames(t as object, rx as object)
@@ -195,6 +379,18 @@ sub testMatching(t as object, rx as object)
     expectEqual(t, matchTmdb(index, "", "lion king", "1994").id, "3", "exact year wins")
     expectEqual(t, matchTmdb(index, "", normalizeTitle("Amelie", rx), "2001").id, "4", "accent-free provider title")
     expectEqual(t, matchTmdb(index, "", "", "2021"), invalid, "empty title")
+
+    ' A name whose tags hide its title is looked up again without removing them.
+    payload = rowsPayloadWith({popular: [tmdbItem(5, "Csi: Miami", "2002", ["US"], []), tmdbItem(6, "Love", "2015", ["US"], []), tmdbItem(7, "EN Love", "2011", ["US"], [])]}, {})
+    index = tmdbIndex(payload.movie, rx)
+    title = {hint: "", name: "CSI: Miami", year: ""}
+    expectEqual(t, matchTitle(index, title, normalizeTitle(title.name, rx), rx).id, "5", "second lookup without tag removal")
+    title = {hint: "", name: "EN | Love", year: "2015"}
+    expectEqual(t, matchTitle(index, title, normalizeTitle(title.name, rx), rx).id, "6", "the first lookup wins when it matches")
+    title = {hint: "", name: "EN | Love", year: "2011"}
+    expectEqual(t, matchTitle(index, title, normalizeTitle(title.name, rx), rx).id, "7", "the second lookup when the year rules out the first")
+    title = {hint: "999", name: "CSI: Miami", year: ""}
+    expectEqual(t, matchTitle(index, title, normalizeTitle(title.name, rx), rx), invalid, "a provider id never falls back to the name")
 end sub
 
 sub testGenres(t as object, rx as object)
@@ -221,7 +417,67 @@ sub testUnknownOrigin(t as object, rx as object)
     expectEqual(t, [items[1].tmdb, items[1].us], ["438631", false], "matched, origin unknown, foreign category")
     expectEqual(t, [items[2].tmdb, items[2].us], ["872585", true], "origin with US among others")
     usOnly = {usOnly: true, adultOk: false, genre: "", seen: {}}
-    expectEqual(t, namesOf(section, pickTitles(items, section.lists.popular, usOnly, 0, 20).picked), ["Dune (2021)", "Oppenheimer (2023)"], "Popular keeps movies whose origin is not known yet")
+    expectEqual(t, namesOf(section, pickTitles(section, section.lists.popular, usOnly, 0, 20).picked), ["Dune (2021)", "Oppenheimer (2023)"], "Popular keeps movies whose origin is not known yet")
+end sub
+
+' docs/browse.md, "Origin countries": an entry counts when it is two ASCII letters with only spaces around them;
+' anything else, a value that is not a string too, is ignored, and a title with no country left is unknown.
+sub testOrigins(t as object, rx as object)
+    facts = []
+    for each origin in [[" us ", "GB"], ["USA"], ["USA", "GB"], [840, invalid, true, "US"], [840], [Chr(&hA0) + "Us" + Chr(&h3000)], ["u" + Chr(&h17F)], [Chr(&hFF35) + Chr(&hFF33)], ["U.S.", "U S", ""]]
+        entry = tmdbEntry({id: 1, origin: origin}, rx)
+        facts.Push([entry.known, entry.us])
+    end for
+    expectEqual(t, facts, [[true, true], [false, false], [true, false], [true, true], [false, false], [true, true], [false, false], [false, false], [false, false]], "origin entries")
+end sub
+
+' A title's categories are the category_id and category_ids of every row with its id (docs/browse.md); ids
+' missing from the category list are left out. Services, genres and the adult flag come from each row's own.
+sub testCategoryMemberships(t as object, rx as object)
+    categories = [{id: "1", name: "FR | Films", adult: false}, {id: "2", name: "NETFLIX MOVIES", adult: false}, {id: "3", name: "US | Comedy", adult: false}, {id: "4", name: "XXX", adult: false}, {id: "5", name: "DE | Filme", adult: false}]
+    rows = [
+        movieRow("10", "Glass Onion", "1", {added: "1700000100", category_ids: [2, 3]}),
+        movieRow("11", "Le Film", "1", {added: "1700000200", category_ids: ["99"]}),
+        movieRow("12", "No Category", "", {added: "1700000300"}),
+        movieRow("13", "Unknown Only", "98", {added: "1700000400"}),
+        movieRow("14", "Split Rows", "5", {added: "1700000500"}),
+        movieRow("14", "Split Rows", "3", {added: "1700000500"}),
+        movieRow("15", "Hidden Copy", "3", {added: "1700000600", category_ids: [4]})
+    ]
+    none = parseRowsPayload(FormatJson({v: 1, source: "none", movie: {}, tv: {}, genres: {}}))
+    section = buildTitleSection(sectionTitles(rows, "movie", rx), categories, none.movie, none.genres.movie, rx)
+    us = []
+    for each item in section.items
+        us.Push(item.us)
+    end for
+    expectEqual(t, us, [true, false, true, true, true, true, true], "USA only: any known category passes; none left passes")
+    expectEqual(t, [section.items[0].g, section.items[6].adult, section.items[0].adult], ["|comedy|", true, false], "genres and adult from all of a row's categories")
+    expectEqual(t, namesOf(section, section.lists.netflix), ["Glass Onion"], "services from category_ids")
+end sub
+
+' Copies of one TMDB title in a list are one poster: it stands where its first visible copy stands and opens
+' its best visible copy, ranked by USA only, then the newest added, then catalogue order.
+sub testCopies(t as object, rx as object)
+    categories = [{id: "1", name: "US | Movies", adult: false}, {id: "2", name: "FR | Films", adult: false}, {id: "3", name: "XXX", adult: false}]
+    rows = [
+        movieRow("20", "Heat (1995)", "1", {added: "1700000100"}),
+        movieRow("21", "Heat (1995) [4K]", "1", {added: "1700000300"}),
+        movieRow("22", "Heat (1995) [FR]", "2", {added: "1700000500"}),
+        movieRow("23", "Heat 1995", "1", {added: "1700000300", tmdb: "949"}),
+        movieRow("24", "Heat - Adult Copy", "3", {added: "1700000900", tmdb: "949"}),
+        movieRow("25", "Other Film", "1", {added: "1700000400"})
+    ]
+    payload = rowsPayloadWith({popular: [tmdbItem(949, "Heat", "1995", ["US"], [80])]}, {})
+    section = buildTitleSection(sectionTitles(rows, "movie", rx), categories, payload.movie, payload.genres.movie, rx)
+    expectEqual(t, section.copies["949"], [4, 1, 3, 0, 2], "copies: USA only first, then newest, then catalogue order")
+    opts = {usOnly: true, adultOk: false, genre: "", seen: {}}
+    expectEqual(t, namesOf(section, pickTitles(section, section.lists.recent, opts, 0, 20).picked), ["Other Film", "Heat (1995) [4K]"], "USA only: the poster stands where its first visible copy stands")
+    opts = {usOnly: false, adultOk: false, genre: "", seen: {}}
+    expectEqual(t, namesOf(section, pickTitles(section, section.lists.recent, opts, 0, 20).picked), ["Heat (1995) [4K]", "Other Film"], "All: the French copy's place, the best copy")
+    opts = {usOnly: false, adultOk: true, genre: "", seen: {}}
+    expectEqual(t, namesOf(section, pickTitles(section, section.lists.popular, opts, 0, 20).picked), ["Heat - Adult Copy"], "unlocked: the newest copy that passes")
+    expectEqual(t, namesOf(section, pickTitles(section, section.lists.az, {usOnly: true, adultOk: false, genre: "", seen: {}}, 0, 20).picked), ["Heat (1995) [4K]", "Other Film"], "A-Z")
+    expectEqual(t, namesOf(section, searchTitles(section, "fr]", {usOnly: false, adultOk: false, genre: "", seen: {}}, 10)), ["Heat (1995) [4K]"], "search opens the best copy")
 end sub
 
 ' Unmatched titles reach genre filters through categories named after a genre.
@@ -275,7 +531,7 @@ sub testBuildTitleSection(t as object, rx as object)
     expectEqual(t, [items[4].tmdb, items[4].us], ["661374", true], "provider TMDB id")
     expectEqual(t, [items[5].adult, items[6].adult, items[0].adult], [true, true, false], "adult by category name and by flag")
     expectEqual(t, [items[7].tmdb, items[7].us, items[7].g], ["", true, "|28|878|"], "unmatched title keeps provider genres mapped to TMDB")
-    expectEqual(t, items[0].DoesExist("hint") or items[0].DoesExist("genre") or items[0].DoesExist("cat") or items[0].DoesExist("added"), false, "index-only fields are dropped")
+    expectEqual(t, items[0].DoesExist("hint") or items[0].DoesExist("genre") or items[0].DoesExist("cats") or items[0].DoesExist("added"), false, "index-only fields are dropped")
     expectEqual(t, section.byKey["m14"], 4, "key lookup")
     expectEqual(t, namesOf(section, section.lists.popular), ["Dune (2021)", "Dune (2021) [FR]", "Amélie (2001)"], "popular in TMDB order, USA copy first")
     expectEqual(t, namesOf(section, section.lists.featured), [], "empty TMDB list")
@@ -289,20 +545,21 @@ end sub
 sub testPickTitles(t as object, rx as object)
     section = fixtureSection(rx)
     usOnly = {usOnly: true, adultOk: false, genre: "", seen: {}}
-    expectEqual(t, namesOf(section, pickTitles(section.items, section.lists.popular, usOnly, 0, 20).picked), ["Dune (2021)"], "USA only keeps the US copy once")
+    expectEqual(t, namesOf(section, pickTitles(section, section.lists.popular, usOnly, 0, 20).picked), ["Dune (2021)"], "USA only keeps the US copy once")
     everything = {usOnly: false, adultOk: false, genre: "", seen: {}}
-    expectEqual(t, namesOf(section, pickTitles(section.items, section.lists.popular, everything, 0, 20).picked), ["Dune (2021)", "Amélie (2001)"], "All shows each TMDB title once")
+    expectEqual(t, namesOf(section, pickTitles(section, section.lists.popular, everything, 0, 20).picked), ["Dune (2021)", "Amélie (2001)"], "All shows each TMDB title once")
     unlocked = {usOnly: false, adultOk: true, genre: "", seen: {}}
-    expectEqual(t, namesOf(section, pickTitles(section.items, section.lists.recent, unlocked, 0, 2).picked), ["Hot Stuff", "Le Film Local"], "adult titles only when unlocked")
+    expectEqual(t, namesOf(section, pickTitles(section, section.lists.recent, unlocked, 0, 2).picked), ["Hot Stuff", "Le Film Local"], "adult titles only when unlocked")
     locked = {usOnly: false, adultOk: false, genre: "", seen: {}}
-    expectEqual(t, namesOf(section, pickTitles(section.items, section.lists.recent, locked, 0, 20).picked), ["Le Film Local", "Dune (2021) [FR]", "Glass Onion", "Amélie (2001)", "The Avengers"], "adult titles hidden when locked")
+    ' Dune stands where its newest copy, the French one, stands and opens the copy that passes USA only.
+    expectEqual(t, namesOf(section, pickTitles(section, section.lists.recent, locked, 0, 20).picked), ["Le Film Local", "Dune (2021)", "Glass Onion", "Amélie (2001)", "The Avengers"], "adult titles hidden when locked")
     genre = {usOnly: true, adultOk: false, genre: "878", seen: {}}
-    expectEqual(t, namesOf(section, pickTitles(section.items, section.lists.az, genre, 0, 20).picked), ["The Avengers", "Dune (2021)"], "genre filter")
+    expectEqual(t, namesOf(section, pickTitles(section, section.lists.az, genre, 0, 20).picked), ["The Avengers", "Dune (2021)"], "genre filter")
     paging = {usOnly: false, adultOk: true, genre: "", seen: {}}
-    first = pickTitles(section.items, section.lists.az, paging, 0, 3)
-    second = pickTitles(section.items, section.lists.az, paging, first.cursor, 3)
+    first = pickTitles(section, section.lists.az, paging, 0, 3)
+    second = pickTitles(section, section.lists.az, paging, first.cursor, 3)
     expectEqual(t, [namesOf(section, first.picked), namesOf(section, second.picked), second.cursor], [["Amélie (2001)", "The Avengers", "Cartoon Time"], ["Dune (2021)", "Glass Onion", "Hot Stuff"], 7], "pages continue from the cursor and skip a TMDB title already shown")
-    expectEqual(t, pickTitles(section.items, invalid, paging, 0, 3).picked, [], "a missing list is empty")
+    expectEqual(t, pickTitles(section, invalid, paging, 0, 3).picked, [], "a missing list is empty")
 end sub
 
 sub testHomeRows(t as object, rx as object)
@@ -342,15 +599,15 @@ end sub
 sub testSearchTitles(t as object, rx as object)
     section = fixtureSection(rx)
     opts = {usOnly: false, adultOk: false, genre: "", seen: {}}
-    expectEqual(t, namesOf(section, searchTitles(section.items, "dune", opts, 10)), ["Dune (2021)"], "one result per TMDB title")
+    expectEqual(t, namesOf(section, searchTitles(section, "dune", opts, 10)), ["Dune (2021)"], "one result per TMDB title")
     opts = {usOnly: false, adultOk: false, genre: "", seen: {}}
-    expectEqual(t, namesOf(section, searchTitles(section.items, "on", opts, 10)), ["Glass Onion"], "names containing the text")
+    expectEqual(t, namesOf(section, searchTitles(section, "on", opts, 10)), ["Glass Onion"], "names containing the text")
     opts = {usOnly: false, adultOk: false, genre: "", seen: {}}
-    expectEqual(t, namesOf(section, searchTitles(section.items, "t", opts, 10)), [], "at least 2 letters")
+    expectEqual(t, namesOf(section, searchTitles(section, "t", opts, 10)), [], "at least 2 letters")
     opts = {usOnly: true, adultOk: false, genre: "", seen: {}}
-    expectEqual(t, namesOf(section, searchTitles(section.items, "le", opts, 10)), [], "USA only applies to search")
+    expectEqual(t, namesOf(section, searchTitles(section, "le", opts, 10)), [], "USA only applies to search")
     opts = {usOnly: false, adultOk: false, genre: "", seen: {}}
-    expectEqual(t, namesOf(section, searchTitles(section.items, "the", opts, 10)), ["The Avengers"], "names starting with the text come first")
+    expectEqual(t, namesOf(section, searchTitles(section, "the", opts, 10)), ["The Avengers"], "names starting with the text come first")
 end sub
 
 sub testDiscoverLists(t as object)

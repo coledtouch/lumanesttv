@@ -67,35 +67,114 @@ object BrowseList {
     }
 }
 
-/** Title normalisation for matching provider titles to TMDB (docs/browse.md, "Matching catalogue titles to TMDB"). */
+/**
+ * The two rules every Movies & Series rule below follows (docs/browse.md, "Spaces and letter case"). On Android devices
+ * java.util.regex is ICU, whose `\s` and case-insensitive matching follow Unicode, while the JVM running the unit tests
+ * is ASCII-only; these helpers make both behave alike.
+ */
+internal object BrowseText {
+    /**
+     * Unicode spaces: U+0085, U+00A0, U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F, U+3000 and U+FEFF become
+     * a space (U+0020), from this explicit list (never `\s`, `isWhitespace` or `trim()`, which each cover another set).
+     * Afterwards `\s` is tab, line feed, vertical tab, form feed, carriage return and space in Java and ICU alike.
+     */
+    fun spaces(text: String): String {
+        var out: CharArray? = null
+        for (i in text.indices) {
+            val c = text[i]
+            if (c.code >= 0x85 && isUnicodeSpace(c)) (out ?: text.toCharArray().also { out = it })[i] = ' '
+        }
+        return out?.let { String(it) } ?: text
+    }
+
+    /** The Unicode spaces of [spaces], by character code (a typed escape can turn into the invisible character itself). */
+    private fun isUnicodeSpace(c: Char): Boolean = when (c.code) {
+        0x85, 0xA0, 0x1680, in 0x2000..0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000, 0xFEFF -> true
+        else -> false
+    }
+
+    /** What `\s` is once the Unicode spaces are replaced: space, tab, line feed, vertical tab, form feed, carriage return. */
+    private fun isAsciiSpace(c: Char): Boolean = c == ' ' || c in '\t'..'\r'
+
+    /**
+     * Normalize step 1 and the year from a name (docs/browse.md, "Trimming"): after [spaces], only space, tab, line feed,
+     * vertical tab, form feed and carriage return come off both ends. Never Kotlin's `trim()`, which also removes U+001C
+     * to U+001F: U+001F followed by " - 1999" must stay a name with a year and no title.
+     */
+    fun trimEnds(text: String): String = text.trim(::isAsciiSpace)
+
+    /**
+     * A provider field as the parsers read it: the characters of [trimEnds] and the Unicode spaces of [spaces] come off
+     * both ends, nothing else (not U+001C to U+001F, which Kotlin's `trim()` removes, so a name keeps them and normalizes
+     * as docs/browse.md says).
+     */
+    fun trimField(text: String): String = text.trim { isAsciiSpace(it) || isUnicodeSpace(it) }
+
+    /**
+     * Only `A` to `Z` lower-cased. A rule that ignores case matches lower-case patterns, without a case-insensitive flag,
+     * on this copy: `ſ`, the Kelvin sign, `İ` and `ı` never equal an ASCII letter. (Kotlin's IGNORE_CASE adds
+     * UNICODE_CASE, and ICU on devices folds Unicode case whatever the flags say.)
+     */
+    fun asciiLower(text: String): String {
+        var out: CharArray? = null
+        for (i in text.indices) {
+            val c = text[i]
+            if (c in 'A'..'Z') (out ?: text.toCharArray().also { out = it })[i] = c + 32
+        }
+        return out?.let { String(it) } ?: text
+    }
+
+    /** Only `a` to `z` upper-cased (`"uſ".uppercase()` would be "US"). */
+    fun asciiUpper(text: String): String {
+        var out: CharArray? = null
+        for (i in text.indices) {
+            val c = text[i]
+            if (c in 'a'..'z') (out ?: text.toCharArray().also { out = it })[i] = c - 32
+        }
+        return out?.let { String(it) } ?: text
+    }
+}
+
+/**
+ * Title normalisation and years for matching provider titles to TMDB (docs/browse.md, "Matching catalogue titles to
+ * TMDB"). The patterns are the shared text every Tuner app uses ("Patterns for titles, years and countries"), all
+ * case-sensitive, checked against docs/browse-cases.json.
+ */
 object TitleMatch {
     /**
-     * Bracketed and braced tags, short upper-case tags between pipes or in parentheses, and a (YYYY): [4K], |US|, (EN).
-     * Only a short code counts between pipes: "EN | Stranger Things | 4K" keeps its title (the prefix and suffix
-     * rules take the "EN |" and "| 4K").
+     * A trailing tag: a short upper-case code, or a quality word of step 9 in any ASCII letter case where no short
+     * upper-case code followed by a space or the end fits. "4K" or "HD" therefore matches one way only, so [yearEnd] gives
+     * up on a long chain of tags in time proportional to the name instead of trying 2^n ways.
      */
-    private val tags = Regex("""\[[^\]]*]|\{[^}]*}|\|\s*[A-Z0-9+]{1,6}\s*\||\(\s*(?:18|19|20)\d\d\s*\)|\([A-Z0-9 +.]{1,6}\)""")
-    /** A short upper-case tag in front of the title: "US - ", "EN| ", "NF: ", "4K-EN - ". */
-    private val prefix = Regex("""^\s*[A-Z0-9+]{2,4}(?:\s*[-_]\s*[A-Z0-9+]{2,4})?\s*(?:\|\s*|[:\-–]\s+)""")
-    /** The same kind of tag after the title: " | EN", " - US". */
-    private val suffix = Regex("""\s(?:\||-|–)\s*[A-Z0-9+]{2,4}\s*$""")
+    private const val TAG = """[A-Z0-9+]{2,4}|(?![A-Z0-9+]{2,4}(\s|$))([48][Kk]|[UuFf]?[Hh][Dd]|[Ss][Dd]|[Hh][Dd][Rr](10)?|(1080|720|2160)[Pp])"""
+    /** Step 2: [...], {...}, a year in parentheses, and a short upper-case tag in parentheses ((US), (U.S.), (MULTI)). */
+    private val brackets = Regex("""\[[^\]]*\]|\{[^}]*\}|\(\s*(18|19|20)[0-9]{2}\s*\)|\([A-Z0-9 +.]{1,6}\)""")
+    /**
+     * Step 3.1: a leading tag, a short upper-case tag between pipes ("|US| ", "| EN | ") or a short upper-case code that
+     * is not a year followed by |, : or a dash ("US - ", "EN| ", "NF: ", "4K-NF - ", "4K-NF-EN | ").
+     */
+    private val leading = Regex("""^\s*(\|\s*[A-Z0-9+]{1,6}\s*\|\s*|(?!(18|19|20)[0-9]{2}([^A-Z0-9+]|$))[A-Z0-9+]{2,4}(\s*[-_]\s*[A-Z0-9+]{2,4})*\s*(\|\s*|([:-]|–)\s+))""")
+    /** Step 3.2: a trailing tag (" | EN", " - 4K", " | 1999", " – 1080p"), removed for as long as one ends the name. */
+    private val trailing = Regex("""\s(\||-|–)\s*($TAG)\s*$""")
+    /** Step 3.3: a short upper-case tag between pipes (|US|, | 4K |, not | The Matrix |). */
+    private val pipes = Regex("""\|\s*[A-Z0-9+]{1,6}\s*\|""")
     private val apostrophes = Regex("['`´’]")
-    private val marks = Regex("\\p{M}+")
     private val nonWord = Regex("[^a-z0-9]+")
-    private val quality = setOf("4k", "uhd", "hd", "fhd", "hdr", "hdr10", "1080p", "720p", "2160p")
-    private val bracketYear = Regex("""[(\[]\s*((?:18|19|20)\d\d)\s*[)\]]""")
-    private val leadingYear = Regex("""^\s*((?:18|19|20)\d\d)(?!\d)""")
+    private val quality = setOf("4k", "8k", "uhd", "fhd", "hd", "sd", "hdr", "hdr10", "1080p", "720p", "2160p")
+    private val yearField = Regex("""^\s*((18|19|20)[0-9]{2})([^0-9]|$)""")
+    private val yearBrackets = Regex("""[(\[]\s*((18|19|20)[0-9]{2})\s*[)\]]""")
+    private val yearEnd = Regex("""\s(\||-|–)\s*((18|19|20)[0-9]{2})(\s+(\||-|–)\s*(?!(18|19|20)[0-9]{2}(\s|$))($TAG))*\s*$""")
 
-    /** Lower case; no trailing (YYYY), tags or "US -" prefix; no quality words; & as "and"; no punctuation; no leading "the". */
-    fun normalize(name: String): String = clean(name, stripAffixes = true)
+    /** The ten normalize steps: "EN | The Matrix | 1999" is "matrix", "Dune | 4K | EN" is "dune". */
+    fun normalize(name: String): String = clean(name, stripEnds = true)
 
     /**
-     * The keys a provider title can match under: [normalize] first, then the same without removing the leading and
-     * trailing tags, for titles such as "CSI: Miami" or "NCIS: Los Angeles" whose real name looks like a tag.
+     * The keys a provider title can match under: [normalize] first, then the same without steps 3.1, 3.2 and 3.4 (the
+     * leading and trailing tags), for titles such as "CSI: Miami" or "NCIS: Los Angeles" whose real name looks like a tag.
      */
     fun keys(name: String): List<String> {
-        val main = clean(name, stripAffixes = true)
-        val whole = clean(name, stripAffixes = false)
+        val main = clean(name, stripEnds = true)
+        val whole = clean(name, stripEnds = false)
         return when {
             whole.isEmpty() || whole == main -> listOfNotNull(main.ifEmpty { null })
             main.isEmpty() -> listOf(whole)
@@ -103,27 +182,75 @@ object TitleMatch {
         }
     }
 
-    private fun clean(name: String, stripAffixes: Boolean): String {
-        var s = name.replace('\u00A0', ' ')
-        if (s.indexOfAny(charArrayOf('[', '{', '|', '(')) >= 0) s = tags.replace(s, " ")
-        if (stripAffixes && s.indexOfAny(charArrayOf('|', ':', '-', '–')) >= 0) {
-            repeat(3) { val next = prefix.replaceFirst(s, ""); if (next == s) return@repeat; s = next }
-            s = suffix.replace(s, "")
-        }
+    private fun clean(name: String, stripEnds: Boolean): String {
+        // 1. A name of tags alone reads alike whether or not the provider trimmed it (" - 1999" is "1999").
+        var s = BrowseText.trimEnds(BrowseText.spaces(name))
+        // 2. Each pattern of steps 2 and 3 needs one of these characters; most names have none.
+        if (s.indexOfAny(charArrayOf('[', '{', '(')) >= 0) s = brackets.replace(s, " ")
+        // 3. Leading and trailing tags, then the tags between pipes, then the ends again.
+        val tagged = stripEnds && s.indexOfAny(charArrayOf('|', ':', '-', '–')) >= 0
+        if (tagged) s = removeEnds(s)
+        if ('|' in s) s = pipes.replace(s, " ")
+        if (tagged) s = removeEnds(s)
+        // 4. to 6.
         s = s.lowercase(Locale.ROOT)
         if ('&' in s) s = s.replace("&", " and ")
         s = apostrophes.replace(s, "")
-        if (s.any { it.code > 0x7F }) s = marks.replace(Normalizer.normalize(s, Normalizer.Form.NFD), "")
-            .replace("æ", "ae").replace("œ", "oe").replace("ß", "ss").replace("ø", "o")
+        // 7.
+        if (s.any { it.code > 0x7F }) s = fold(s)
+        // 8. to 10.
         val words = nonWord.replace(s, " ").trim().split(' ').filter { it.isNotEmpty() && it !in quality }
         return (if (words.size > 1 && words[0] == "the") words.drop(1) else words).joinToString(" ")
     }
 
-    /** "Dune (2021)" or "Dune [2021]": 2021; otherwise 0. */
-    fun yearInTitle(name: String): Int = bracketYear.find(name)?.groupValues?.get(1)?.toInt() ?: 0
+    /** Steps 3.1 and 3.2: up to three leading tags, then trailing tags, the last one first, while one ends the name. */
+    private fun removeEnds(name: String): String {
+        var s = name
+        for (i in 0 until 3) { val next = leading.replaceFirst(s, ""); if (next == s) break; s = next }
+        while (true) { val next = trailing.replaceFirst(s, ""); if (next == s) break; s = next }
+        return s
+    }
 
-    /** "2021-05-01", "2021" or "2021.0": 2021; otherwise 0. */
-    fun yearOf(value: String?): Int = value?.let { leadingYear.find(it)?.groupValues?.get(1)?.toInt() } ?: 0
+    /**
+     * Unicode NFKD, then exactly U+0300 to U+036F removed (other combining marks stay and become a space in step 8),
+     * then the letters that have no decomposition.
+     */
+    private fun fold(lower: String): String {
+        val decomposed = Normalizer.normalize(lower, Normalizer.Form.NFKD)
+        val out = StringBuilder(decomposed.length + 4)
+        for (c in decomposed) when (c) {
+            in '\u0300'..'\u036F' -> Unit
+            'æ' -> out.append("ae")
+            'œ' -> out.append("oe")
+            'ø' -> out.append('o')
+            'ß' -> out.append("ss")
+            'đ' -> out.append('d')
+            'ł' -> out.append('l')
+            'ð' -> out.append('d')
+            'þ' -> out.append("th")
+            else -> out.append(c)
+        }
+        return out.toString()
+    }
+
+    /**
+     * The year in a provider title's name, read with the Unicode spaces replaced and the ends trimmed as in normalize
+     * step 1: the first year in brackets ((2021), [ 2021 ], (2021]), else the year among the trailing tags
+     * ("EN | Wonka | 2023", "Heat - 1995 - 4K", 1999 in "2012 | 1999 | EN"); otherwise 0. A bare number ending a name is
+     * part of the title ("Blade Runner 2049"), and so is " - 1999" once trimmed.
+     */
+    fun yearInTitle(name: String): Int {
+        val s = BrowseText.trimEnds(BrowseText.spaces(name))
+        if (s.indexOfAny(charArrayOf('(', '[')) >= 0) yearBrackets.find(s)?.let { return it.groupValues[1].toInt() }
+        if (s.indexOfAny(charArrayOf('|', '-', '–')) < 0) return 0
+        return yearEnd.find(s)?.groupValues?.get(2)?.toInt() ?: 0
+    }
+
+    /**
+     * A provider year field, read with the Unicode spaces replaced: "2021", " 2021-05-01" or "2021.0" is 2021; "20211",
+     * "1799" and "abc" are 0.
+     */
+    fun yearOf(value: String?): Int = value?.let { yearField.find(BrowseText.spaces(it)) }?.groupValues?.get(1)?.toInt() ?: 0
 }
 
 /** TMDB titles of one type by id and by normalised title (and original title). */
@@ -162,38 +289,55 @@ class TmdbIndex(lists: TmdbLists) {
 }
 
 /**
- * "Movies & Series: USA only". A title is kept when its provider category passes (names carrying a non-US country or
- * language tag are excluded, everything else is kept) and, when it is matched to TMDB, its origin countries include
- * US. TMDB movie lists usually carry no countries; such a match is judged by its category alone. Requiring both, as
- * the Roku app does, also hides a dubbed copy of a US film that the provider files under "FR | Films".
+ * "Movies & Series: USA only" (docs/browse.md, "Which titles appear"). A title is kept when its provider categories pass
+ * (at least one of them is not foreign, or it has none) and, when it is matched to TMDB, its origin countries are
+ * unknown or include US. Requiring both also hides a dubbed copy of a US film that the provider files under "FR | Films".
  */
 object VodRegion {
-    private const val CODES = "FR|DE|IT|ES|LAT|MX|BR|PT|TR|AR|IN|HINDI|PK|NL|PL|RO|RU|UK|CA"
-    /** Upper case only: "in", "it" and "es" are ordinary words. */
-    private val code = Regex("(?<![A-Za-z0-9])(?:$CODES)(?![A-Za-z0-9])")
-    /**
-     * "IN" and "IT" are English words in all-caps names ("MOVIES IN 4K", "EN | IN THEATERS"), so they count only as a
-     * tag: followed by a separator or at the end ("IN | Movies", "IT: Drama", "Movies | IN", "Films (IN)").
-     */
-    private val wordLike = setOf("IN", "IT")
-    private const val SEPARATORS = "|:[]()-–/"
-    private val written = Regex(
-        "(?<![a-z])(?:french|france|german|germany|deutsch|italian|italiano|italia|italy|spanish|espanol|español|spain|castellano|" +
-            "latino|latina|latam|mexico|mexican|brazil|brasil|brazilian|portuguese|portugal|turkish|turkey|arabic|india|indian|hindi|" +
-            "bollywood|tamil|telugu|malayalam|punjabi|pakistan|pakistani|urdu|dutch|netherlands|polish|poland|polska|romanian|romania|" +
-            "russian|russia|british|canada|canadian|quebec)(?![a-z])",
-        RegexOption.IGNORE_CASE,
+    private const val CODES = "FR|DE|ES|LAT|MX|BR|PT|TR|AR|PK|NL|PL|RO|RU|UK|CA|AF"
+    private val codes = CODES.lowercase(Locale.ROOT)
+    private const val WORDS = "french|france|german|germany|deutsch|italian|italiano|italia|italy|spanish|espa(n|ñ|Ñ)ol|spain|" +
+        "castellano|latino|latina|latam|mexico|mexican|brazil|brasil|brazilian|portuguese|portugal|turkish|turkey|arab|arabic|" +
+        "india|indian|hindi|bollywood|tamil|telugu|malayalam|kannada|bengali|punjabi|pakistan|pakistani|urdu|dutch|netherlands|" +
+        "polish|poland|polska|romanian|romania|russian|russia|british|canada|canadian|quebec|korean|japanese|chinese|filipino|" +
+        "vietnamese|thai|persian|farsi|greek|albanian|kurdish"
+
+    /** The category filter's case-sensitive rules 1 and 2, written as every Tuner app writes them (no lookbehind). */
+    private val upperRules = listOf(
+        // 1. A country or language code in upper case, as a whole word: "FR | Films", "Movies CA", "4K-FR Movies".
+        Regex("""(^|[^A-Za-z0-9])($CODES)([^A-Za-z0-9]|$)"""),
+        // 2. "IN" and "IT" in upper case only as a tag: "IN | Movies", "Serie IT", but not "IN THEATERS" or "IT CHAPTER TWO".
+        Regex("""(^|[^A-Za-z0-9])(IN|IT)\s*([|:\[\]()/-]|–|$)"""),
     )
 
+    /**
+     * Rules 3 and 4 ignore the case of ASCII letters only: they run, in lower case and without a case-insensitive flag,
+     * on the name with only A to Z lower-cased ([BrowseText.asciiLower]).
+     */
+    private val anyCaseRules = listOf(
+        // 3. A rule 1 code in any ASCII letter case, written as a tag: "Fr | Films", "(Pt) Novelas", "[ru] Kino".
+        Regex("""^[^A-Za-z0-9]*($codes)\s*([|:\])/-]|–)|\|\s*($codes)\s*\||\[\s*($codes)\s*\]|\(\s*($codes)\s*\)"""),
+        // 4. A country or language written out: "French Cinema", "FRENCH4K", but not "Indiana Jones" or "Arabian Nights".
+        Regex("""(^|[^A-Za-z])($WORDS)([^A-Za-z]|$)"""),
+    )
+
+    /** An `origin` entry that is a country: two ASCII letters with nothing but `\s` around them (`COUNTRY`). */
+    private val countryPattern = Regex("""^\s*([A-Za-z]{2})\s*$""")
+
     fun isForeignCategory(name: String?): Boolean {
-        if (name.isNullOrBlank()) return false
-        if (written.containsMatchIn(name)) return true
-        return code.findAll(name).any { match ->
-            if (match.value !in wordLike) return@any true
-            val after = name.substring(match.range.last + 1).trimStart()
-            after.isEmpty() || after.first() in SEPARATORS
-        }
+        if (name.isNullOrEmpty()) return false
+        val text = BrowseText.spaces(name)
+        if (upperRules.any { it.containsMatchIn(text) }) return true
+        val lower = BrowseText.asciiLower(text)
+        return anyCaseRules.any { it.containsMatchIn(lower) }
     }
+
+    /**
+     * The country of one TMDB `origin` entry (docs/browse.md, "Origin countries"), upper case; null for anything that is
+     * not two ASCII letters once the Unicode spaces are replaced: "USA", "U.S.", "uſ", a fullwidth "ＵＳ".
+     */
+    fun country(entry: String): String? =
+        countryPattern.find(BrowseText.spaces(entry))?.groupValues?.get(1)?.let(BrowseText::asciiUpper)
 
     fun isUsTitle(categoryForeign: Boolean, tmdb: TmdbTitle?): Boolean =
         !categoryForeign && (tmdb == null || tmdb.origin.isEmpty() || "US" in tmdb.origin)

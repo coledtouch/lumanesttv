@@ -29,7 +29,7 @@ object Pairing {
 
     suspend fun start(): Code {
         val json = post("start", JSONObject().put("device", "android"))
-        val qr = (json["qr"] as? List<*>)?.filterIsInstance<String>().orEmpty()
+        val qr = (json["qr"] as? List<*>)?.mapNotNull(::textOf).orEmpty()
         val deviceCode = json.str("deviceCode"); val userCode = json.str("userCode"); val url = json.str("verificationUriComplete")
         if (deviceCode == null || userCode == null || url == null || qr.isEmpty()) throw IllegalStateException("Pairing isn't available right now.")
         return Code(deviceCode, userCode, url, qr, json.int("expiresIn") ?: 600, (json.int("interval") ?: 5).coerceIn(2, 30))
@@ -75,6 +75,7 @@ object Pairing {
     private fun JMap.int(key: String): Int? = when (val v = this[key]) {
         is Number -> v.toInt()
         is String -> v.toIntOrNull()
+        is JsonNumber -> v.text.toIntOrNull()
         else -> null
     }
 }

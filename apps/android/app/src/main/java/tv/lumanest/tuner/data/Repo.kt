@@ -299,8 +299,6 @@ object Repo {
     }
 
     private fun cachedFile(file: File) = file.takeIf { it.isFile && it.length() > 0 }
-    /** Categories "Movies & Series: USA only" excludes: uploads listed only there stay apart from the same film elsewhere. */
-    private fun foreignCategoryIds(categories: List<Category>) = categories.filter { VodRegion.isForeignCategory(it.name) }.mapTo(HashSet()) { it.id }
     private fun storedAt(vararg files: File) = files.minOf { it.lastModified() }.coerceAtLeast(1)
     private fun fresh(at: Long, age: Long) = System.currentTimeMillis() - at < age
     private fun saveSnapshot(request: LoadRequest, write: () -> Unit) {
@@ -406,7 +404,7 @@ object Repo {
                 fun publish(list: File, categories: File) {
                     if (!current(request)) return
                     val catalogue = ContentPolicy.movies(x.parseMovies(list), x.parseCategories(categories), request.adultUnlocked, request.storeBuild)
-                    val cleaned = Cleanup.movies(catalogue.items, foreignCategoryIds(catalogue.categories))
+                    val cleaned = Cleanup.movies(catalogue.items, catalogue.categories)
                     commit(request) { movieCategories.value = catalogue.categories; movies.value = cleaned; vodStatus.value = LoadStatus.Ready }
                     saveSnapshot(request) { snapshots.writeMovies(request.identity, ContentPolicy.Catalogue(cleaned, catalogue.categories), storedAt(list, categories)) }
                 }
@@ -483,7 +481,7 @@ object Repo {
                     publishLive(ContentPolicy.live(r.channels, r.liveCategories, request.usOnly, request.adultUnlocked, request.storeBuild), request, file.lastModified())
                     liveAvailable.complete(Unit)
                     val vod = ContentPolicy.movies(r.movies, r.movieCategories, request.adultUnlocked, request.storeBuild)
-                    val cleaned = Cleanup.movies(vod.items, foreignCategoryIds(vod.categories))
+                    val cleaned = Cleanup.movies(vod.items, vod.categories)
                     commit(request) { movieCategories.value = vod.categories; movies.value = cleaned; vodStatus.value = LoadStatus.Ready }
                     saveSnapshot(request) { snapshots.writeMovies(request.identity, ContentPolicy.Catalogue(cleaned, vod.categories), file.lastModified()) }
                     epgUrl = src.epgUrl.ifBlank { r.epgUrl ?: "" }

@@ -76,106 +76,356 @@ function browseRx() as object
         paramount: CreateObject("roRegex", "PARAMOUNT", ""),
         peacock: CreateObject("roRegex", "PEACOCK", "")
     }
-    ' The same list as the Android app (VodRegion), plus "arab" ("ARAB MOVIES" carries no AR code).
-    foreignWords = "french|france|german|germany|deutsch|italian|italiano|italia|italy|spanish|espanol|español|spain|castellano|latino|latina|latam|mexico|mexican|brazil|brasil|brazilian|portuguese|portugal|turkish|turkey|arabic|arab|india|indian|hindi|bollywood|tamil|telugu|malayalam|punjabi|pakistan|pakistani|urdu|dutch|netherlands|polish|poland|polska|romanian|romania|russian|russia|british|canada|canadian|quebec"
-    ' Separators that make "IN" or "IT" a tag rather than an English word.
-    tagSep = "([|:\[\]()/-]|–)"
+    ' The category filter's codes and written-out names (docs/browse.md). The patterns below are the doc's, as written:
+    ' no lookbehind, and the en dash, ñ and Ñ stay outside character classes because roRegex may match bytes.
+    codes = "FR|DE|ES|LAT|MX|BR|PT|TR|AR|PK|NL|PL|RO|RU|UK|CA|AF"
+    ' Rules 3 and 4 ignore the case of ASCII letters only. The "i" flag and LCase may also fold letters beyond ASCII
+    ' (ſ as s, the Kelvin sign as k), so they run without it, in lower case, on a copy with only A to Z lower-cased
+    ' (asciiLower).
+    lowerCodes = "fr|de|es|lat|mx|br|pt|tr|ar|pk|nl|pl|ro|ru|uk|ca|af"
+    words = "french|france|german|germany|deutsch|italian|italiano|italia|italy|spanish|espa(n|ñ|Ñ)ol|spain|castellano|latino|latina|latam|mexico|mexican|brazil|brasil|brazilian|portuguese|portugal|turkish|turkey|arab|arabic|india|indian|hindi|bollywood|tamil|telugu|malayalam|kannada|bengali|punjabi|pakistan|pakistani|urdu|dutch|netherlands|polish|poland|polska|romanian|romania|russian|russia|british|canada|canadian|quebec|korean|japanese|chinese|filipino|vietnamese|thai|persian|farsi|greek|albanian|kurdish"
+    ' TAG: a short upper-case code, or a quality word in any ASCII letter case where no short upper-case code followed
+    ' by a space or the end fits ("hd", "HDR10", "1080p"; "4K", "HD" and "UHD" are codes). Each tag then matches in one
+    ' way only, so yearEnd takes time in proportion to the name: with two ways for 4K, HD, SD, UHD, FHD and HDR, each
+    ' further tag doubled the time it took to give up on "Movie - 1999 - 4K - ... - 4K - Extended".
+    tag = "[A-Z0-9+]{2,4}|(?![A-Z0-9+]{2,4}(\s|$))([48][Kk]|[UuFf]?[Hh][Dd]|[Ss][Dd]|[Hh][Dd][Rr](10)?|(1080|720|2160)[Pp])"
+    ' The Unicode spaces every rule reads as a space (docs/browse.md, "Spaces and letter case"): replaced one by one
+    ' (unicodeSpaces), never with \s, which covers a different set in every engine.
+    spaceChars = [Chr(&h85), Chr(&hA0), Chr(&h1680), Chr(&h2028), Chr(&h2029), Chr(&h202F), Chr(&h205F), Chr(&h3000), Chr(&hFEFF)]
+    for code = &h2000 to &h200A
+        spaceChars.Push(Chr(code))
+    end for
     return {
-        ' Bracketed, pipe-delimited and short parenthesised tags: [4K], {EN}, |US|, (US), (2019).
-        tags: CreateObject("roRegex", "\[[^\]]*\]|\{[^\}]*\}|\|[^|]*\||\([0-9]{4}\)|\([A-Z0-9 +]{1,4}\)", ""),
-        ' A short upper-case tag in front of the title: "US - ", "EN| ", "NF: ".
-        prefix: CreateObject("roRegex", "^\s*[A-Z0-9+]{2,4}\s*(\|\s*|[:\-]\s+)", ""),
-        ' The same kind of tag after the title: " | EN", " - US".
-        suffix: CreateObject("roRegex", "\s(\||-)\s*[A-Z0-9+]{2,4}\s*$", ""),
-        year: CreateObject("roRegex", "[\(\[]\s*((19|20)[0-9][0-9])\s*[\)\]]", ""),
-        yearText: CreateObject("roRegex", "^\s*((19|20)[0-9][0-9])", ""),
-        digits: CreateObject("roRegex", "^[0-9]+$", ""),
-        apostrophe: CreateObject("roRegex", "['`´’]", ""),
+        spaceChars: spaceChars,
+        ' The patterns of docs/browse.md ("Patterns for titles, years and countries"), all case-sensitive.
+        ' Normalize step 2 (BRACKETS): [4K], {EN}, a year in parentheses and a short upper-case tag in parentheses
+        ' ((US), (U.S.), (MULTI)).
+        brackets: CreateObject("roRegex", "\[[^\]]*\]|\{[^}]*\}|\(\s*(18|19|20)[0-9]{2}\s*\)|\([A-Z0-9 +.]{1,6}\)", ""),
+        ' Step 3.1 (LEADING): a short upper-case tag between pipes ("|US| "), or a short upper-case code that is not a
+        ' year followed by |, : or a dash ("US - ", "EN| ", "NF: ", "4K-NF-EN | ").
+        leading: CreateObject("roRegex", "^\s*(\|\s*[A-Z0-9+]{1,6}\s*\|\s*|(?!(18|19|20)[0-9]{2}([^A-Z0-9+]|$))[A-Z0-9+]{2,4}(\s*[-_]\s*[A-Z0-9+]{2,4})*\s*(\|\s*|([:-]|–)\s+))", ""),
+        ' Step 3.2 (TRAILING): " | EN", " - 4K", " | 1999", " – 1080p".
+        trailing: CreateObject("roRegex", "\s(\||-|–)\s*(" + tag + ")\s*$", ""),
+        ' Step 3.3 (PIPES): |US|, | 4K |, not | The Matrix |.
+        pipes: CreateObject("roRegex", "\|\s*[A-Z0-9+]{1,6}\s*\|", ""),
+        ' Years: a provider's "2021-05-01" (YEAR_FIELD, group 1); "Dune (2021)", "Show [ 2019 ]" (YEAR_BRACKETS, group 1);
+        ' the year among the trailing tags, "EN | Wonka | 2023", "Heat – 1995 - 4K", "2012 | 1999 | EN" (YEAR_END, group 2).
+        yearField: CreateObject("roRegex", "^\s*((18|19|20)[0-9]{2})([^0-9]|$)", ""),
+        yearBrackets: CreateObject("roRegex", "[(\[]\s*((18|19|20)[0-9]{2})\s*[)\]]", ""),
+        yearEnd: CreateObject("roRegex", "\s(\||-|–)\s*((18|19|20)[0-9]{2})(\s+(\||-|–)\s*(?!(18|19|20)[0-9]{2}(\s|$))(" + tag + "))*\s*$", ""),
+        ' An origin entry that is a country: two ASCII letters, spaces around them allowed (COUNTRY, group 1).
+        country: CreateObject("roRegex", "^\s*([A-Za-z]{2})\s*$", ""),
+        ' Matching step 1 (TMDB_ID): a provider TMDB id given as a string, once trimmed as a provider field (group 1).
+        tmdbId: CreateObject("roRegex", "^([0-9]{1,12})(\.0)?$", ""),
         nonWord: CreateObject("roRegex", "[^a-z0-9]+", ""),
         nonAscii: CreateObject("roRegex", "[^\x00-\x7F]", ""),
+        upperAscii: CreateObject("roRegex", "[A-Z]", ""),
+        ' foldTable(), built on first use: the screen's copy of these patterns never normalizes a title.
+        fold: invalid,
+        quality: {"4k": true, "8k": true, "uhd": true, "fhd": true, "hd": true, "sd": true, "hdr": true, "hdr10": true, "1080p": true, "720p": true, "2160p": true},
         genreSplit: CreateObject("roRegex", "[,/|&;]+", ""),
         ' Parts of a category name that can each name a genre: "EN | Action Movies", "Kids & Family".
         categorySplit: CreateObject("roRegex", "[,/|&;:()\[\]]+|\s+-\s+|–", ""),
         spaces: CreateObject("roRegex", "\s+", ""),
-        ' Country and language tags (upper case, as a whole word or a "XX |", "|XX|", "XX:" prefix)...
-        foreignCode: CreateObject("roRegex", "(^|[^A-Za-z0-9])(FR|DE|ES|LAT|MX|BR|PT|TR|AR|HINDI|PK|NL|PL|RO|RU|UK|CA)([^A-Za-z0-9]|$)", ""),
-        ' ...IN and IT only as a tag: at the start or end of the name or next to a separator ("IT: Serie",
-        ' "Films (IN)"), never as the English word in "MOVIES IN 4K" or "NEW IN CINEMAS"...
-        foreignTag: CreateObject("roRegex", "^\s*(IN|IT)([^A-Za-z0-9]|$)|(^|[^A-Za-z0-9])(IN|IT)\s*$|" + tagSep + "\s*(IN|IT)([^A-Za-z0-9]|$)|(^|[^A-Za-z0-9])(IN|IT)\s*" + tagSep, ""),
-        ' ...and the same countries and languages written out.
-        foreignWord: CreateObject("roRegex", "(^|[^a-z])(" + foreignWords + ")([^a-z]|$)", "i"),
+        ' Category rule 1: a country or language code in upper case, as a whole word ("FR | Films", "Movies CA").
+        foreignCode: CreateObject("roRegex", "(^|[^A-Za-z0-9])(" + codes + ")([^A-Za-z0-9]|$)", ""),
+        ' Rule 2: IN and IT in upper case only as a tag ("IN | Movies", "Serie IT"), never as the English word in
+        ' "MOVIES IN 4K", "EN | IN THEATERS" or "IT CHAPTER TWO".
+        foreignInIt: CreateObject("roRegex", "(^|[^A-Za-z0-9])(IN|IT)\s*([|:\[\]()/-]|–|$)", ""),
+        ' Rule 3: a rule 1 code in any ASCII letter case, as a tag ("Fr | Films", "(Pt) Novelas", "[ru] Kino").
+        foreignTag: CreateObject("roRegex", "^[^A-Za-z0-9]*(" + lowerCodes + ")\s*([|:\])/-]|–)|\|\s*(" + lowerCodes + ")\s*\||\[\s*(" + lowerCodes + ")\s*\]|\(\s*(" + lowerCodes + ")\s*\)", ""),
+        ' Rule 4: a country or language written out, in any ASCII letter case ("French Cinema", "FRENCH4K").
+        foreignWord: CreateObject("roRegex", "(^|[^A-Za-z])(" + words + ")([^A-Za-z]|$)", ""),
         adult: CreateObject("roRegex", "(^|[^a-z0-9])(xxx|adults?|18\+|porn)([^a-z0-9]|$)", "i"),
         adultSwim: CreateObject("roRegex", "adult\s*swim", "i"),
         services: services
     }
 end function
 
+' Normalize step 7 without Unicode normalization, which BrightScript lacks: each Latin-1, Latin Extended-A and -B,
+' Latin Extended Additional letter, f/s ligature, fullwidth digit and letter, Roman numeral and circled number and
+' letter as Unicode NFKD leaves it once U+0300 to U+036F are dropped and æ ae, œ oe, ø o, ß ss, đ d, ł l, ð d, þ th
+' are folded (docs/browse.md). Upper-case letters are listed too, because LCase may leave non-ASCII letters alone.
+' A space stands for a character that becomes one (ŀ is "l·"). Any other character is kept, so step 8 turns it
+' into a space.
+function foldTable() as object
+    groups = [
+        [" n", "ŉ"], ["1", "¹"], ["1 2", "½"], ["1 4", "¼"], ["2", "²"], ["3", "³"], ["3 4", "¾"],
+        ["a", "ªÀÁÂÃÄÅàáâãäåĀāĂăĄąǍǎǞǟǠǡǺǻȀȁȂȃȦȧḀḁẠạẢảẤấẦầẨẩẪẫẬậẮắẰằẲẳẴẵẶặ"], ["a ", "ẚ"], ["ae", "ÆæǢǣǼǽ"],
+        ["b", "ḂḃḄḅḆḇ"], ["c", "ÇçĆćĈĉĊċČčḈḉ"], ["d", "ÐðĎďĐđḊḋḌḍḎḏḐḑḒḓ"], ["dz", "ǄǅǆǱǲǳ"],
+        ["e", "ÈÉÊËèéêëĒēĔĕĖėĘęĚěȄȅȆȇȨȩḔḕḖḗḘḙḚḛḜḝẸẹẺẻẼẽẾếỀềỂểỄễỆệ"], ["f", "Ḟḟ"], ["ff", "ﬀ"], ["ffi", "ﬃ"],
+        ["ffl", "ﬄ"], ["fi", "ﬁ"], ["fl", "ﬂ"], ["g", "ĜĝĞğĠġĢģǦǧǴǵḠḡ"], ["h", "ĤĥȞȟḢḣḤḥḦḧḨḩḪḫẖ"],
+        ["i", "ÌÍÎÏìíîïĨĩĪīĬĭĮįİǏǐȈȉȊȋḬḭḮḯỈỉỊị"], ["ij", "Ĳĳ"], ["j", "Ĵĵǰ"], ["k", "ĶķǨǩḰḱḲḳḴḵ"],
+        ["l", "ĹĺĻļĽľŁłḶḷḸḹḺḻḼḽ"], ["l ", "Ŀŀ"], ["lj", "Ǉǈǉ"], ["m", "ḾḿṀṁṂṃ"], ["n", "ÑñŃńŅņŇňǸǹṄṅṆṇṈṉṊṋ"],
+        ["nj", "Ǌǋǌ"], ["o", "ºÒÓÔÕÖØòóôõöøŌōŎŏŐőƠơǑǒǪǫǬǭǾǿȌȍȎȏȪȫȬȭȮȯȰȱṌṍṎṏṐṑṒṓỌọỎỏỐốỒồỔổỖỗỘộỚớỜờỞởỠỡỢợ"],
+        ["oe", "Œœ"], ["p", "ṔṕṖṗ"], ["r", "ŔŕŖŗŘřȐȑȒȓṘṙṚṛṜṝṞṟ"], ["s", "ŚśŜŝŞşŠšſȘșṠṡṢṣṤṥṦṧṨṩẛ"], ["ss", "ßẞ"],
+        ["st", "ﬅﬆ"], ["t", "ŢţŤťȚțṪṫṬṭṮṯṰṱẗ"], ["th", "Þþ"],
+        ["u", "ÙÚÛÜùúûüŨũŪūŬŭŮůŰűŲųƯưǓǔǕǖǗǘǙǚǛǜȔȕȖȗṲṳṴṵṶṷṸṹṺṻỤụỦủỨứỪừỬửỮữỰự"], ["v", "ṼṽṾṿ"], ["w", "ŴŵẀẁẂẃẄẅẆẇẈẉẘ"],
+        ["x", "ẊẋẌẍ"], ["y", "ÝýÿŶŷŸȲȳẎẏẙỲỳỴỵỶỷỸỹ"], ["z", "ŹźŻżŽžẐẑẒẓẔẕ"]
+    ]
+    fold = {}
+    for each group in groups
+        letters = group[1]
+        for i = 1 to Len(letters)
+            fold[Mid(letters, i, 1)] = group[0]
+        end for
+    end for
+    ' Fullwidth digits (U+FF10 to U+FF19) and letters (U+FF21 to U+FF3A, U+FF41 to U+FF5A), and circled letters
+    ' (U+24B6 to U+24CF, U+24D0 to U+24E9): "Ｆｕｌｌ" is "full", "Ⓐ" is "a".
+    for n = 0 to 9
+        fold[Chr(&hFF10 + n)] = n.ToStr()
+    end for
+    for n = 0 to 25
+        letter = Chr(&h61 + n)
+        fold[Chr(&hFF21 + n)] = letter
+        fold[Chr(&hFF41 + n)] = letter
+        fold[Chr(&h24B6 + n)] = letter
+        fold[Chr(&h24D0 + n)] = letter
+    end for
+    ' Circled numbers one to twenty (U+2460 to U+2473): "⑪" is "11".
+    for n = 1 to 20
+        fold[Chr(&h245F + n)] = n.ToStr()
+    end for
+    ' Roman numerals (U+2160 to U+216F upper case, U+2170 to U+217F lower case): "Ⅸ" and "ⅸ" are "ix".
+    roman = ["i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x", "xi", "xii", "l", "c", "d", "m"]
+    for n = 0 to 15
+        fold[Chr(&h2160 + n)] = roman[n]
+        fold[Chr(&h2170 + n)] = roman[n]
+    end for
+    ' The Kelvin and Angstrom signs, which a Unicode LCase turns into k and å, as a Roku's may not.
+    fold[Chr(&h212A)] = "k"
+    fold[Chr(&h212B)] = "a"
+    ' Combining marks U+0300 to U+036F, and only those, are dropped, as in a name written "Ame" + Chr(&h301) + "lie".
+    ' Other marks (U+0483, U+1AB0, U+20D7, U+FE20...) are kept, so step 8 turns them into a space.
+    for code = &h300 to &h36F
+        fold[Chr(code)] = ""
+    end for
+    return fold
+end function
+
 ' ------------------------------------------------------------------ titles
 
-' Normalized title for matching (docs/browse.md): lower case; no trailing (YYYY), bracketed or
-' pipe-delimited tags or "US -" style prefixes; no quality words; & becomes and; no punctuation;
-' single spaces; no leading "the ".
+' Normalized title for matching (docs/browse.md, "Normalize"): "EN | The Matrix | 1999" -> "matrix".
 function normalizeTitle(name as string, rx as object) as string
+    return normalizeKey(name, true, rx)
+end function
+
+' Normalize steps 1 to 10. With stripTags false, steps 3.1, 3.2 and 3.4 (leading and trailing tags) are skipped:
+' the second key a provider title is looked up under ("CSI: Miami" is tried as "miami", then as "csi miami").
+function normalizeKey(name as string, stripTags as boolean, rx as object) as string
     ' The Instr checks skip patterns that cannot match, which keeps a 20,000-title catalogue quick.
-    s = name
-    if Instr(1, s, "[") > 0 or Instr(1, s, "{") > 0 or Instr(1, s, "|") > 0 or Instr(1, s, "(") > 0 then s = rx.tags.ReplaceAll(s, " ")
-    if Instr(1, s, "|") > 0 or Instr(1, s, ":") > 0 or Instr(1, s, "-") > 0
-        for i = 1 to 3
-            stripped = rx.prefix.Replace(s, "")
-            if stripped = s then exit for
-            s = stripped
-        end for
-        s = rx.suffix.Replace(s, "")
-    end if
+    s = trimEnds(unicodeSpaces(name, rx))
+    if Instr(1, s, "[") > 0 or Instr(1, s, "{") > 0 or Instr(1, s, "(") > 0 then s = rx.brackets.ReplaceAll(s, " ")
+    ' Step 3: trailing tags go before the tags between pipes, so "Dune | 4K | EN" loses " | EN", then " | 4K".
+    if stripTags then s = stripEndTags(s, rx)
+    if Instr(1, s, "|") > 0 then s = rx.pipes.ReplaceAll(s, " ")
+    if stripTags then s = stripEndTags(s, rx)
     s = LCase(s)
     if Instr(1, s, "&") > 0 then s = s.Replace("&", " and ")
-    if Instr(1, s, "'") > 0 or Instr(1, s, "`") > 0 or Instr(1, s, "´") > 0 or Instr(1, s, "’") > 0 then s = rx.apostrophe.ReplaceAll(s, "")
-    if rx.nonAscii.IsMatch(s) then s = foldAccents(s)
+    for each apostrophe in ["'", "`", "´", "’"]
+        if Instr(1, s, apostrophe) > 0 then s = s.Replace(apostrophe, "")
+    end for
+    if rx.nonAscii.IsMatch(s)
+        if rx.fold = invalid then rx.fold = foldTable()
+        s = foldAccents(s, rx.fold)
+    end if
     s = rx.nonWord.ReplaceAll(s, " ")
-    quality = {"4k": true, "uhd": true, "hd": true, "fhd": true, "hdr": true, "hdr10": true, "1080p": true, "720p": true, "2160p": true}
     words = []
     for each word in s.Split(" ")
-        if word <> "" and not quality.DoesExist(word) then words.Push(word)
+        if word <> "" and not rx.quality.DoesExist(word) then words.Push(word)
     end for
     if words.Count() > 1 and words[0] = "the" then words.Shift()
     return words.Join(" ")
 end function
 
-function foldAccents(s as string) as string
-    pairs = [["á", "a"], ["à", "a"], ["â", "a"], ["ä", "a"], ["ã", "a"], ["å", "a"], ["é", "e"], ["è", "e"], ["ê", "e"], ["ë", "e"], ["í", "i"], ["ì", "i"], ["î", "i"], ["ï", "i"], ["ó", "o"], ["ò", "o"], ["ô", "o"], ["ö", "o"], ["õ", "o"], ["ø", "o"], ["ú", "u"], ["ù", "u"], ["û", "u"], ["ü", "u"], ["ñ", "n"], ["ç", "c"], ["ý", "y"], ["ÿ", "y"], ["æ", "ae"], ["œ", "oe"], ["ß", "ss"]]
-    for each pair in pairs
-        s = s.Replace(pair[0], pair[1])
+' Normalize steps 3.1 and 3.2: up to three leading tags, then trailing tags, the last one first, for as long as one
+' ends the name ("4K | NF | Stranger Things - EN" -> "Stranger Things", "Heat - 1995 - 4K" -> "Heat").
+function stripEndTags(s as string, rx as object) as string
+    if not hasTagSeparator(s) then return s
+    for i = 1 to 3
+        stripped = rx.leading.Replace(s, "")
+        if stripped = s then exit for
+        s = stripped
+    end for
+    ' Each removal shortens the name, so this ends.
+    while true
+        stripped = rx.trailing.Replace(s, "")
+        if stripped = s then exit while
+        s = stripped
+    end while
+    return s
+end function
+
+' A leading or trailing tag (normalize step 3) needs one of | : - –.
+function hasTagSeparator(s as string) as boolean
+    return Instr(1, s, "|") > 0 or Instr(1, s, ":") > 0 or Instr(1, s, "-") > 0 or Instr(1, s, "–") > 0
+end function
+
+' docs/browse.md, "Spaces and letter case": U+0085, U+00A0, U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F,
+' U+205F, U+3000 and U+FEFF become a space before any rule reads a text. Names in plain ASCII are returned as they are.
+function unicodeSpaces(s as string, rx as object) as string
+    if not rx.nonAscii.IsMatch(s) then return s
+    for each space in rx.spaceChars
+        if Instr(1, s, space) > 0 then s = s.Replace(space, " ")
     end for
     return s
 end function
 
-' "Dune (2021)" or "Dune [2021]" -> "2021".
+' Normalize step 1, after unicodeSpaces: space, tab, line feed, vertical tab, form feed and carriage return off both
+' ends, so " - 1999" is read as "- 1999" whether or not the provider trimmed it. Trim is not used: it may also remove
+' other characters, such as U+001C to U+001F or U+180E. Nor is a pattern such as ^[ \t\n\x0B\f\r]+|[ \t\n\x0B\f\r]+$:
+' it tries the second half again at every space of a run inside the name, so its time grows with the square of the
+' run (docs/browse.md, "Trimming"). The loop reads the ends only, and most names have nothing to trim.
+function trimEnds(s as string) as string
+    if s = "" then return s
+    if Asc(s) > 32 and Asc(Right(s, 1)) > 32 then return s
+    last = Len(s)
+    first = 1
+    while first <= last and isEdgeSpace(Asc(Mid(s, first, 1)))
+        first = first + 1
+    end while
+    while last >= first and isEdgeSpace(Asc(Mid(s, last, 1)))
+        last = last - 1
+    end while
+    if first = 1 and last = Len(s) then return s
+    return Mid(s, first, last - first + 1)
+end function
+
+' Space, tab, line feed, vertical tab, form feed or carriage return.
+function isEdgeSpace(code as integer) as boolean
+    return code = 32 or (code >= 9 and code <= 13)
+end function
+
+' A provider field as the catalogue reads it (an M3U line and title, a TMDB id string): space, tab, line feed,
+' vertical tab, form feed, carriage return and the Unicode spaces of unicodeSpaces off both ends, and nothing else.
+' Trim is not used: it may also remove other characters, and a name such as U+001F followed by " - 1999" would
+' change.
+function trimField(s as string) as string
+    last = Len(s)
+    if last = 0 then return s
+    first = 1
+    while first <= last and isFieldSpace(Asc(Mid(s, first, 1)))
+        first = first + 1
+    end while
+    while last >= first and isFieldSpace(Asc(Mid(s, last, 1)))
+        last = last - 1
+    end while
+    if first = 1 and last = Len(s) then return s
+    return Mid(s, first, last - first + 1)
+end function
+
+' Space, tab, line feed, vertical tab, form feed, carriage return, or one of the Unicode spaces (docs/browse.md).
+function isFieldSpace(code as integer) as boolean
+    if isEdgeSpace(code) then return true
+    if code < &h85 then return false
+    return code = &h85 or code = &hA0 or code = &h1680 or (code >= &h2000 and code <= &h200A) or code = &h2028 or code = &h2029 or code = &h202F or code = &h205F or code = &h3000 or code = &hFEFF
+end function
+
+' s with A to Z in lower case and every other character as it is, for the rules that ignore the case of ASCII
+' letters only. LCase is not used: it may lower-case letters beyond ASCII too.
+function asciiLower(s as string, rx as object) as string
+    if not rx.upperAscii.IsMatch(s) then return s
+    out = []
+    for i = 1 to Len(s)
+        ch = Mid(s, i, 1)
+        code = Asc(ch)
+        if code >= 65 and code <= 90 then ch = Chr(code + 32)
+        out.Push(ch)
+    end for
+    return out.Join("")
+end function
+
+' Folds each non-ASCII character found in fold (foldTable); every other character is kept.
+function foldAccents(s as string, fold as object) as string
+    out = []
+    for i = 1 to Len(s)
+        ch = Mid(s, i, 1)
+        if Asc(ch) > 127
+            plain = fold[ch]
+            if plain <> invalid then ch = plain
+        end if
+        out.Push(ch)
+    end for
+    return out.Join("")
+end function
+
+' The year in a name, with its ends trimmed as in normalize step 1: the first (YYYY) or [YYYY] (also (YYYY] and
+' [YYYY)), else the first year met taking trailing tags off the end of the name ("EN | Wonka | 2023",
+' "Heat - 1995 - 4K", "2012 | 1999 | EN" -> "1999"). A bare number ending a name is part of the title
+' ("Blade Runner 2049"), and so is one with no space before its dash (" - 1999" is read as "- 1999").
 function titleYearOf(name as string, rx as object) as string
-    if Instr(1, name, "(") = 0 and Instr(1, name, "[") = 0 then return ""
-    found = rx.year.Match(name)
-    if found.Count() > 1 then return found[1]
+    s = trimEnds(unicodeSpaces(name, rx))
+    if Instr(1, s, "(") > 0 or Instr(1, s, "[") > 0
+        found = rx.yearBrackets.Match(s)
+        if found.Count() > 1 then return found[1]
+    end if
+    if Instr(1, s, "|") > 0 or Instr(1, s, "-") > 0 or Instr(1, s, "–") > 0
+        found = rx.yearEnd.Match(s)
+        if found.Count() > 2 then return found[2]
+    end if
     return ""
 end function
 
-' "2021-05-01", "2021" or 2021 -> "2021".
+' A provider year field: "2021-05-01", "2021" or 2021 -> "2021"; "20211" or "N/A" -> "". Unicode spaces before the
+' year count as spaces.
 function yearOfText(v as dynamic, rx as object) as string
     if v = invalid then return ""
-    found = rx.yearText.Match(asText(v))
+    found = rx.yearField.Match(unicodeSpaces(asText(v), rx))
     if found.Count() > 1 then return found[1]
     return ""
 end function
 
-' The TMDB id a provider item carries in tmdb, tmdb_id or info.tmdb_id (numbers only), or "".
+' The provider's TMDB id (docs/browse.md, Matching step 1): the first of tmdb, tmdb_id, info.tmdb_id and info.tmdb
+' (the last two only when info is an object) whose value gives an id (tmdbIdOf), without leading zeros; or "".
 function providerTmdbId(row as object, rx as object) as string
     values = [row.tmdb, row.tmdb_id]
-    if isAssoc(row.info) then values.Push(row.info.tmdb_id)
+    if isAssoc(row.info) then values.Append([row.info.tmdb_id, row.info.tmdb])
     for each v in values
-        if v <> invalid
-            t = asText(v).Trim()
-            if t <> "" and t <> "0" and rx.digits.IsMatch(t) then return t
-        end if
+        id = tmdbIdOf(v, rx)
+        if id <> "" then return id
     end for
     return ""
+end function
+
+' One provider TMDB id value as ParseJson gives it, told apart by its type and never turned into text first:
+' - a string, trimmed as a provider field (trimField, not Trim), that matches TMDB_ID in ASCII digits: group 1
+'   without its leading zeros, "" when it is all zeros (" 0123 " and "123.0" -> "123"; "123 .0", "1e3" -> "");
+' - an Integer or LongInteger from 1 to 999999999999;
+' - a Float (ParseJson's number with a fraction or an exponent, single precision, exact up to 16777216) that is a
+'   whole number from 1 to below 16777216 ("123.0" and "1e3" -> "123" and "1000"; "1.5" -> "");
+' - anything else (an array, an object, a boolean, invalid) gives "".
+function tmdbIdOf(v as dynamic, rx as object) as string
+    t = type(v)
+    if t = "roString" or t = "String"
+        found = rx.tmdbId.Match(trimField(v))
+        if found.Count() < 2 then return ""
+        id = found[1]
+        while Len(id) > 1 and Left(id, 1) = "0"
+            id = Mid(id, 2)
+        end while
+        if id = "0" then return ""
+        return id
+    end if
+    if t = "roInteger" or t = "Integer" or t = "roLongInteger" or t = "LongInteger"
+        if v >= 1 and v <= 999999999999& then return v.ToStr()
+        return ""
+    end if
+    if t = "roFloat" or t = "Float" or t = "roDouble" or t = "Double"
+        if v >= 1 and v < 16777216
+            if v = Int(v) then return Int(v).ToStr()
+        end if
+        return ""
+    end if
+    return ""
+end function
+
+' Unix seconds from added (movies) or last_modified (series); a value above 100000000000 is in milliseconds.
+function unixSeconds(v as dynamic) as integer
+    t = asText(v).Trim()
+    dot = Instr(1, t, ".")
+    if dot > 0 then t = Left(t, dot - 1)
+    if Len(t) > 12 or (Len(t) = 12 and t > "100000000000") then t = Left(t, Len(t) - 3)
+    return t.ToInt()
 end function
 
 function ratingOf(row as object) as float
@@ -186,45 +436,66 @@ function ratingOf(row as object) as float
 end function
 
 ' One Xtream get_vod_streams (kind "movie") or get_series (kind "series") row as a catalogue title,
-' or invalid when it has no id. id is the stream_id or series_id. Fields that only matter while the
-' index is built (hint, genre, cat, added) are dropped by buildTitleSection.
+' or invalid when it has no id. id is the stream_id or series_id; cats are its category_id and
+' category_ids. Fields that only matter while the index is built (hint, genre, cats, added) are
+' dropped by buildTitleSection.
 function titleFromXtream(kind as string, row as object, rx as object) as dynamic
     if not isAssoc(row) then return invalid
     if kind = "movie" then id = asText(row.stream_id) else id = asText(row.series_id)
     if id = "" then return invalid
-    cat = asText(row.category_id)
-    if cat = "" then cat = "__other"
+    values = [row.category_id]
+    values.Append(arrayOrEmpty(row.category_ids))
+    cats = []
+    for each value in values
+        cat = asText(value)
+        if cat <> "" then cats.Push(cat)
+    end for
     name = asText(row.name)
-    year = yearOfText(row.year, rx)
-    if year = "" then year = yearOfText(row.releaseDate, rx)
-    if year = "" then year = yearOfText(row.release_date, rx)
-    if year = "" then year = yearOfText(row.releasedate, rx)
+    ' The first provider field that starts with a year, else the year in the name.
+    year = ""
+    for each value in [row.year, row.releaseDate, row.release_date, row.releasedate]
+        if year = "" then year = yearOfText(value, rx)
+    end for
     if year = "" then year = titleYearOf(name, rx)
-    title = {kind: kind, key: Left(kind, 1) + id, id: id, name: name, cat: cat, adult: isFlagOn(row.is_adult), year: year, rating: ratingOf(row), hint: providerTmdbId(row, rx), genre: asText(row.genre)}
+    title = {kind: kind, key: Left(kind, 1) + id, id: id, name: name, cats: cats, adult: isFlagOn(row.is_adult), year: year, rating: ratingOf(row), hint: providerTmdbId(row, rx), genre: asText(row.genre)}
     if kind = "movie"
         title.icon = asText(row.stream_icon)
         ext = asText(row.container_extension)
         if ext = "" then ext = "mp4"
         title.ext = ext
-        title.added = asText(row.added).Trim().ToInt()
+        title.added = unixSeconds(row.added)
     else
         title.icon = asText(row.cover)
-        title.added = asText(row.last_modified).Trim().ToInt()
+        title.added = unixSeconds(row.last_modified)
     end if
     return title
 end function
 
-' One M3U entry as a catalogue title. key is a stable id made from the stream URL by the caller.
+' One M3U entry as a catalogue title; its category is its group-title. key is a stable id made from the
+' stream URL by the caller.
 function titleFromM3u(kind as string, key as string, name as string, icon as string, group as string, url as string, rx as object) as object
-    return {kind: kind, key: key, id: "", name: name, cat: group, adult: false, year: titleYearOf(name, rx), rating: 0, hint: "", genre: "", icon: icon, url: url, added: 0}
+    return {kind: kind, key: key, id: "", name: name, cats: [group], adult: false, year: titleYearOf(name, rx), rating: 0, hint: "", genre: "", icon: icon, url: url, added: 0}
 end function
 
 ' ------------------------------------------------------------------ USA only and adult rules
 
-' A category fails the USA filter when its name carries a non-US country or language tag.
+' A category fails the USA filter when its name carries a non-US country or language (category rules 1 to 4, on
+' the name with its Unicode spaces replaced). Rules 3 and 4 run on a copy with A to Z in lower case.
 function isForeignCategory(name as string, rx as object) as boolean
-    if name = "" then return false
-    return rx.foreignCode.IsMatch(name) or rx.foreignTag.IsMatch(name) or rx.foreignWord.IsMatch(name)
+    s = unicodeSpaces(name, rx)
+    if s = "" then return false
+    if rx.foreignCode.IsMatch(s) or rx.foreignInIt.IsMatch(s) then return true
+    lower = asciiLower(s, rx)
+    return rx.foreignTag.IsMatch(lower) or rx.foreignWord.IsMatch(lower)
+end function
+
+' USA only (docs/browse.md): the title's categories pass and, when it is matched to TMDB (entry from tmdbEntry)
+' and TMDB gave its countries, they include US. A match with no country (origin [], or only entries such as "USA"
+' that are not one) goes by its categories.
+function usaAllowed(categoriesPass as boolean, entry as dynamic) as boolean
+    if not categoriesPass then return false
+    if entry = invalid or not entry.known then return true
+    return entry.us
 end function
 
 ' XXX, Adult, Adults, 18+ or Porn, but not Adult Swim.
@@ -293,17 +564,25 @@ end function
 
 ' ------------------------------------------------------------------ matching
 
-function tmdbEntry(raw as dynamic) as dynamic
+function tmdbEntry(raw as dynamic, rx as object) as dynamic
     if not isAssoc(raw) then return invalid
     id = asText(raw.id)
     if id = "" then return invalid
-    ' known is false when TMDB gave no country (origin []); USA only then goes by the category alone.
-    us = false
+    ' docs/browse.md, "Origin countries": an entry is a country when, with its Unicode spaces replaced, it is two
+    ' ASCII letters with only spaces around them (" US", "us"); every other entry ("USA", "U.S.", "", a number) is
+    ' ignored. known is false when no entry is a country; USA only then goes by the category alone.
     known = false
+    us = false
     for each country in arrayOrEmpty(raw.origin)
-        code = UCase(asText(country))
-        if code <> "" then known = true
-        if code = "US" then us = true
+        t = type(country)
+        if t = "roString" or t = "String"
+            found = rx.country.Match(unicodeSpaces(country, rx))
+            if found.Count() > 1
+                known = true
+                ' The two letters are ASCII, so lower-casing A to Z alone compares them in any ASCII letter case.
+                if asciiLower(found[1], rx) = "us" then us = true
+            end if
+        end if
     end for
     g = ""
     for each genre in arrayOrEmpty(raw.genres)
@@ -324,7 +603,7 @@ function tmdbIndex(section as object, rx as object) as object
     end for
     for each list in lists
         for each raw in arrayOrEmpty(list)
-            entry = tmdbEntry(raw)
+            entry = tmdbEntry(raw, rx)
             if entry <> invalid and not byId.DoesExist(entry.id)
                 byId[entry.id] = entry
                 title = normalizeTitle(asText(raw.title), rx)
@@ -340,6 +619,16 @@ function tmdbIndex(section as object, rx as object) as object
         end for
     end for
     return {byId: byId, byTitle: byTitle, count: byId.Count()}
+end function
+
+' The TMDB title a catalogue title matches, or invalid. norm is normalizeTitle(title.name). A title whose
+' normalized name finds no match is looked up again under its name normalized without removing tags.
+function matchTitle(index as object, title as object, norm as string, rx as object) as dynamic
+    entry = matchTmdb(index, title.hint, norm, title.year)
+    if entry <> invalid or title.hint <> "" or not hasTagSeparator(title.name) then return entry
+    whole = normalizeKey(title.name, false, rx)
+    if whole = norm then return invalid
+    return matchTmdb(index, "", whole, title.year)
 end function
 
 ' 1. A provider TMDB id matches on the id alone. 2. Otherwise the normalized title must match and the
@@ -452,7 +741,8 @@ end function
 ' ------------------------------------------------------------------ building the browse index
 
 ' Turns one type's titles into what the screen browses: the titles with their USA, adult, TMDB and
-' genre facts worked out, and every list Home and Discover need as arrays of title indices.
+' genre facts worked out, every list Home and Discover need as arrays of title indices, and the
+' copies of each TMDB title with more than one, best first.
 '   titles: from titleFromXtream / titleFromM3u. categories: [{id, name, adult}].
 '   section: parseRowsPayload(...).movie or .tv. rawGenres: parseRowsPayload(...).genres.movie or .tv.
 function buildTitleSection(titles as object, categories as object, section as object, rawGenres as object, rx as object) as object
@@ -462,7 +752,24 @@ function buildTitleSection(titles as object, categories as object, section as ob
     for each cat in categories
         catInfo[cat.id] = {foreign: isForeignCategory(cat.name, rx), adult: isFlagOn(cat.adult) or isAdultName(cat.name, rx), services: categoryServices(cat.name, rx), g: categoryGenreKeys(cat.name, genres, rx)}
     end for
-    plain = {foreign: false, adult: false, services: [], g: ""}
+    ' USA only judges a title by the categories of every row with its id; ids missing from the category
+    ' list are left out. Per id: 0 no category left, 1 only foreign ones, 2 at least one that passes.
+    usaCats = {}
+    for each title in titles
+        state = usaCats[title.key]
+        if state = invalid then state = 0
+        for each id in title.cats
+            info = catInfo[id]
+            if info <> invalid
+                if not info.foreign
+                    state = 2
+                else if state = 0
+                    state = 1
+                end if
+            end if
+        end for
+        usaCats[title.key] = state
+    end for
     usedGenres = {}
     items = []
     byKey = {}
@@ -472,37 +779,33 @@ function buildTitleSection(titles as object, categories as object, section as ob
         byService[service.key] = []
     end for
     ' The screen gets each title without the fields only needed here, so less is copied between threads.
-    unused = ["hint", "genre", "cat", "added"]
+    unused = ["hint", "genre", "cats", "added"]
+    stamps = []
     recent = []
     rated = []
     az = []
     matched = 0
     for each title in titles
-        info = catInfo[title.cat]
-        if info = invalid then info = plain
+        info = rowCategoryFacts(title.cats, catInfo)
         norm = normalizeTitle(title.name, rx)
         entry = invalid
-        if index.count > 0 then entry = matchTmdb(index, title.hint, norm, title.year)
-        ' USA only keeps a title only if its category passes the filter and, when it is matched
-        ' to TMDB and TMDB gave its countries, they include US (as on Android). A match with no
-        ' countries (origin []) is judged by its category alone.
-        us = not info.foreign
+        if index.count > 0 then entry = matchTitle(index, title, norm, rx)
         title.tmdb = ""
         title.g = ""
         if entry <> invalid
             title.tmdb = entry.id
             title.g = entry.g
-            if entry.known then us = us and entry.us
             matched = matched + 1
         end if
         ' Genres: TMDB's, else the provider's genre text, else a category named after a genre.
         if title.g = "" and title.genre <> "" then title.g = providerGenreKeys(title.genre, genres, rx)
         if title.g = "" then title.g = info.g
         if title.g <> "" then usedGenres[title.g] = true
-        title.us = us
+        title.us = usaAllowed(usaCats[title.key] <> 1, entry)
         title.adult = title.adult or info.adult
         i = items.Count()
         items.Push(title)
+        stamps.Push(title.added)
         if not byKey.DoesExist(title.key) then byKey[title.key] = i
         if title.tmdb <> ""
             if not byTmdb.DoesExist(title.tmdb) then byTmdb[title.tmdb] = []
@@ -521,17 +824,12 @@ function buildTitleSection(titles as object, categories as object, section as ob
             title.Delete(field)
         end for
     end for
-    ' Copies of one TMDB title: the ones in categories that pass the USA filter come first.
+    ' Copies of one TMDB title are one poster in every list (pickTitles), best copy first.
+    copies = {}
     for each id in byTmdb
-        group = byTmdb[id]
-        if group.Count() > 1
-            first = []
-            rest = []
-            for each i in group
-                if items[i].us then first.Push(i) else rest.Push(i)
-            end for
-            first.Append(rest)
-            byTmdb[id] = first
+        if byTmdb[id].Count() > 1
+            byTmdb[id] = rankCopies(byTmdb[id], items, stamps)
+            copies[id] = byTmdb[id]
         end if
     end for
     lists = {
@@ -559,7 +857,61 @@ function buildTitleSection(titles as object, categories as object, section as ob
         end for
         genreList.SortBy("name", "i")
     end if
-    return {items: items, lists: lists, byKey: byKey, genres: genreList, matched: matched}
+    return {items: items, lists: lists, byKey: byKey, copies: copies, genres: genreList, matched: matched}
+end function
+
+' The adult flag, services and genre keys of one row's known categories together.
+function rowCategoryFacts(cats as object, catInfo as object) as object
+    if cats.Count() = 1
+        info = catInfo[cats[0]]
+        if info <> invalid then return info
+    end if
+    facts = {adult: false, services: [], g: ""}
+    for each id in cats
+        info = catInfo[id]
+        if info <> invalid
+            if info.adult then facts.adult = true
+            for each key in info.services
+                if not arrayHas(facts.services, key) then facts.services.Push(key)
+            end for
+            for each key in info.g.Split("|")
+                if key <> "" and Instr(1, facts.g + "|", "|" + key + "|") = 0 then facts.g = facts.g + "|" + key
+            end for
+        end if
+    end for
+    if facts.g <> "" then facts.g = facts.g + "|"
+    return facts
+end function
+
+function arrayHas(list as object, value as string) as boolean
+    for each v in list
+        if v = value then return true
+    end for
+    return false
+end function
+
+' Copies of one TMDB title, best first: those that pass USA only, then the newest added, then catalogue order.
+function rankCopies(group as object, items as object, stamps as object) as object
+    rest = []
+    rest.Append(group)
+    ranked = []
+    while rest.Count() > 0
+        best = 0
+        for k = 1 to rest.Count() - 1
+            a = rest[k]
+            b = rest[best]
+            if items[a].us <> items[b].us
+                if items[a].us then best = k
+            else if stamps[a] <> stamps[b]
+                if stamps[a] > stamps[b] then best = k
+            else if a < b
+                best = k
+            end if
+        end for
+        ranked.Push(rest[best])
+        rest.Delete(best)
+    end while
+    return ranked
 end function
 
 function tmdbOrder(list as object, byTmdb as object) as object
@@ -609,9 +961,11 @@ function titleVisible(item as object, opts as object) as boolean
     return true
 end function
 
-' Walks indices from cursor and returns up to limit visible titles, one per TMDB title.
-' Returns {picked: [index], cursor: where to continue}.
-function pickTitles(items as object, indices as dynamic, opts as object, cursor as integer, limit as integer) as object
+' Walks indices from cursor and returns up to limit visible titles, one per TMDB title: copies of a
+' TMDB title are one poster, where its first visible copy stands, and it opens its best visible copy
+' (section.copies). section is from buildTitleSection. Returns {picked: [index], cursor: where to continue}.
+function pickTitles(section as object, indices as dynamic, opts as object, cursor as integer, limit as integer) as object
+    items = section.items
     picked = []
     list = arrayOrEmpty(indices)
     i = cursor
@@ -625,6 +979,16 @@ function pickTitles(items as object, indices as dynamic, opts as object, cursor 
             if item.tmdb <> "" then seenKey = "tmdb:" + item.tmdb
             if not opts.seen.DoesExist(seenKey)
                 opts.seen[seenKey] = true
+                group = invalid
+                if item.tmdb <> "" then group = section.copies[item.tmdb]
+                if group <> invalid
+                    for each candidate in group
+                        if titleVisible(items[candidate], opts)
+                            index = candidate
+                            exit for
+                        end if
+                    end for
+                end if
                 picked.Push(index)
             end if
         end if
@@ -633,7 +997,8 @@ function pickTitles(items as object, indices as dynamic, opts as object, cursor 
 end function
 
 ' Search: up to limit visible titles whose names contain query (lower case), names starting with it first.
-function searchTitles(items as object, query as string, opts as object, limit as integer) as object
+function searchTitles(section as object, query as string, opts as object, limit as integer) as object
+    items = section.items
     starts = []
     contains = []
     if Len(query) < 2 then return []
@@ -650,7 +1015,7 @@ function searchTitles(items as object, query as string, opts as object, limit as
         end if
     end for
     starts.Append(contains)
-    return pickTitles(items, starts, opts, 0, limit).picked
+    return pickTitles(section, starts, opts, 0, limit).picked
 end function
 
 ' Home rows after Continue watching, in the order docs/browse.md gives. Popular and Featured need TMDB.
@@ -703,7 +1068,7 @@ function buildHomeRows(catalog as object, withTmdb as boolean, opts as object, c
     for each spec in homeRowSpecs(withTmdb)
         section = catalog[spec.type]
         rowOpts = {usOnly: opts.usOnly, adultOk: opts.adultOk, genre: "", seen: {}}
-        result = pickTitles(section.items, section.lists[spec.list], rowOpts, 0, 20)
+        result = pickTitles(section, section.lists[spec.list], rowOpts, 0, 20)
         if result.picked.Count() >= 5
             refs = []
             for each i in result.picked

@@ -3,6 +3,7 @@ package tv.lumanest.tuner
 import tv.lumanest.tuner.data.BrowseBuilder
 import tv.lumanest.tuner.data.BrowseCatalog
 import tv.lumanest.tuner.data.BrowseList
+import tv.lumanest.tuner.data.BrowseText
 import tv.lumanest.tuner.data.BrowseTitle
 import tv.lumanest.tuner.data.CatalogRows
 import tv.lumanest.tuner.data.Category
@@ -67,6 +68,53 @@ class BrowseCatalogTest {
         assertEquals(0, TitleMatch.yearInTitle("Blade Runner 2049"))
         assertEquals(2021, TitleMatch.yearOf("2021-10-22"))
         assertEquals(0, TitleMatch.yearOf(null))
+        // Provider year fields are read with the Unicode spaces replaced, and only those (docs/browse.md).
+        assertEquals(2021, TitleMatch.yearOf("\u00A02021"))
+        assertEquals(2021, TitleMatch.yearOf("\u3000\uFEFF2021-05-01"))
+        assertEquals(2021, TitleMatch.yearOf(" \t2021.0"))
+        assertEquals(0, TitleMatch.yearOf("\u200B2021"))
+        assertEquals(0, TitleMatch.yearOf("\u001F2021"))
+        assertEquals(0, TitleMatch.yearOf("20211"))
+    }
+
+    /**
+     * docs/browse.md "Test cases": `Movie - 1999`, then ` - 4K` 40 times, then ` - Extended` normalizes and gives its year
+     * in well under 50 ms. With a TAG that matched "4K" two ways, YEAR_END tried 2^40 ways before giving up on it.
+     */
+    @Test fun aLongChainOfQualityTagsIsReadInTimeProportionalToTheName() {
+        val chain = "Movie - 1999" + " - 4K".repeat(40)
+        val name = "$chain - Extended"
+        // Compiles the patterns and warms the JIT, so the timing is the matching alone.
+        repeat(20) { TitleMatch.normalize("Heat - 1995 - 4K - HD - Extended"); TitleMatch.yearInTitle("Heat - 1995 - 4K - HD - Extended") }
+        val started = System.nanoTime()
+        val title = TitleMatch.normalize(name)
+        val year = TitleMatch.yearInTitle(name)
+        val ms = (System.nanoTime() - started) / 1e6
+        assertEquals("movie 1999 extended", title)
+        assertEquals(0, year)
+        assertTrue("Normalizing \"$name\" and reading its year took $ms ms", ms < 50)
+        assertEquals("movie", TitleMatch.normalize(chain))
+        assertEquals(1999, TitleMatch.yearInTitle(chain))
+    }
+
+    /**
+     * docs/browse.md "Test cases" and "Trimming": `A`, 16,000 spaces and `B` normalizes and gives its year in well under
+     * 50 ms, and trims as a provider field as fast. A trim written as a pattern, `[ \t\n\x0B\f\r]+$`, is tried again at
+     * every space of the run, so its time grows with the square of the run.
+     */
+    @Test fun aLongRunOfSpacesInsideANameIsReadInTimeProportionalToTheName() {
+        val name = "A" + " ".repeat(16_000) + "B"
+        // Compiles the patterns and warms the JIT, so the timing is the matching alone.
+        repeat(20) { TitleMatch.normalize(" A  B "); TitleMatch.yearInTitle(" A  B "); BrowseText.trimField(" A  B ") }
+        val started = System.nanoTime()
+        val title = TitleMatch.normalize(name)
+        val year = TitleMatch.yearInTitle(name)
+        val field = BrowseText.trimField(" $name\u3000")
+        val ms = (System.nanoTime() - started) / 1e6
+        assertEquals("a b", title)
+        assertEquals(0, year)
+        assertEquals(name, field)
+        assertTrue("Normalizing a name with 16,000 spaces inside, reading its year and trimming it took $ms ms", ms < 50)
     }
 
     @Test fun providerTmdbIdsMatchFirstThenTitleAndYearWithinOne() {
@@ -160,8 +208,7 @@ class BrowseCatalogTest {
             movie(3, "Heat (1995)", category = "de", added = 20),
             movie(4, "Heat (1995)", added = 5),
         )
-        val foreign = cats.filter { VodRegion.isForeignCategory(it.name) }.mapTo(HashSet()) { it.id }
-        val cleaned = Cleanup.movies(uploads, foreign)
+        val cleaned = Cleanup.movies(uploads, cats)
         assertEquals(listOf("m:1", "m:2"), cleaned.map { it.id })
         assertEquals(listOf("m:4"), cleaned[0].aliases)
         assertEquals(listOf("en"), cleaned[0].categoryIds)
@@ -173,6 +220,22 @@ class BrowseCatalogTest {
         assertEquals(2, catalog.movies.titles(BrowseList.AZ, usOnly = false).size)
         // Without the categories (as before), every copy is one title.
         assertEquals(1, Cleanup.movies(uploads).size)
+        // A category id missing from the list is left out: an upload in "FR | Films" and an unknown id is still a dub.
+        val unknown = Cleanup.movies(listOf(uploads[0], uploads[1].copy(categoryIds = listOf("fr", "gone"))), cats)
+        assertEquals(listOf("m:1", "m:2"), unknown.map { it.id })
+        // An upload whose only category is unknown has no category left, so it passes and folds with the English one.
+        assertEquals(listOf("m:2"), Cleanup.movies(listOf(uploads[0], uploads[1].copy(categoryIds = listOf("gone"))), cats).map { it.id })
+    }
+
+    @Test fun aFoldedMovieTakesAMissingTmdbIdYearAndGenreFromTheNewestCopyThatHasOne() {
+        val cleaned = Cleanup.movies(listOf(
+            movie(1, "Heat", added = 10, tmdb = "100", year = "1995", genre = "Crime"),
+            movie(2, "Heat", added = 30),
+            movie(3, "Heat", added = 20, tmdb = "949", year = "1996", genre = "Action"),
+        ), listOf(english)).single()
+        assertEquals("m:2", cleaned.id)
+        assertEquals(Triple("949", "1996", "Action"), Triple(cleaned.tmdb, cleaned.year, cleaned.genre))
+        assertEquals(listOf("https://video.example/3.mp4", "https://video.example/1.mp4"), cleaned.backups)
     }
 
     @Test fun aReuploadedMovieKeepsItsLibraryEntriesAndSavedPosition() {

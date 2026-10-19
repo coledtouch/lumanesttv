@@ -41,7 +41,10 @@ data class CatalogRows(
     }
 }
 
-/** One TMDB title from the rows payload. [year] is 0 when unknown; [origin] holds upper-case country codes. */
+/**
+ * One TMDB title from the rows payload. [year] is the first four digits of its `year` (docs/browse.md), 0 when unknown;
+ * [origin] holds its usable countries, upper case ([VodRegion.country]); empty when unknown.
+ */
 data class TmdbTitle(
     val id: Long,
     val title: String,
@@ -59,8 +62,9 @@ data class TmdbTitle(
             val original = (m["original_title"] as? String)?.trim().orEmpty()
             if (title.isEmpty() && original.isEmpty()) return null
             val year = (m["year"]?.let { if (it is String) it else MiniJson.long(it)?.toString() })?.trim()
-                ?.takeIf { it.length >= 4 }?.take(4)?.toIntOrNull()?.takeIf { it in 1870..2200 } ?: 0
-            val origin = (m["origin"] as? List<*>).orEmpty().mapNotNull { (it as? String)?.trim()?.uppercase(Locale.ROOT)?.takeIf { c -> c.length == 2 } }
+                ?.take(4)?.takeIf { it.length == 4 && it.all { c -> c in '0'..'9' } }?.toInt() ?: 0
+            // docs/browse.md "Origin countries": "US", " us" count; "USA", "U.S." and non-strings are ignored.
+            val origin = (m["origin"] as? List<*>).orEmpty().mapNotNull { (it as? String)?.let(VodRegion::country) }
             val genres = (m["genres"] as? List<*>).orEmpty().mapNotNull { MiniJson.long(it)?.takeIf { g -> g in 1..Int.MAX_VALUE }?.toInt() }
             return TmdbTitle(id, title.ifEmpty { original }, original.ifEmpty { title }, year, origin,
                 (m["lang"] as? String)?.trim()?.lowercase(Locale.ROOT).orEmpty(), genres)

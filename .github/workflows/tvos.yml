@@ -3,9 +3,9 @@ name: Apple TV
 on:
   push:
     branches: [main]
-    paths: ['apps/tvos/**', '.github/workflows/tvos.yml']
+    paths: ['apps/tvos/**', 'docs/browse-cases.json', '.github/workflows/tvos.yml']
   pull_request:
-    paths: ['apps/tvos/**', '.github/workflows/tvos.yml']
+    paths: ['apps/tvos/**', 'docs/browse-cases.json', '.github/workflows/tvos.yml']
   workflow_dispatch:
 
 permissions:

@@ -1,5 +1,6 @@
 'use strict';
-// Movies & Series browsing logic in js/data.js (docs/browse.md): title matching, the USA filter, Home rows,
+// Movies & Series browsing logic in js/data.js (docs/browse.md): the shared cases of docs/browse-cases.json,
+// title matching, the USA filter, re-uploads and copies of one title, Home rows,
 // Discover lists and genres, fallbacks without TMDB, the catalog rows client and its 12-hour cache, and the
 // Continue watching / Recently watched library. The same file runs in the Samsung and LG apps.
 const test = require('node:test');
@@ -97,6 +98,193 @@ test('the category filter: country and language tags, IN and IT only as tags, na
     const kept = ['EN | Movies', 'MOVIES IN 4K', 'NEW IN CINEMAS', 'Action', 'Netflix Series', 'Indiana Jones Collection', 'US | Drama', 'Kids', 'Sports'];
     for (const name of foreign) assert.equal(B.isForeignCategory(name), true, name);
     for (const name of kept) assert.equal(B.isForeignCategory(name), false, name);
+});
+
+// docs/browse-cases.json: the cases every Tuner app runs (docs/browse.md, Test cases).
+const sharedCases = JSON.parse(fs.readFileSync(path.join(__dirname, '../../../docs/browse-cases.json'), 'utf8'));
+// Older Samsung and LG browsers have no String.prototype.normalize: data.js then folds accents with its own table.
+// asciiLowerCase: also a toLowerCase that leaves every character beyond ASCII alone, as a TV's may.
+function sandbox() { return vm.createContext({ window: { Promise, XMLHttpRequest: function () {}, localStorage: memoryStorage() }, console }); }
+function withoutNormalize(asciiLowerCase = false) {
+    const context = sandbox();
+    vm.runInContext('delete String.prototype.normalize', context);
+    assert.equal(vm.runInContext("typeof ''.normalize", context), 'undefined');
+    if (asciiLowerCase) {
+        vm.runInContext('String.prototype.toLowerCase = function () { return String(this).replace(/[A-Z]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) + 32); }); };', context);
+        assert.equal(vm.runInContext("'\\u00c9\\u0130\\uff21\\u2160\\u24b6A'.toLowerCase()", context), '\u00c9\u0130\uff21\u2160\u24b6a');
+    }
+    vm.runInContext(sourceText, context);
+    return context;
+}
+function loadWithoutNormalize(asciiLowerCase = false) { return withoutNormalize(asciiLowerCase).window.TunerData; }
+// The oldest Samsung and LG browsers follow a Unicode older than 6.3, in which U+180E is a space: their \s and trim()
+// also take it. In this context trim() and every String.prototype.replace whose pattern holds \s do the same.
+function oldSpaces() {
+    const context = sandbox(), proto = vm.runInContext('String.prototype', context), ContextRegExp = vm.runInContext('RegExp', context), replace = proto.replace;
+    function widen(source) {
+        let out = '', inClass = false;
+        for (let i = 0; i < source.length; i++) {
+            const ch = source[i];
+            if (ch === '\\') { const next = source[++i]; out += next === 's' ? (inClass ? '\\s\\u180e' : '[\\s\\u180e]') : ch + next; continue; }
+            if (ch === '[') inClass = true; else if (ch === ']') inClass = false;
+            out += ch;
+        }
+        return out;
+    }
+    proto.replace = function (pattern, replacement) {
+        if (pattern instanceof ContextRegExp && pattern.source.indexOf('\\s') >= 0) pattern = new ContextRegExp(widen(pattern.source), pattern.flags);
+        return replace.call(this, pattern, replacement);
+    };
+    proto.trim = function () { return replace.call(String(this), /^[\s\u180e]+|[\s\u180e]+$/g, ''); };
+    assert.equal(vm.runInContext("'\\u180e X\\u180e'.replace(/^\\s+|\\s+$/g, '') + '\\u180eY\\t'.trim() + 'Z\\u180e'.replace(/[\\sQ]+/g, '')", context), 'XYZ');
+    vm.runInContext(sourceText, context);
+    return context;
+}
+
+test('docs/browse-cases.json: the category filter', () => {
+    const cases = sharedCases.filter(c => c.kind === 'category');
+    assert.ok(cases.length >= 100);
+    for (const c of cases) assert.equal(B.isForeignCategory(c.name), c.foreign, c.name);
+});
+
+test('docs/browse-cases.json: normalized titles and the year in the name, with and without String.prototype.normalize', () => {
+    const cases = sharedCases.filter(c => c.kind === 'normalize'), fallback = loadWithoutNormalize().browse, old = oldSpaces().window.TunerData.browse;
+    assert.ok(cases.length >= 50);
+    for (const c of cases) {
+        for (const browse of [B, fallback, old]) {
+            assert.equal(browse.normalizeTitle(c.input), c.title, c.input);
+            const year = browse.titleYear({ name: c.input });
+            assert.equal(year ? String(year) : '', c.year, c.input);
+        }
+    }
+});
+
+test('a name ending in 40 quality tags and a word normalizes and gives its year in well under 50 ms', () => {
+    // docs/browse.md, Test cases: YEAR_END tries the whole chain of tags and fails. With a TAG that matches "4K" in two
+    // ways each further tag doubled its time; the vm timeout turns such a regression into a failure, not a hang.
+    const name = 'Movie - 1999' + ' - 4K'.repeat(40) + ' - Extended';
+    const contexts = { V8: sandbox(), 'without String.prototype.normalize': withoutNormalize(true), 'with U+180E in \\s': oldSpaces() };
+    vm.runInContext(sourceText, contexts.V8);
+    for (const [label, context] of Object.entries(contexts)) {
+        context.name = name;
+        const start = process.hrtime.bigint();
+        const result = vm.runInContext('var b = window.TunerData.browse; [b.normalizeTitle(name), b.titleYear({ name: name }), b.normalizeTitle(name, true)]', context, { timeout: 5000 });
+        const ms = Number(process.hrtime.bigint() - start) / 1e6;
+        assert.deepEqual(plain(result), ['movie 1999 extended', 0, 'movie 1999 extended'], label);
+        assert.ok(ms < 50, label + ': ' + ms.toFixed(2) + ' ms');
+    }
+    assert.equal(B.titleYear({ name: 'Movie - 1999' + ' - 4K'.repeat(40) }), 1999, 'without the word, the year before the 40 tags');
+    assert.equal(B.normalizeTitle('Movie - 1999' + ' - hd'.repeat(40)), 'movie');
+});
+
+test('a name with 16,000 spaces inside is trimmed, read from a provider row, normalized and given its year in well under 50 ms', () => {
+    // docs/browse.md, Trimming and Test cases: a trim written as ^[...]+|[...]+$ tries its second half again at every
+    // space of the run, so its time grows with the square of the run (a fifth of a second in V8 here, 0.4 s on a TV).
+    const run = ' '.repeat(16000), name = 'A' + run + 'B', ends = ' \t\u00a0\u3000';
+    const contexts = { V8: sandbox(), 'without String.prototype.normalize': withoutNormalize(true), 'with U+180E in \\s': oldSpaces() };
+    vm.runInContext(sourceText, contexts.V8);
+    for (const [label, context] of Object.entries(contexts)) {
+        context.name = name; context.field = ends + name + ends;
+        const start = process.hrtime.bigint();
+        const result = vm.runInContext('var d = window.TunerData, b = d.browse, item = d.parseXtream([{ stream_id: 1, name: field }], "movies", ' +
+            '{ type: "xtream", server: "http://example.invalid", username: "u", password: "p" })[0];' +
+            '[b.normalizeTitle(name), b.titleYear({ name: name }), b.normalizeTitle(name, true), d.text(field) === name, item.name === name, b.normalizeTitle(item.name), b.titleYear(item)]',
+        context, { timeout: 5000 });
+        const ms = Number(process.hrtime.bigint() - start) / 1e6;
+        assert.deepEqual(plain(result), ['a b', 0, 'a b', true, true, 'a b', 0], label);
+        assert.ok(ms < 50, label + ': ' + ms.toFixed(2) + ' ms');
+    }
+    assert.equal(B.normalizeTitle(run + 'Heat - 1995' + run), 'heat');
+    assert.equal(B.titleYear({ name: run + 'Heat - 1995' + run }), 1995);
+    assert.equal(data.text(run + '\u0085Heat\u2028' + run), 'Heat');
+});
+
+test('provider fields lose only tab, LF, VT, FF, CR, space and the Unicode spaces at their ends, also where \\s takes U+180E', () => {
+    // docs/browse.md, Implementation notes: Samsung and LG trim with a loop over the character codes of that set; a name
+    // then reaches normalize with nothing removed that step 1 would keep (U+180E, U+200B, U+001C to U+001F and the like).
+    const source = { type: 'xtream', server: 'http://example.invalid', username: 'u', password: 'p' };
+    const edges = [0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20, 0x85, 0xa0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a,
+        0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff].map(code => String.fromCharCode(code)).join('');
+    const kept = [0x00, 0x08, 0x0e, 0x1c, 0x1d, 0x1e, 0x1f, 0x7f, 0x180e, 0x200b, 0x2060].map(code => String.fromCharCode(code));
+    const normalizeCases = sharedCases.filter(c => c.kind === 'normalize');
+    for (const [label, D] of [['V8', data], ['with U+180E in \\s', oldSpaces().window.TunerData]]) {
+        assert.equal(D.text(edges + 'Heat' + edges), 'Heat', label);
+        for (const ch of kept) assert.equal(D.text(edges + ch + 'Heat' + ch + edges), ch + 'Heat' + ch, label + ' ' + JSON.stringify(ch));
+        const categories = D.parseCategories([{ category_id: edges + '1', category_name: edges + 'FR | Films' + edges }]
+            .concat(kept.map((ch, i) => ({ category_id: String(i + 2), category_name: ch + 'Serie IT' + ch }))));
+        assert.deepEqual(plain(categories.map(cat => [cat.id, cat.name])), [['1', 'FR | Films']].concat(kept.map((ch, i) => [String(i + 2), ch + 'Serie IT' + ch])), label);
+        for (const cat of categories.slice(1)) assert.equal(D.browse.isForeignCategory(cat.name), false, label + ': IT is not a tag in ' + JSON.stringify(cat.name));
+        const movies = D.parseXtream(kept.map((ch, i) => ({ stream_id: i + 1, name: ch + ' - 1999' + edges })), 'movies', source);
+        for (const [i, item] of movies.entries()) {
+            assert.equal(item.name, kept[i] + ' - 1999', label);
+            assert.deepEqual([D.browse.normalizeTitle(item.name), D.browse.titleYear(item)], ['', 1999], label + ' ' + JSON.stringify(item.name));
+        }
+        // Every shared case read through the provider path gives what the name itself gives.
+        for (const c of normalizeCases) {
+            if (!D.text(c.input)) continue;
+            const item = D.parseXtream([{ stream_id: 1, name: c.input }], 'movies', source)[0], year = D.browse.titleYear(item);
+            assert.deepEqual([D.browse.normalizeTitle(item.name), year ? String(year) : ''], [c.title, c.year], label + ' ' + JSON.stringify(c.input));
+        }
+    }
+});
+
+test('docs/browse-cases.json: USA only, through the index', () => {
+    const cases = sharedCases.filter(c => c.kind === 'usa');
+    assert.ok(cases.length >= 40);
+    for (const c of cases) {
+        // category: a name or an array of names ("" or []: none); origin: the matched TMDB title's, null when unmatched.
+        const categories = [].concat(c.category).filter(Boolean).map((name, i) => ({ id: 'c' + i, name }));
+        const item = movie('Shared case', { categoryIds: categories.map(cat => cat.id), tmdb: c.origin ? '1' : '' });
+        const index = B.buildIndex('movies', [item], categories, c.origin ? payload({ popular: [tmdb('1', 'Shared case', 2020, c.origin)] }) : null);
+        const label = JSON.stringify(c);
+        assert.equal(index.titles[0].tmdb, c.origin ? '1' : '', label);
+        assert.equal(index.titles[0].us, c.expect, label);
+        const passes = B.categoryCheck(categories)(item);
+        assert.equal(c.origin ? B.usaAllowed(passes, c.origin) : passes, c.expect, label);
+    }
+});
+
+test('docs/browse-cases.json: the provider TMDB id, read by JSON.parse and parseXtream, also where \\s takes U+180E', () => {
+    // docs/browse.md, Matching step 1: the catalogue's own path, JSON.parse of the provider's reply, then parseXtream.
+    // A row without a stream_id (series_id for a series row) or a name gets one; the cases never test those keys.
+    const cases = sharedCases.filter(c => c.kind === 'tmdb'), source = { type: 'xtream', server: 'http://example.invalid', username: 'u', password: 'p' };
+    assert.ok(cases.length >= 100);
+    for (const context of [sandbox(), oldSpaces()]) {
+        if (!context.window.TunerData) vm.runInContext(sourceText, context);
+        const D = context.window.TunerData, parse = vm.runInContext('JSON.parse', context);
+        for (const c of cases) {
+            const row = parse(c.json), kind = 'series_id' in row ? 'series' : 'movies', key = kind === 'series' ? 'series_id' : 'stream_id';
+            if (!(key in row)) row[key] = 1;
+            if (!('name' in row)) row.name = 'Title';
+            const items = D.parseXtream([row], kind, source);
+            assert.equal(items.length, 1, c.json);
+            assert.equal(items[0].tmdb || null, c.expect, c.json);
+        }
+    }
+});
+
+test('USA only: category ids missing from the category list are left out', () => {
+    const index = B.buildIndex('movies', [movie('Gone', { categoryIds: ['gone'] }), movie('French and gone', { categoryIds: ['fr', 'gone'] }), movie('None', { categoryIds: [] })], cats, null);
+    assert.deepEqual(plain(index.titles.map(t => t.us)), [true, false, true]);
+});
+
+test('matching: a name whose real title looks like a tag is looked up again with its tags kept', () => {
+    const rows = payload({}, { popular: [tmdb('1620', 'CSI: Miami', 2002), tmdb('4057', 'NCIS: Los Angeles', 2009)] });
+    const index = B.buildIndex('series', [show('CSI: Miami', { year: '2003' }), show('NCIS: Los Angeles'), show('CSI: Miami', { tmdb: '999' })], cats, rows);
+    assert.deepEqual(plain(index.titles.map(t => t.norm)), ['miami', 'los angeles', 'miami']);
+    assert.deepEqual(plain(index.titles.map(t => t.tmdb)), ['1620', '4057', ''], 'a provider TMDB id never falls back to the name');
+});
+
+test('copies of one TMDB title are one poster: where its first visible copy stands, showing its best visible copy', () => {
+    const rows = payload({ popular: [tmdb('949', 'Heat', 1995)] });
+    const items = [movie('Heat (1995)', { id: 'm:us-old', added: 100 }), movie('Heat (1995)', { id: 'm:us-new', added: 150 }),
+        movie('FR - Heat (1995)', { id: 'm:fr', added: 300, categoryIds: ['fr'] }), movie('Other', { id: 'm:other', added: 200 })];
+    const index = B.buildIndex('movies', items, cats, rows);
+    const ids = (key, usOnly) => plain(B.pick(index, key, { usOnly, genre: '' }, 0, 10).picked.map(p => index.titles[p].item.id));
+    assert.deepEqual(plain(index.titles.map(t => t.tmdb)), ['949', '949', '949', '']);
+    assert.deepEqual(ids('recent', false), ['m:us-new', 'm:other'], 'the dubbed copy is newest, but the copy that passes USA only opens');
+    assert.deepEqual(ids('recent', true), ['m:other', 'm:us-new']);
+    assert.deepEqual(ids('popular', false), ['m:us-new']); assert.deepEqual(ids('popular', true), ['m:us-new']);
 });
 
 test('Home rows: Popular, Featured, services, Recently added, Top rated; 5 titles or more, 20 at most, ending with each list', () => {
@@ -233,17 +421,78 @@ test('rows cache: fresh for 12 hours, then stale but used; only HTTP 200 version
     storage.setItem(B.ROWS_KEY, '{broken'); assert.equal(client().peek(), null, 'a damaged saved copy is ignored');
 });
 
-test('provider items carry their TMDB id (tmdb, tmdb_id or info.tmdb_id) and genre', () => {
+test('provider items carry their TMDB id (tmdb, tmdb_id, info.tmdb_id or info.tmdb) and genre', () => {
     const source = { type: 'xtream', server: 'http://example.invalid', username: 'u', password: 'p' };
     const movies = data.parseXtream([
         { stream_id: 1, name: 'A', tmdb: '603' }, { stream_id: 2, name: 'B', tmdb_id: 27205, genre: 'Action, Sci-Fi' },
         { stream_id: 3, name: 'C', info: { tmdb_id: '155' } }, { stream_id: 4, name: 'D', tmdb: '0' }, { stream_id: 5, name: 'E', tmdb: 'tt0133093' }
     ], 'movies', source);
     assert.deepEqual(plain(movies.map(m => m.tmdb)), ['603', '27205', '155', '', '']);
+    const more = data.parseXtream([
+        { stream_id: 6, name: 'F', info: { tmdb: '680' } }, { stream_id: 7, name: 'G', tmdb: '27205.0' }, { stream_id: 8, name: 'H', tmdb: '1234567890123', tmdb_id: '00603' },
+        { stream_id: 9, name: 'I', tmdb: 'x', info: { tmdb_id: '0', tmdb: 13 } }, { stream_id: 10, name: 'J', tmdb: '1.5' }
+    ], 'movies', source);
+    assert.deepEqual(plain(more.map(m => m.tmdb)), ['680', '27205', '603', '13', ''], 'info.tmdb too, a trailing .0, 1 to 12 digits, never zero');
     assert.equal(movies[1].genre, 'Action, Sci-Fi');
     const live = data.parseXtream([{ stream_id: 9, name: 'CNN', tmdb: '1' }], 'live', source, 'm3u8');
     assert.equal(live[0].tmdb, undefined, 'live channels are unchanged');
     assert.equal(data.foldMovies([movie('Same', { tmdb: '' }), movie('Same', { tmdb: '42', added: -1 })])[0].tmdb, '42');
+});
+
+test('the provider year: the first of year, releaseDate, release_date and releasedate that starts with a year from 1800 to 2099', () => {
+    const source = { type: 'xtream', server: 'http://example.invalid', username: 'u', password: 'p' };
+    const fields = [{ year: '2021-10-22' }, { year: 'N/A', releaseDate: '2020-05-01' }, { year: '', release_date: ' 1999-01-01' }, { releasedate: '1850' },
+        { year: '20201', releaseDate: '2100-01-01' }, { year: 2015 }];
+    const movies = data.parseXtream(fields.map((f, i) => Object.assign({ stream_id: i + 1, name: 'M' + i }, f)), 'movies', source);
+    assert.deepEqual(plain(movies.map(m => m.year)), ['2021', '2020', '1999', '1850', '', '2015']);
+    const series = data.parseXtream([{ series_id: 1, name: 'S', releaseDate: '2008-01-20' }], 'series', source);
+    assert.equal(series[0].year, '2008');
+    assert.equal(B.titleYear({ name: 'Heat (1995)', year: 'N/A' }), 1995, 'else the name');
+    assert.equal(B.titleYear({ name: 'Heat', releasedate: '1995-12-15' }), 1995);
+    // docs/browse.md, Spaces and letter case: the Unicode spaces are read as spaces, and nothing else is.
+    const unicodeSpaces = [0x85, 0xa0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff];
+    for (const code of unicodeSpaces) {
+        const space = String.fromCharCode(code), label = 'U+' + code.toString(16).toUpperCase();
+        assert.equal(data.providerYear({ year: space + '2021' }), '2021', label);
+        assert.equal(data.providerYear({ releaseDate: ' ' + space + '\t1999-01-01' }), '1999', label);
+        assert.equal(B.titleYear({ name: 'Heat |' + space + '1995' + space }), 1995, label);
+    }
+    for (const other of ['\u200b', '\u180e', '\x1f', '\u2007\u200b']) assert.equal(data.providerYear({ year: other + '2021' }), '', JSON.stringify(other));
+    assert.equal(data.providerYear({ year: '\v\f\r\n2021' }), '2021', 'tab, LF, VT, FF, CR and space are \\s');
+});
+
+test('origin countries: two ASCII letters with only spaces around them, upper-cased; anything else is ignored', () => {
+    assert.deepEqual(plain(B.originCountries(['US', ' us', '\u00a0gb\u3000', '\tJp\n', 'USA', 'U.S.', 'U S', '', 'u\u017f', '\uff35\uff33', 'US\u200b', '\x1fUS', 1, null, ['US']])), ['US', 'US', 'GB', 'JP']);
+    assert.deepEqual(plain(B.originCountries(null)), []);
+    const rows = payload({ popular: [tmdb('1', 'One', 2020, [' us', 'USA', 'gb']), tmdb('2', 'Two', 2020, ['USA']), tmdb('3', 'Three', 2020, 'US')] });
+    assert.deepEqual(plain(rows.movie.popular.map(item => item.origin)), [['US', 'GB'], [], []]);
+    assert.equal(B.usaAllowed(true, ['USA']), true, '["USA"] is unknown, as [] is');
+    assert.equal(B.usaAllowed(true, ['USA', 'GB']), false, 'Great Britain alone');
+    assert.equal(B.usaAllowed(true, ['u\u017f']), true, 'u\u017f is not a country');
+});
+
+test('without String.prototype.normalize, the fold table gives what NFKD gives for its ranges, in upper and lower case', () => {
+    // docs/browse.md, Implementation notes: Latin-1, Latin Extended-A and -B, the ligatures U+FB00 to U+FB06, the
+    // fullwidth digits and letters, the Roman numerals and the circled numbers and letters (and the Kelvin and
+    // Angstrom signs, which toLowerCase may leave alone on a TV).
+    const fallbacks = [loadWithoutNormalize().browse, loadWithoutNormalize(true).browse];
+    const ranges = [[0xa0, 0x24f], [0xfb00, 0xfb06], [0xff10, 0xff19], [0xff21, 0xff3a], [0xff41, 0xff5a], [0x2160, 0x217f], [0x2460, 0x2473], [0x24b6, 0x24e9], [0x212a, 0x212b]];
+    let checked = 0;
+    for (const [first, last] of ranges) {
+        for (let code = first; code <= last; code++) {
+            const ch = String.fromCharCode(code);
+            for (const name of ['x' + ch + 'y', ch, 'The ' + ch + ch + ' Show', 'A' + ch + '1']) {
+                for (const fallback of fallbacks) assert.equal(fallback.normalizeTitle(name), B.normalizeTitle(name), 'U+' + code.toString(16).toUpperCase() + ' ' + JSON.stringify(name));
+                checked++;
+            }
+        }
+    }
+    assert.equal(checked, 607 * 4);
+    const examples = { '\u2168 and \u2178': 'ix and ix', '\u2460\u2473': '120', '\u24b6\u24e9': 'az', '\uff26\uff55\uff4c\uff4c \uff10\uff19': 'full 09',
+        '\u01c5ungla': 'dzungla', '\ufb01nd': 'find', '\u212aelvin': 'kelvin', 'Mi\ufe20ami': 'mi ami', 'Caf\u00e9\u0301': 'cafe' };
+    for (const [input, expected] of Object.entries(examples)) {
+        for (const browse of [B, ...fallbacks]) assert.equal(browse.normalizeTitle(input), expected, JSON.stringify(input));
+    }
 });
 
 test('Continue watching: movies in progress, the episode in progress or the next one, newest first; gone titles drop out', () => {
@@ -292,9 +541,11 @@ test('the library store: finishing an episode leaves a next-episode marker; Rece
 // Regression tests for the review of the Movies & Series screens.
 test('pipe-delimited names keep their title: only short upper-case tags between pipes are dropped', () => {
     const cases = { 'EN | The Matrix | 1999': 'matrix', '4K | Avatar | 2009': 'avatar', '4K | Title | EN': 'title', '|EN| The Matrix': 'matrix', 'EN | The Matrix (1999)': 'matrix',
-        '| 4K | Dune': 'dune', 'Dune | 4K | EN': 'dune en' };
+        '| 4K | Dune': 'dune', 'Dune | 4K | EN': 'dune', '|US| 1984': '1984', '2012 | 1999 | EN': '2012', 'EN | 300': '300', '| EN | IT': 'it' };
     for (const [input, expected] of Object.entries(cases)) assert.equal(B.normalizeTitle(input), expected, input);
     assert.equal(B.titleYear({ name: 'EN | The Matrix | 1999' }), 1999, 'a year after a pipe is the year');
+    assert.equal(B.titleYear({ name: '2012 | 1999 | EN' }), 1999, 'the year among the trailing tags');
+    assert.equal(B.titleYear({ name: 'EN | 1984 | 2010' }), 2010, 'the year nearest the end');
     const index = B.buildIndex('movies', [movie('EN | The Matrix | 1999')], cats, payload({ popular: [tmdb('603', 'The Matrix', 1999), tmdb('604', 'The Matrix', 2021)] }));
     assert.equal(index.titles[0].tmdb, '603');
 });
@@ -311,22 +562,37 @@ test('timestamps: a feed in milliseconds sorts like seconds, and no value can co
     assert.equal(B.homeRows({ movies: many, series: null }, { usOnly: true, withTmdb: false })[0].list, 'recent');
 });
 
-test('same-name copies fold into one that USA only can play: a passing category before a newer foreign copy', () => {
+test('re-uploads fold into the newest; uploads listed only in foreign categories fold among themselves', () => {
     const catsWithDe = cats.concat([{ id: 'de', name: 'DE | Filme' }]);
-    const en = movie('Avatar (2009)', { added: 100, url: 'https://x/en.mp4' }), fr = movie('Avatar (2009)', { added: 200, categoryIds: ['fr'], url: 'https://x/fr.mp4' });
+    const en = movie('Avatar (2009)', { id: 'm:en', added: 100, url: 'https://x/en.mp4' }), fr = movie('Avatar (2009)', { id: 'm:fr', added: 200, categoryIds: ['fr'], url: 'https://x/fr.mp4' });
     const folded = data.foldMovies([en, fr], catsWithDe);
-    assert.equal(folded.length, 1); assert.equal(folded[0].url, 'https://x/en.mp4'); assert.deepEqual(plain(folded[0].backups), ['https://x/fr.mp4']);
-    assert.equal(folded[0].categoryId, 'en');
+    assert.deepEqual(plain(folded.map(m => [m.id, m.backups])), [['m:en', []], ['m:fr', []]], 'a dubbed copy is never a backup of the US copy');
     const index = B.buildIndex('movies', folded, catsWithDe, payload({ popular: [tmdb('19995', 'Avatar', 2009)] }));
-    assert.equal(index.titles[B.pick(index, 'popular', { usOnly: true, genre: '' }, 0, 1).picked[0]].item.url, 'https://x/en.mp4');
-    // Among copies that pass (or that all fail), the newest is kept as before.
-    assert.equal(data.foldMovies([en, movie('Avatar (2009)', { added: 300, url: 'https://x/en2.mp4' })], cats)[0].url, 'https://x/en2.mp4');
+    assert.deepEqual(picked(index, 'popular'), ['Avatar (2009)']);
+    assert.equal(index.titles[B.pick(index, 'popular', { usOnly: true, genre: '' }, 0, 1).picked[0]].item.url, 'https://x/en.mp4', 'USA only hides the dubbed copy');
+    assert.equal(index.titles[B.pick(index, 'popular', { usOnly: false, genre: '' }, 0, 1).picked[0]].item.url, 'https://x/en.mp4', 'All shows the copy that passes first');
+    // Within a group: the newest upload is kept (milliseconds count as seconds; on a tie the first), the others are
+    // its backups, newest first, and its aliases; categories merge; a missing TMDB id, year or genre comes from the newest copy with one.
+    const group = data.foldMovies([
+        movie('Heat', { id: 'm:1', added: 1000, url: 'https://x/1', tmdb: '949', year: '1995', genre: 'Crime' }),
+        movie('HEAT', { id: 'm:2', added: 3000000, url: 'https://x/2', categoryIds: ['action'], year: '1996' }),
+        movie('Heat!', { id: 'm:3', added: 2000000000000, url: 'https://x/3', categoryIds: ['nf', 'fr'] }),
+        movie('heat', { id: 'm:4', added: 2000000000, url: 'https://x/4', backups: ['https://x/4b'] })
+    ], catsWithDe);
+    assert.equal(group.length, 1);
+    assert.deepEqual(plain([group[0].id, group[0].url, group[0].backups, group[0].aliases, group[0].categoryIds, group[0].tmdb, group[0].year, group[0].genre]),
+        ['m:3', 'https://x/3', ['https://x/4', 'https://x/4b', 'https://x/2', 'https://x/1'], ['m:4', 'm:2', 'm:1'], ['nf', 'fr', 'en', 'action'], '949', '1996', 'Crime']);
+    assert.equal(data.foldMovies([movie('Tie', { id: 'm:a', added: 5 }), movie('Tie', { id: 'm:b', added: 5 })])[0].id, 'm:a', 'a tie keeps the first');
     const foreign = data.foldMovies([movie('Heat', { added: 1, categoryIds: ['fr'], url: 'https://x/fr' }), movie('Heat', { added: 2, categoryIds: ['de'], url: 'https://x/de' })], catsWithDe);
-    assert.equal(foreign[0].url, 'https://x/de');
+    assert.deepEqual(plain(foreign.map(m => [m.url, m.backups])), [['https://x/de', ['https://x/fr']]], 'foreign copies fold among themselves');
     assert.equal(B.buildIndex('movies', foreign, catsWithDe, null).titles[0].us, false, 'only foreign copies: USA only hides the title');
     assert.equal(data.foldMovies([en, fr])[0].url, 'https://x/fr.mp4', 'without categories: newest first');
+    // An older upload's id still finds the movie it was folded into.
+    const aliased = B.buildIndex('movies', group, catsWithDe, null);
+    assert.equal(aliased.byId['m:2'], 0); assert.equal(aliased.byId['m:3'], 0);
     const check = B.categoryCheck(catsWithDe);
-    assert.deepEqual([check(en), check(fr), check(movie('x', { categoryIds: [] })), check(movie('x', { categoryIds: ['fr', 'en'] })), check(movie('x', { categoryIds: ['gone'] }))], [true, false, true, true, true]);
+    assert.deepEqual([check(en), check(fr), check(movie('x', { categoryIds: [] })), check(movie('x', { categoryIds: ['fr', 'en'] })), check(movie('x', { categoryIds: ['gone'] })), check(movie('x', { categoryIds: ['fr', 'gone'] }))],
+        [true, false, true, true, true, false], 'ids missing from the categories are left out');
 });
 
 test('without TMDB genres, only known genre words become Genre choices', () => {

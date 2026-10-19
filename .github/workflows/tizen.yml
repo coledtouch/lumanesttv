@@ -3,9 +3,9 @@ name: Samsung Tizen
 on:
   push:
     branches: [main]
-    paths: ['apps/tizen/**', '.github/workflows/tizen.yml']
+    paths: ['apps/tizen/**', 'docs/browse-cases.json', '.github/workflows/tizen.yml']
   pull_request:
-    paths: ['apps/tizen/**', '.github/workflows/tizen.yml']
+    paths: ['apps/tizen/**', 'docs/browse-cases.json', '.github/workflows/tizen.yml']
   workflow_dispatch:
 
 permissions:

@@ -296,7 +296,8 @@ public enum JSONValue: Sendable, Hashable, Decodable {
     }
 
     /// Android `str()`: numbers/bools as text (integral numbers without ".0"), arrays → first non-blank string,
-    /// trimmed; "" and "null" → nil.
+    /// trimmed; "" and "null" → nil. Trimmed of spaces and the Unicode spaces only (`BrowseText.trimField`,
+    /// docs/browse.md "Trimming"): `.whitespacesAndNewlines` also removes U+200B, which changes how a name reads.
     public var text: String? {
         let raw: String?
         switch self {
@@ -306,11 +307,11 @@ public enum JSONValue: Sendable, Hashable, Decodable {
         case .string(let value): raw = value
         case .array(let values):
             raw = values.lazy.compactMap { value -> String? in
-                if case .string(let text) = value, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return text }
+                if case .string(let text) = value, !BrowseText.trimField(text).isEmpty { return text }
                 return nil
             }.first
         }
-        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty, trimmed != "null" else { return nil }
+        guard let trimmed = raw.map(BrowseText.trimField), !trimmed.isEmpty, trimmed != "null" else { return nil }
         return trimmed
     }
 

@@ -156,6 +156,69 @@ final class XtreamParserTests: XCTestCase {
         XCTAssertEqual(movies[8].containerExtension, "m4v")
     }
 
+    /// docs/browse.md "Trimming": provider fields lose spaces and the Unicode spaces at their ends, nothing else.
+    /// Foundation's `.whitespacesAndNewlines` also removes U+200B, which turned "\u{200B} - 1999" into "- 1999".
+    func testProviderFieldsAreTrimmedOfSpacesOnly() throws {
+        // JSON with every character outside printable ASCII written as a \u escape, as providers send them.
+        func json(_ text: String) -> String {
+            let units = text.utf16.map { unit in
+                unit >= 0x20 && unit < 0x7F && unit != 0x22 && unit != 0x5C ? String(UnicodeScalar(UInt8(unit))) : String(format: "\\u%04x", unit)
+            }
+            return "\"" + units.joined() + "\""
+        }
+        let rows = "[" + [
+            #"{"stream_id":1,"name":\#(json("\u{200B} - 1999")),"category_id":\#(json("\u{3000} 7 \u{0085}"))}"#,
+            #"{"stream_id":2,"name":\#(json("\u{001F} - 1999 \t")),"category_id":"7"}"#,
+            #"{"stream_id":3,"name":\#(json("\u{3000}\u{FEFF}Heat - 1995\u{2028}\u{00A0}")),"category_id":"7"}"#,
+            #"{"stream_id":4,"name":[\#(json("\u{2003}")),\#(json("\u{180E}Dune "))],"category_id":"7"}"#,
+        ].joined(separator: ",") + "]"
+        let movies = try XtreamParser.movies(Data(rows.utf8), login: demoLogin)
+        XCTAssertEqual(movies.map(\.name), ["\u{200B} - 1999", "\u{001F} - 1999", "Heat - 1995", "\u{180E}Dune"])
+        XCTAssertEqual(movies.map(\.year), ["1999", "1999", "1995", nil])
+        XCTAssertEqual(movies.map { TitleNormalizer.normalize($0.name) }, ["", "", "heat", "dune"])
+        XCTAssertEqual(movies[0].categoryIDs, ["7"])
+        let categories = try XtreamParser.categories(Data(("[" + #"{"category_id":"1","category_name":\#(json("\u{001C} | EN\u{3000}"))},"#
+            + #"{"category_id":"2","category_name":\#(json("\u{200B}Action "))}]"#).utf8))
+        XCTAssertEqual(categories.map(\.name), ["\u{001C} | EN", "\u{200B}Action"])
+
+        let playlist = M3UParser.parse(Data("""
+        #EXTM3U
+        #EXTINF:-1 group-title="\u{3000}Films\u{200B}",\u{200B} - 1999\u{00A0}
+        http://s/movie/u/p/1.mkv
+        #EXTINF:-1 tvg-name=" \u{001F} - 1999",\u{3000}
+        http://s/movie/u/p/2.mkv
+        #EXTINF:-1,Heat - 1995\u{FEFF}
+        #EXTGRP:\u{2007}Drama\u{180E}\u{0085}
+        http://s/movie/u/p/3.mkv
+        #EXTINF:-1 group-title="Films\u{200B}",Dune - 2021\u{200B}
+        http://s/movie/u/p/4.mkv
+        """.utf8))
+        XCTAssertEqual(playlist.movies.map(\.name), ["\u{200B} - 1999", "\u{001F} - 1999", "Heat - 1995", "Dune - 2021\u{200B}"])
+        XCTAssertEqual(playlist.movies.map(\.year), ["1999", "1999", "1995", nil], "a year followed by U+200B does not end the name")
+        XCTAssertEqual(playlist.movieCategories.map(\.name), ["Films\u{200B}", "Uncategorized", "Drama\u{180E}"])
+    }
+
+    func testListRowsReadTheTMDBIDYearAndTimestampsOfDocsBrowse() throws {
+        let rows = #"""
+        [{"stream_id":1,"name":"A","tmdb":"0","tmdb_id":"77.0","added":"1710000000000","year":"","releaseDate":"20211","release_date":"2019-02-03"},
+         {"stream_id":2,"name":"B | 2020","tmdb":"tt0111","info":{"tmdb_id":"","tmdb":55},"added":1710000000,"releasedate":"2018-01-01"},
+         {"stream_id":3,"name":"C (1999)","tmdb_id":"1234567890123","info":[],"year":"1799"},
+         {"stream_id":4,"name":"D","info":{"tmdb_id":"12"},"tmdb":"","releaseDate":" 2001"}]
+        """#
+        let movies = try XtreamParser.movies(Data(rows.utf8), login: demoLogin)
+        XCTAssertEqual(movies.map(\.tmdbID), [77, 55, nil, 12], "tmdb, tmdb_id, info.tmdb_id, info.tmdb: the first usable one")
+        XCTAssertEqual(movies.map(\.year), ["2019", "2018", "1999", "2001"], "year, releaseDate, release_date, releasedate, then the name")
+        XCTAssertEqual(movies.map(\.added), [1_710_000_000, 1_710_000_000, 0, 0], "milliseconds become seconds")
+
+        let shows = try XtreamParser.series(Data(#"""
+        [{"series_id":1,"name":"S","year":"2015","releaseDate":"2016-01-01","last_modified":"1700000000123","info":{"tmdb":"9.0"}},
+         {"series_id":2,"name":"T - 2010","releasedate":"2012-05-05"}]
+        """#.utf8))
+        XCTAssertEqual(shows.map(\.year), ["2015", "2012"], "the year field first, and releasedate counts for series too")
+        XCTAssertEqual(shows.map(\.tmdbID), [9, nil])
+        XCTAssertEqual(shows.map(\.added), [1_700_000_000, 0])
+    }
+
     func testSeries() throws {
         let shows = try XtreamParser.series(Fixture.data("xtream/series.json"))
         XCTAssertEqual(shows.map(\.id), ["s:331", "s:332", "s:333"])
@@ -188,9 +251,6 @@ final class XtreamParserTests: XCTestCase {
             ExternalSubtitle(url: URL(string: "http://subs.example.com/dune.es.vtt")!, language: "es", label: "Spanish"),
             ExternalSubtitle(url: URL(string: "http://subs.example.com/dune.de.ass")!, language: "de"),
         ])
-        XCTAssertEqual(XtreamParser.tmdbID(inInfo: Fixture.data("xtream/vod_info.json")), 693134)
-        XCTAssertEqual(XtreamParser.tmdbID(inInfo: Fixture.data("xtream/series_info.json")), 100088)
-        XCTAssertNil(XtreamParser.tmdbID(inInfo: Data("{}".utf8)))
         XCTAssertEqual(try XtreamParser.movieInfo(Data(#"{"info":[]}"#.utf8)).metadataLine, "")
     }
 
@@ -363,6 +423,44 @@ final class M3UParserTests: XCTestCase {
         XCTAssertEqual(playlist.channels.map(\.number), [1, 2], "too few provider numbers: renumbered in order")
         XCTAssertEqual(playlist.liveCategories.first?.name, "UK, Entertainment")
         XCTAssertEqual(playlist.movies.map(\.name), ["Dune Part Two (2024)"])
+    }
+
+    /// Windows ("\r\n") and old Mac ("\r") line endings read as "\n": "\r\n" is one Swift `Character`, so a split on the
+    /// characters "\n" and "\r" saw one long line and found no channel.
+    func testWindowsAndCarriageReturnLineEndings() throws {
+        let unix = Fixture.text("playlist.m3u")
+        XCTAssertFalse(unix.unicodeScalars.contains("\r"))
+        let expected = M3UParser.parse(Data(unix.utf8))
+        XCTAssertEqual(expected.channels.count, 6)
+        let windows = unix.replacingOccurrences(of: "\n", with: "\r\n", options: .literal)
+        let mac = unix.replacingOccurrences(of: "\n", with: "\r", options: .literal)
+        for (label, text) in [("CRLF", windows), ("CR", mac)] {
+            let playlist = M3UParser.parse(Data(text.utf8))
+            XCTAssertEqual(playlist.channels.map(\.name), expected.channels.map(\.name), label)
+            XCTAssertEqual(playlist, expected, label)
+            XCTAssertEqual(M3UParser.parse(gzipped(text)), expected, "\(label), gzipped")
+        }
+        // Mixed endings, blank lines and a "\r\n" right after a multi-byte name.
+        let mixed = M3UParser.parse(Data("#EXTM3U\r\n\r\n#EXTINF:-1 group-title=\"News\",Été\r\nhttp://s/live/1.ts\n\r#EXTINF:-1,Two\rhttp://s/live/2.ts".utf8))
+        XCTAssertEqual(mixed.channels.map(\.name), ["Été", "Two"])
+        XCTAssertEqual(mixed.channels.map(\.url.absoluteString), ["http://s/live/1.ts", "http://s/live/2.ts"])
+        XCTAssertEqual(mixed.liveCategories.map(\.name), ["News", "Uncategorized"])
+    }
+
+    /// The name after the comma, "#EXTGRP:" and "#" comments are found scalar by scalar: a combining mark (U+0301) or
+    /// U+200D after them makes one `Character` with them.
+    func testTagsAndCommasFollowedByCombiningMarks() {
+        XCTAssertEqual(M3UParser.nameAfterComma("#EXTINF:-1 tvg-name=\"T\",\u{0301}Name"), "\u{0301}Name")
+        XCTAssertEqual(M3UParser.nameAfterComma("#EXTINF:-1 tvg-name=\"T\u{0301}\",\u{200D}Name"), "\u{200D}Name")
+        let playlist = M3UParser.parse(Data("""
+        #EXTM3U
+        #EXTINF:-1 tvg-name="Fallback",\u{0301}Accent
+        #EXTGRP:\u{0301}Group
+        #\u{0301} a comment
+        http://s/live/1.ts
+        """.utf8))
+        XCTAssertEqual(playlist.channels.map(\.name), ["\u{0301}Accent"])
+        XCTAssertEqual(playlist.liveCategories.map(\.name), ["\u{0301}Group"])
     }
 
     func testEmptyAndGarbageInput() {

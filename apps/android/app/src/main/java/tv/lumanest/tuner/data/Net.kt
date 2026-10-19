@@ -104,9 +104,18 @@ object Net {
 
 typealias JMap = Map<String, Any?>
 
+/**
+ * A JSON number, as the provider wrote it. [readAny] keeps numbers apart from strings so a provider TMDB id
+ * (docs/browse.md, Matching step 1) can tell the number `1e3` (id 1000) from the string `"1e3"` (no id). [toString] is
+ * [text], so [str] and every other field read a number as the text they always did.
+ */
+data class JsonNumber(val text: String) {
+    override fun toString(): String = text
+}
+
 fun JsonReader.readAny(): Any? = when (peek()) {
     JsonToken.STRING -> nextString()
-    JsonToken.NUMBER -> nextString()
+    JsonToken.NUMBER -> JsonNumber(nextString())
     JsonToken.BOOLEAN -> nextBoolean().toString()
     JsonToken.NULL -> { nextNull(); null }
     JsonToken.BEGIN_ARRAY -> {
@@ -166,16 +175,27 @@ private fun JsonReader.readFields(fields: Set<String>?): JMap {
 
 fun parseJson(text: String): Any? = JsonReader(text.reader()).use { it.isLenient = true; it.readAny() }
 
+/**
+ * A field as text, its ends trimmed of spaces and the Unicode spaces only ([BrowseText.trimField], docs/browse.md
+ * "Trimming"): Kotlin's `trim()` also removes U+001C to U+001F, which would change how a name or year field reads.
+ */
 fun JMap.str(key: String): String? {
     val v = this[key]
     val s = when (v) {
-        is String -> v
-        is List<*> -> v.firstOrNull { it is String && it.isNotBlank() } as? String
+        is String -> BrowseText.trimField(v)
+        is List<*> -> v.firstNotNullOfOrNull { item -> textOf(item)?.let(BrowseText::trimField)?.ifEmpty { null } }
         null -> null
-        else -> v.toString()
-    }?.trim()
+        else -> BrowseText.trimField(v.toString())
+    }
     return if (s.isNullOrEmpty() || s == "null") null else s
 }
 
 @Suppress("UNCHECKED_CAST")
 fun JMap.obj(key: String): JMap? = this[key] as? JMap
+
+/** A string, or a number's text ([JsonNumber]); null for anything else. */
+internal fun textOf(value: Any?): String? = when (value) {
+    is String -> value
+    is JsonNumber -> value.text
+    else -> null
+}

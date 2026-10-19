@@ -12,7 +12,8 @@ public struct RowsItem: Codable, Sendable, Hashable {
     public var title: String
     public var originalTitle: String?
     public var year: String?
-    /// ISO 3166-1 alpha-2, uppercase ("US").
+    /// TMDB's countries of origin, ISO 3166-1 alpha-2 in upper case ("US"). Parsed rows keep only the entries that are
+    /// countries (`TitleRegion.country`); `TitleRegion` checks every entry again, so other values given here are ignored.
     public var origin: [String]
     public var lang: String?
     /// TMDB genre ids.
@@ -27,13 +28,19 @@ public struct RowsItem: Codable, Sendable, Hashable {
     /// Lenient: nil without a positive id and a title.
     init?(json: JSONValue) {
         guard case .object = json, let id = json["id"]?.int, id > 0, let title = json["title"]?.text else { return nil }
+        // docs/browse.md "Origin countries": only strings that are two ASCII letters (spaces around them allowed) count,
+        // upper-cased; "USA", "U.S.", "" and values that are not strings are dropped, so ["USA"] is unknown, like [].
+        // An origin that is not an array ("US", "US, GB", null) is unknown too, as in the other apps.
         let origin: [String]
-        switch json["origin"] {
-        case .array(let values)?: origin = values.compactMap { $0.text?.uppercased() }
-        case .string(let text)?: origin = text.split(whereSeparator: { $0 == "," || $0 == " " }).map { $0.uppercased() }
-        default: origin = []
+        if case .array(let values)? = json["origin"] {
+            origin = values.compactMap { value in
+                guard case .string(let text) = value else { return nil }
+                return TitleRegion.country(text)
+            }
+        } else {
+            origin = []
         }
-        self.init(id: id, title: title, originalTitle: json["original_title"]?.text, year: XtreamParser.yearText(json["year"]?.text),
+        self.init(id: id, title: title, originalTitle: json["original_title"]?.text, year: TitleNormalizer.tmdbYear(json["year"]?.text),
                   origin: origin, lang: json["lang"]?.text, genres: (json["genres"] ?? .null).elements.compactMap(\.int),
                   popularity: json["popularity"]?.double)
     }
@@ -56,7 +63,7 @@ public enum StreamingService: String, Codable, Sendable, Hashable, CaseIterable 
         }
     }
 
-    /// Whole-word, case-insensitive category keywords for the no-TMDB fallback: netflix | disney | hbo, max |
+    /// Whole-word category keywords for the no-TMDB fallback, in any ASCII letter case: netflix | disney | hbo, max |
     /// prime, amazon | apple | hulu | paramount | peacock.
     public var categoryKeywords: [String] {
         switch self {
@@ -71,8 +78,10 @@ public enum StreamingService: String, Codable, Sendable, Hashable, CaseIterable 
         }
     }
 
+    /// Matched against `BrowseText.asciiLowercased(name)`: case is ignored for the ASCII letters only, as in every rule
+    /// of docs/browse.md (`.caseInsensitive` would let `ſ` match `s` and the Kelvin sign `k`).
     var keywordPattern: Pattern {
-        Pattern("(?<![a-z0-9])(?:" + categoryKeywords.joined(separator: "|") + ")(?![a-z0-9])", caseInsensitive: true)
+        Pattern("(?<![a-z0-9])(?:" + categoryKeywords.joined(separator: "|") + ")(?![a-z0-9])")
     }
 }
 
@@ -263,74 +272,231 @@ public actor CatalogRowsService {
 
 // MARK: - Matching catalogue titles to TMDB
 
-public enum TitleNormalizer {
-    private static let trailingYear = Pattern(#"\s*[\(\[](?:19|20)\d{2}[\)\]]\s*$"#)
-    private static let brackets = Pattern(#"\[[^\]]*\]|\([^)]*\)|\{[^}]*\}|\|[^|]*\|"#)
-    private static let leadingTag = Pattern(
-        #"^\s*(?:us|usa|en|eng|uk|gb|ca|au|nz|ie|fr|de|es|pt|br|mx|lat|nl|pl|ro|ru|tr|ar|pk|hi|multi|vod|4k|8k|uhd|fhd|hd|sd|hdr)\s*[-:|]\s*"#)
-    private static let quality = Pattern(#"(?<![\p{L}\p{N}])(?:4k|8k|uhd|fhd|hd|sd|hdr10|hdr|2160p|1080p|720p)(?![\p{L}\p{N}])"#)
-    private static let yearAnywhere = Pattern(#"[\(\[]\s*((?:19|20)\d{2})\s*[\)\]]"#)
-    /// Trailing quality/language tags ("[4K]", "{Extended}", "|EN|"), but never a bracketed year ("[2019]").
-    private static let trailingTags = Pattern(#"(?:\s*(?:\[(?!\s*(?:19|20)\d{2}\s*\])[^\]]*\]|\{[^}]*\}|\|[^|]*\|))+\s*$"#)
-
-    /// docs/browse.md normalization, exactly in this order:
-    /// 1. Unicode canonical decomposition, combining marks removed; lowercased.
-    /// 2. A trailing "(YYYY)" or "[YYYY]" (19xx/20xx) removed.
-    /// 3. Bracketed groups `[...]`, `(...)`, `{...}` and pipe-delimited tags `|...|` removed.
-    /// 4. A leading tag followed by "-", ":" or "|" removed when the tag is one of: us usa en eng uk gb ca au nz ie fr de
-    ///    es pt br mx lat nl pl ro ru tr ar pk hi multi vod 4k 8k uhd fhd hd sd hdr (never "it", "in" or other words).
-    /// 5. Whole words 4k 8k uhd fhd hd sd hdr hdr10 2160p 1080p 720p removed.
-    /// 6. "&" → " and ".
-    /// 7. Every character that is not a letter, digit or whitespace removed (apostrophes, hyphens, colons...).
-    /// 8. Whitespace collapsed and trimmed; a leading "the " removed.
-    public static func normalize(_ title: String) -> String {
-        var s = TextFold.fold(title)                                      // 1
-        s = trailingYear.replace(s, with: "")                             // 2
-        s = brackets.replace(s, with: " ")                                // 3
-        s = leadingTag.replace(s, with: "")                               // 4
-        s = quality.replace(s, with: " ")                                 // 5
-        s = s.replacingOccurrences(of: "&", with: " and ")                // 6
-        var kept = String.UnicodeScalarView()                             // 7
-        for scalar in s.unicodeScalars {
-            if scalar.properties.isAlphabetic || scalar.properties.numericType != nil || scalar.properties.isWhitespace {
-                kept.append(scalar.properties.isWhitespace ? " " : scalar)
-            }
+/// docs/browse.md "Spaces and letter case", for every rule that reads a category name, an `origin` entry, a title's
+/// name or a provider's year field.
+enum BrowseText {
+    /// U+0085, U+00A0, U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F, U+3000 and U+FEFF: the characters
+    /// beyond ASCII that `\s` matches in JavaScript or ICU but not in Java or PCRE. U+200B and U+180E are not spaces.
+    static func isUnicodeSpace(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x0085, 0x00A0, 0x1680, 0x2000...0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000, 0xFEFF: return true
+        default: return false
         }
-        var words = String(kept).split(separator: " ").map(String.init)  // 8
-        if words.count > 1, words[0] == "the" { words.removeFirst() }
-        return words.joined(separator: " ")
     }
 
-    /// A trailing "(YYYY)"/"[YYYY]" in a provider name, else nil. Quality and language tags after it are ignored
-    /// ("The Batman (2022) [4K]").
-    public static func year(in title: String) -> String? {
-        let head = trailingTags.replace(title, with: "")
-        guard let match = yearAnywhere.allMatches(head).last, let swiftRange = Range(match.range, in: head) else { return nil }
-        guard head[swiftRange.upperBound...].trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
-        return Pattern.groups(of: match, in: head).first ?? nil
+    /// Each Unicode space replaced with U+0020, scalar by scalar (never with `\s`, `isWhitespace` or
+    /// `trimmingCharacters`, which each cover a different set). Afterwards ICU's `\s` is tab, line feed, vertical tab,
+    /// form feed, carriage return and space, as in the other apps' engines.
+    static func spaces(_ text: String) -> String {
+        guard text.unicodeScalars.contains(where: isUnicodeSpace) else { return text }
+        var scalars = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars { scalars.append(isUnicodeSpace(scalar) ? " " : scalar) }
+        return String(scalars)
     }
 
-    /// Both present (first 4 digits) and at most 1 apart.
-    public static func yearsMatch(_ a: String?, _ b: String?) -> Bool {
-        guard let x = yearValue(a), let y = yearValue(b) else { return false }
-        return abs(x - y) <= 1
+    /// Space, tab, line feed, vertical tab, form feed and carriage return: `[ \t\n\x0B\f\r]`, what `\s` matches in
+    /// every engine once the Unicode spaces are replaced.
+    static func isASCIISpace(_ scalar: Unicode.Scalar) -> Bool {
+        scalar == " " || (scalar.value >= 0x09 && scalar.value <= 0x0D)
     }
 
-    static func yearValue(_ text: String?) -> Int? {
-        guard let text = text?.trimmingCharacters(in: .whitespaces), text.count >= 4 else { return nil }
-        let prefix = text.prefix(4)
-        guard prefix.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
-        return Int(prefix)
+    /// docs/browse.md "Trimming" (normalize step 1 and the year from a name, after `spaces`): `[ \t\n\x0B\f\r]` removed
+    /// from both ends, scalar by scalar. Never `trimmingCharacters(in: .whitespaces)`: Foundation's set also holds
+    /// U+200B, and a space followed by a combining mark is one `Character`.
+    static func trimEnds(_ text: String) -> String { trimming(text, isASCIISpace) }
+
+    /// A provider field's ends trimmed of `[ \t\n\x0B\f\r]` and the Unicode spaces, nothing else (docs/browse.md
+    /// "Trimming"): `.whitespacesAndNewlines` also removes U+200B, so "\u{200B} - 1999" would read as "- 1999".
+    static func trimField(_ text: String) -> String { trimming(text) { isASCIISpace($0) || isUnicodeSpace($0) } }
+
+    private static func trimming(_ text: String, _ remove: (Unicode.Scalar) -> Bool) -> String {
+        let scalars = text.unicodeScalars
+        guard let first = scalars.firstIndex(where: { !remove($0) }) else { return "" }
+        let last = scalars.lastIndex(where: { !remove($0) })!
+        if first == scalars.startIndex && scalars.index(after: last) == scalars.endIndex { return text }
+        return String(scalars[first...last])
+    }
+
+    /// A copy with `A` to `Z` lower-cased and every other character unchanged: rules that ignore case ignore it for the
+    /// ASCII letters only (NSRegularExpression's `.caseInsensitive` follows Unicode: `ſ` would match `s` and the Kelvin
+    /// sign `k`).
+    static func asciiLowercased(_ text: String) -> String {
+        guard text.utf8.contains(where: { $0 >= 0x41 && $0 <= 0x5A }) else { return text }
+        // Bytes 0x41 to 0x5A are never part of a multi-byte UTF-8 sequence.
+        return String(decoding: text.utf8.map { $0 >= 0x41 && $0 <= 0x5A ? $0 + 0x20 : $0 }, as: UTF8.self)
+    }
+
+    /// Capture group `index` of the first match, cut from the UTF-16 text (exact even inside a grapheme cluster).
+    static func group(_ index: Int, of pattern: Pattern, in text: String) -> String? {
+        guard let match = pattern.firstMatch(text) else { return nil }
+        let range = match.range(at: index)
+        guard range.location != NSNotFound else { return nil }
+        return (text as NSString).substring(with: range)
     }
 }
 
-/// Which catalogue titles the rows lists point at.
+/// docs/browse.md "Matching catalogue titles to TMDB": title normalization, the year of a provider title and the
+/// provider TMDB id, written as every Tuner app writes them (the shared cases are docs/browse-cases.json).
+public enum TitleNormalizer {
+    // docs/browse.md "Patterns for titles, years and countries", exactly as written there; all case-sensitive.
+    /// Step 2: every `[...]` and `{...}`, a year in parentheses, a short upper-case tag in parentheses (`(US)`, `(U.S.)`).
+    private static let brackets = Pattern(#"\[[^\]]*\]|\{[^}]*\}|\(\s*(18|19|20)[0-9]{2}\s*\)|\([A-Z0-9 +.]{1,6}\)"#)
+    /// Step 3.1: a short upper-case tag between pipes (`|US| `), or a short upper-case code that is not a year followed by
+    /// `|`, `:` or a dash (`US - `, `EN| `, `NF: `, `4K-NF-EN | `).
+    private static let leading = Pattern(#"^\s*(\|\s*[A-Z0-9+]{1,6}\s*\|\s*|(?!(18|19|20)[0-9]{2}([^A-Z0-9+]|$))[A-Z0-9+]{2,4}(\s*[-_]\s*[A-Z0-9+]{2,4})*\s*(\|\s*|([:-]|–)\s+))"#)
+    /// A short upper-case code, or a quality word in any ASCII letter case where no short upper-case code followed by a
+    /// space or the end fits ("hd", "HDR10", "1080p"; "4K", "HD" and "UHD" are codes). Every tag matches in one way
+    /// only, so `yearEnd` takes time in proportion to the name (two ways for "4K" doubled it with each tag).
+    private static let tag = #"[A-Z0-9+]{2,4}|(?![A-Z0-9+]{2,4}(\s|$))([48][Kk]|[UuFf]?[Hh][Dd]|[Ss][Dd]|[Hh][Dd][Rr](10)?|(1080|720|2160)[Pp])"#
+    /// Step 3.2: one trailing tag (` | EN`, ` - 4K`, ` | 1999`, ` – 1080p`).
+    private static let trailing = Pattern(#"\s(\||-|–)\s*("# + tag + #")\s*$"#)
+    /// Step 3.3: a short upper-case tag between pipes (`|US|`, `| 4K |`, not `| The Matrix |`).
+    private static let pipes = Pattern(#"\|\s*[A-Z0-9+]{1,6}\s*\|"#)
+    /// A provider year field: group 1.
+    private static let yearField = Pattern(#"^\s*((18|19|20)[0-9]{2})([^0-9]|$)"#)
+    /// The first year in brackets, the mixed `(2021]` and `[2021)` too: group 1.
+    private static let yearBrackets = Pattern(#"[(\[]\s*((18|19|20)[0-9]{2})\s*[)\]]"#)
+    /// The year among the trailing tags, the one nearest the end: group 2.
+    private static let yearEnd = Pattern(#"\s(\||-|–)\s*((18|19|20)[0-9]{2})(\s+(\||-|–)\s*(?!(18|19|20)[0-9]{2}(\s|$))("# + tag
+                                         + #"))*\s*$"#)
+    private static let quality: Set<String> = ["4k", "8k", "uhd", "fhd", "hd", "sd", "hdr", "hdr10", "1080p", "720p", "2160p"]
+    /// Step 7: the letters NFKD leaves alone.
+    private static let letters: [Unicode.Scalar: String] = ["æ": "ae", "œ": "oe", "ø": "o", "ß": "ss", "đ": "d", "ł": "l", "ð": "d", "þ": "th"]
+
+    /// The ten steps of docs/browse.md, in order:
+    /// 1. the Unicode spaces become spaces, then `[ \t\n\x0B\f\r]` is removed from both ends (" - 1999" reads as
+    ///    "- 1999": "1999" with no year, whether or not the provider trimmed it);
+    /// 2. `brackets` become a space;
+    /// 3. tags at the ends and between pipes: (1) a leading tag removed up to three times, (2) trailing tags removed, the
+    ///    last first, for as long as one ends the name, (3) `pipes` become a space, (4) 1 and 2 again. With `removingTags`
+    ///    false (the second lookup key) only 3.3 runs;
+    /// 4. lower-cased (locale-independent);
+    /// 5. "&" → " and ";
+    /// 6. the apostrophes ' ` ´ ’ deleted;
+    /// 7. NFKD, then exactly U+0300 to U+036F removed, then æ œ ø ß đ ł ð þ → ae oe o ss d l d th;
+    /// 8. every run of characters other than a-z and 0-9 splits words;
+    /// 9. the quality words 4k 8k uhd fhd hd sd hdr hdr10 1080p 720p 2160p dropped;
+    /// 10. a leading "the" dropped when other words follow; words joined with single spaces.
+    /// "EN | The Matrix | 1999" → "matrix", "Æon Flux (2005)" → "aeon flux", "Dune | 4K | EN" → "dune", "|US| 1984" → "1984".
+    ///
+    /// Swift compares `String`s by grapheme cluster, so every replacement here works on Unicode scalars, ICU's UTF-16 or
+    /// `replacingOccurrences` with `.literal`: "&" or "’" followed by a combining mark is found as in the other apps.
+    public static func normalize(_ name: String, removingTags: Bool = true) -> String {
+        var s = BrowseText.trimEnds(BrowseText.spaces(name))                                              // 1
+        // Each step 2 and 3 pattern needs one of these characters; most names have none.
+        if s.unicodeScalars.contains(where: { $0 == "[" || $0 == "{" || $0 == "(" }) { s = brackets.replace(s, with: " ") }  // 2
+        let ends = removingTags && hasTagSeparator(s)                                                     // 3
+        if ends { s = removingEnds(s) }
+        if s.unicodeScalars.contains("|") { s = pipes.replace(s, with: " ") }
+        if ends { s = removingEnds(s) }
+        s = s.lowercased()                                                                                // 4
+        s = s.replacingOccurrences(of: "&", with: " and ", options: .literal)                             // 5
+        s.unicodeScalars.removeAll { $0 == "'" || $0 == "`" || $0 == "\u{00B4}" || $0 == "\u{2019}" }   // 6
+        var folded = String.UnicodeScalarView()                                                           // 7
+        let decomposed = s.unicodeScalars.allSatisfy(\.isASCII) ? s : s.decomposedStringWithCompatibilityMapping
+        for scalar in decomposed.unicodeScalars where !(0x0300...0x036F).contains(scalar.value) {
+            if let letter = letters[scalar] { folded.append(contentsOf: letter.unicodeScalars) } else { folded.append(scalar) }
+        }
+        var words: [String] = []                                                                          // 8, 9
+        var word = String.UnicodeScalarView()
+        func endWord() {
+            if !word.isEmpty, !quality.contains(String(word)) { words.append(String(word)) }
+            word = String.UnicodeScalarView()
+        }
+        for scalar in folded {
+            if (scalar >= "a" && scalar <= "z") || (scalar >= "0" && scalar <= "9") { word.append(scalar) } else { endWord() }
+        }
+        endWord()
+        if words.count > 1, words[0] == "the" { words.removeFirst() }                                    // 10
+        return words.joined(separator: " ")
+    }
+
+    /// Steps 3.1 and 3.2: up to three leading tags, then trailing tags for as long as one ends the name. Each match is
+    /// non-empty, so an unchanged length means nothing was removed.
+    private static func removingEnds(_ text: String) -> String {
+        var s = text
+        for _ in 0..<3 {
+            let next = leading.replace(s, with: "")
+            if next.utf16.count == s.utf16.count { break }
+            s = next
+        }
+        while true {
+            let next = trailing.replace(s, with: "")
+            if next.utf16.count == s.utf16.count { break }
+            s = next
+        }
+        return s
+    }
+
+    /// Steps 3.1 and 3.2 all need "|", ":", "-" or "–".
+    static func hasTagSeparator(_ name: String) -> Bool {
+        name.unicodeScalars.contains { $0 == "|" || $0 == ":" || $0 == "-" || $0 == "–" }
+    }
+
+    /// The year in a provider title's name, read with the Unicode spaces replaced and its ends trimmed as in normalize
+    /// step 1 (" - 1999" has none: no space comes before its "-"): the first year in brackets
+    /// (`(2021)`, `[ 2021 ]`, `(2021]`), else the year among the trailing tags nearest the end ("EN | Wonka | 2023",
+    /// "Heat - 1995 - 4K", "2012 | 1999 | EN" → 1999); 1800 to 2099. A number that ends a name without a space and
+    /// "|", "-" or "–" before it is part of the title ("Blade Runner 2049", "Heat-1995").
+    public static func year(in name: String) -> String? {
+        let s = BrowseText.trimEnds(BrowseText.spaces(name))
+        return BrowseText.group(1, of: yearBrackets, in: s) ?? BrowseText.group(2, of: yearEnd, in: s)
+    }
+
+    /// A provider year field ("2021", "2021-05-01", " 2021.0"), read with the Unicode spaces replaced: a year from 1800
+    /// to 2099 at the start (after optional spaces) that no other digit follows; "20211", "1799" and "abc" are nil.
+    public static func year(field value: String?) -> String? {
+        guard let value else { return nil }
+        return BrowseText.group(1, of: yearField, in: BrowseText.spaces(value))
+    }
+
+    /// The year of a provider title: the first usable field (`year`, `releaseDate`, `release_date`, `releasedate`, in
+    /// that order), else the name's year.
+    public static func year(fields: [String?], name: String) -> String? {
+        for field in fields { if let year = year(field: field) { return year } }
+        return year(in: name)
+    }
+
+    /// A TMDB item's year: the first four characters of its `year` when they are ASCII digits ("2024-05-01" → "2024").
+    static func tmdbYear(_ text: String?) -> String? {
+        guard let text = text?.trimmingCharacters(in: .whitespaces), text.count >= 4 else { return nil }
+        let prefix = text.prefix(4)
+        guard prefix.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+        return String(prefix)
+    }
+
+    /// docs/browse.md Matching step 1, one value of a provider row's TMDB id keys, told apart by its JSON type (never
+    /// through `text`, which reads a number, a boolean or an array's first string as text):
+    /// - a string trimmed as a provider field (`BrowseText.trimField`), then `TMDB_ID`, `^([0-9]{1,12})(\.0)?$`, in ASCII
+    ///   digits, scalar by scalar (not `.whitespaces`, which takes U+200B, nor `Character.isNumber`, which takes the digits
+    ///   of other scripts, nor `hasSuffix`, which compares grapheme clusters); leading zeros dropped, all zeros is none:
+    ///   " 0123 ", "123.0" and U+00A0 "123" → 123; "123 .0", "123.00", "+123", "1e3", U+001F "123" → nil;
+    /// - a number that is a whole number from 1 to 999999999999: 123, 123.0 and 1e3 → 123, 123, 1000; 1.5, -5, 0 → nil;
+    /// - anything else (an array, an object, a boolean, null) or no value → nil.
+    static func tmdbID(_ value: JSONValue?) -> Int? {
+        switch value {
+        case .string(let raw)?:
+            var digits = Array(BrowseText.trimField(raw).unicodeScalars)
+            if digits.count >= 2, digits[digits.count - 2] == ".", digits[digits.count - 1] == "0" { digits.removeLast(2) }
+            guard (1...12).contains(digits.count), digits.allSatisfy({ $0.value >= 0x30 && $0.value <= 0x39 }) else { return nil }
+            let id = digits.reduce(0) { $0 * 10 + Int($1.value - 0x30) }
+            return id > 0 ? id : nil
+        case .number(let number)?:
+            guard number.isFinite, number >= 1, number <= 999_999_999_999, number == number.rounded(.towardZero) else { return nil }
+            return Int(number)
+        default:
+            return nil
+        }
+    }
+}
+
+/// Which TMDB titles the catalogue titles match, and the rows lists in catalogue ids.
 public struct TitleMatches: Sendable, Hashable {
-    /// Catalogue title id ("m:…", "mu:…", "s:…", "ms:…") → its TMDB item.
+    /// Catalogue title id ("m:…", "mu:…", "s:…", "ms:…") → its TMDB item. Several copies can match one item.
     public var items: [String: RowsItem]
-    /// List → matched movie ids in TMDB order (each id once per list).
+    /// List → matched movie ids: the list's TMDB items in order, each with its copies in catalogue order.
     public var movieLists: [RowsList: [String]]
-    /// List → matched series ids in TMDB order.
+    /// List → matched series ids, the same way.
     public var seriesLists: [RowsList: [String]]
     public init(items: [String: RowsItem] = [:], movieLists: [RowsList: [String]] = [:], seriesLists: [RowsList: [String]] = [:]) {
         self.items = items; self.movieLists = movieLists; self.seriesLists = seriesLists
@@ -341,98 +507,82 @@ public struct TitleMatches: Sendable, Hashable {
     }
 }
 
-/// docs/browse.md matching. Each TMDB item matches at most one catalogue title of its kind:
-/// 1. a title whose provider `tmdbID` equals the item id (several: the newest `added`);
-/// 2. else titles whose normalized name equals the normalized `title` or `original_title` and whose year is within 1
-///    (several: smallest year difference, then newest `added`); a title without a year matches only when it is the
-///    only catalogue title with that normalized name.
-/// A catalogue title keeps the first TMDB item it matched (lists in the order popular, featured, topRated, services).
+/// docs/browse.md matching. Each catalogue title is matched on its own, so several copies can match one TMDB title:
+/// 1. a provider TMDB id matches the TMDB title with that id in the lists, or nothing (never the name);
+/// 2. otherwise its normalized name, then (when that finds no match) its name normalized without steps 3.1, 3.2 and
+///    3.4, is looked up among the TMDB titles of its kind, indexed under their normalized `title` and `original_title` (lists in the order
+///    popular, featured, topRated, services; an id counts once, where it first appears). With a year, the first TMDB
+///    title there with the same year matches, else the first whose year differs by 1; without a year, only a key with
+///    exactly one TMDB title matches.
 public struct TitleMatcher: Sendable {
-    private struct Candidate: Sendable {
+    private struct Title: Sendable {
         let id: String
+        let name: String
         let year: Int?
-        let added: Int64
+        let tmdbID: Int?
     }
 
-    private struct Index: Sendable {
-        var byTMDB: [Int: [Candidate]] = [:]
-        var byName: [String: [Candidate]] = [:]
+    /// The TMDB titles of one kind.
+    private struct Index {
+        var byID: [Int: RowsItem] = [:]
+        var byKey: [String: [(item: RowsItem, year: Int)]] = [:]
 
-        mutating func add(id: String, name: String, year: String?, tmdbID: Int?, added: Int64) {
-            let candidate = Candidate(id: id, year: TitleNormalizer.yearValue(year ?? TitleNormalizer.year(in: name)), added: added)
-            if let tmdbID { byTMDB[tmdbID, default: []].append(candidate) }
-            let key = TitleNormalizer.normalize(name)
-            if !key.isEmpty { byName[key, default: []].append(candidate) }
-        }
-
-        func match(_ item: RowsItem) -> String? {
-            if let candidates = byTMDB[item.id], !candidates.isEmpty {
-                return candidates.enumerated().max { a, b in
-                    a.element.added != b.element.added ? a.element.added < b.element.added : a.offset > b.offset
-                }?.element.id
-            }
-            var names: [String] = []
-            for name in [item.title, item.originalTitle ?? ""] {
-                let key = TitleNormalizer.normalize(name)
-                if !key.isEmpty && !names.contains(key) { names.append(key) }
-            }
-            let itemYear = TitleNormalizer.yearValue(item.year)
-            var best: (id: String, difference: Int, added: Int64, order: Int)?
-            var order = 0
-            for name in names {
-                let candidates = byName[name] ?? []
-                for candidate in candidates {
-                    order += 1
-                    let difference: Int
-                    if let year = candidate.year {
-                        guard let itemYear, abs(year - itemYear) <= 1 else { continue }
-                        difference = abs(year - itemYear)
-                    } else {
-                        guard candidates.count == 1 else { continue }
-                        difference = 2
+        init(_ lists: RowsLists) {
+            for list in RowsList.matchingOrder {
+                for item in lists.items(list) where byID[item.id] == nil {
+                    byID[item.id] = item
+                    let year = TitleNormalizer.tmdbYear(item.year).flatMap { Int($0) } ?? 0
+                    var keys: [String] = []
+                    for name in [item.title, item.originalTitle ?? ""] {
+                        let key = TitleNormalizer.normalize(name)
+                        if !key.isEmpty && !keys.contains(key) { keys.append(key) }
                     }
-                    if let current = best {
-                        if difference > current.difference { continue }
-                        if difference == current.difference && candidate.added <= current.added { continue }
-                    }
-                    best = (candidate.id, difference, candidate.added, order)
+                    for key in keys { byKey[key, default: []].append((item, year)) }
                 }
             }
-            return best?.id
+        }
+
+        func match(_ title: Title) -> RowsItem? {
+            if let tmdbID = title.tmdbID { return byID[tmdbID] }
+            if let item = lookup(TitleNormalizer.normalize(title.name), year: title.year) { return item }
+            guard TitleNormalizer.hasTagSeparator(title.name) else { return nil }
+            return lookup(TitleNormalizer.normalize(title.name, removingTags: false), year: title.year)
+        }
+
+        private func lookup(_ key: String, year: Int?) -> RowsItem? {
+            guard !key.isEmpty, let candidates = byKey[key] else { return nil }
+            guard let year else { return candidates.count == 1 ? candidates[0].item : nil }
+            return (candidates.first { $0.year == year } ?? candidates.first { $0.year > 0 && abs($0.year - year) <= 1 })?.item
         }
     }
 
-    private let movieIndex: Index
-    private let seriesIndex: Index
+    private let movies: [Title]
+    private let series: [Title]
 
     public init(movies: [Movie], series: [Series]) {
-        var movieIndex = Index()
-        for movie in movies { movieIndex.add(id: movie.id, name: movie.name, year: movie.year, tmdbID: movie.tmdbID, added: movie.added) }
-        var seriesIndex = Index()
-        for show in series { seriesIndex.add(id: show.id, name: show.name, year: show.year, tmdbID: show.tmdbID, added: show.added) }
-        self.movieIndex = movieIndex
-        self.seriesIndex = seriesIndex
+        func title(_ id: String, _ name: String, _ year: String?, _ tmdbID: Int?) -> Title {
+            Title(id: id, name: name, year: (TitleNormalizer.year(field: year) ?? TitleNormalizer.year(in: name)).flatMap { Int($0) }, tmdbID: tmdbID)
+        }
+        self.movies = movies.map { title($0.id, $0.name, $0.year, $0.tmdbID) }
+        self.series = series.map { title($0.id, $0.name, $0.year, $0.tmdbID) }
     }
 
     public func match(_ rows: CatalogRows) -> TitleMatches {
         var result = TitleMatches()
         for kind in [TitleKind.movie, .series] {
-            let index = kind == .movie ? movieIndex : seriesIndex
             let lists = rows.lists(kind)
-            var matchedByItem: [Int: String?] = [:]
+            let index = Index(lists)
+            guard !index.byID.isEmpty else { continue }
+            var copies: [Int: [String]] = [:]
+            for title in kind == .movie ? movies : series {
+                guard let item = index.match(title) else { continue }
+                result.items[title.id] = item
+                copies[item.id, default: []].append(title.id)
+            }
             for list in RowsList.matchingOrder {
                 var ids: [String] = []
-                var seen = Set<String>()
-                for item in lists.items(list) {
-                    let id: String?
-                    if let cached = matchedByItem[item.id] { id = cached } else {
-                        id = index.match(item)
-                        matchedByItem[item.id] = id
-                    }
-                    guard let id else { continue }
-                    if result.items[id] == nil { result.items[id] = item }
-                    if seen.insert(id).inserted { ids.append(id) }
-                }
+                var seen = Set<Int>()
+                for item in lists.items(list) where seen.insert(item.id).inserted { ids += copies[item.id] ?? [] }
                 if !ids.isEmpty {
                     if kind == .movie { result.movieLists[list] = ids } else { result.seriesLists[list] = ids }
                 }
@@ -444,39 +594,90 @@ public struct TitleMatcher: Sendable {
 
 // MARK: - "Movies & Series: USA only" and genres
 
+/// docs/browse.md "Which titles appear" and "The category filter".
 public enum TitleRegion {
-    private static let codes = ["FR", "DE", "IT", "ES", "LAT", "MX", "BR", "PT", "TR", "AR", "IN", "PK", "NL", "PL", "RO", "RU", "UK", "CA"]
-    private static let codeGroup = "(?:" + codes.joined(separator: "|") + ")"
-    private static let leading = Pattern(#"^[^A-Za-z0-9]*"# + codeGroup + #"\s*[|:\-\])]"#, caseInsensitive: true)
-    private static let marked = Pattern(#"\|\s*"# + codeGroup + #"\s*\||\[\s*"# + codeGroup + #"\s*\]|\(\s*"# + codeGroup + #"\s*\)"#,
-                                        caseInsensitive: true)
-    private static let upperWord = Pattern("(?<![A-Za-z0-9])(?:" + codes.filter { $0 != "IN" && $0 != "IT" }.joined(separator: "|")
-                                           + ")(?![A-Za-z0-9])")
-    private static let languages = Pattern(
-        "(?<![a-z0-9])(?:hindi|french|german|italian|spanish|espanol|español|latino|portuguese|brazil|brasil|turkish|arabic|punjabi|tamil|"
-            + "telugu|malayalam|kannada|bengali|urdu|dutch|polish|romanian|russian|korean|japanese|chinese|filipino|vietnamese|thai|persian|"
-            + "farsi|greek|albanian|kurdish)(?![a-z0-9])",
-        caseInsensitive: true)
+    static let codes = "FR|DE|ES|LAT|MX|BR|PT|TR|AR|PK|NL|PL|RO|RU|UK|CA|AF"
+    static let words = "french|france|german|germany|deutsch|italian|italiano|italia|italy|spanish|espa(n|ñ|Ñ)ol|spain|castellano|"
+        + "latino|latina|latam|mexico|mexican|brazil|brasil|brazilian|portuguese|portugal|turkish|turkey|arab|arabic|"
+        + "india|indian|hindi|bollywood|tamil|telugu|malayalam|kannada|bengali|punjabi|pakistan|pakistani|urdu|"
+        + "dutch|netherlands|polish|poland|polska|romanian|romania|russian|russia|british|canada|canadian|quebec|"
+        + "korean|japanese|chinese|filipino|vietnamese|thai|persian|farsi|greek|albanian|kurdish"
+    /// The four rules, exactly as docs/browse.md writes them (no lookbehind). Rules 1 and 2 are case-sensitive.
+    private static let caseSensitiveRules = [
+        // 1. A code in upper case as a whole word: "FR | Films", "Movies CA", "4K-FR Movies".
+        Pattern(#"(^|[^A-Za-z0-9])("# + codes + #")([^A-Za-z0-9]|$)"#),
+        // 2. "IN" and "IT" in upper case only as a tag: "IN | Movies", "Serie IT", not "IN THEATERS" or "IT CHAPTER TWO".
+        Pattern(#"(^|[^A-Za-z0-9])(IN|IT)\s*([|:\[\]()/-]|–|$)"#),
+    ]
+    /// Rules 3 and 4 ignore the case of the ASCII letters only: they run in lower case, without `.caseInsensitive`, on a
+    /// copy with only `A` to `Z` lower-cased (`BrowseText.asciiLowercased`), so `ſ`, the Kelvin sign, `İ` and `ı` never
+    /// equal an ASCII letter.
+    private static let asciiCaseInsensitiveRules: [Pattern] = {
+        let lowerCodes = codes.lowercased()
+        return [
+            // 3. A rule 1 code in any ASCII letter case as a tag: "Fr | Films", "(Pt) Novelas", "[ru] Kino".
+            Pattern(#"^[^A-Za-z0-9]*("# + lowerCodes + #")\s*([|:\])/-]|–)|\|\s*("# + lowerCodes + #")\s*\||\[\s*("# + lowerCodes
+                    + #")\s*\]|\(\s*("# + lowerCodes + #")\s*\)"#),
+            // 4. A country or language written out: "French Cinema", "FRENCH4K", not "Indiana Jones" or "Arabian Nights".
+            Pattern(#"(^|[^A-Za-z])("# + words + #")([^A-Za-z]|$)"#),
+        ]
+    }()
+    /// docs/browse.md "Origin countries": two ASCII letters with nothing but `\s` around them; group 1.
+    private static let countryPattern = Pattern(#"^\s*([A-Za-z]{2})\s*$"#)
 
-    /// A category name that carries a non-US country or language tag (docs/browse.md):
-    /// - codes FR DE IT ES LAT MX BR PT TR AR IN PK NL PL RO RU UK CA, matched (case-insensitive) as a leading tag
-    ///   (`^\W*CODE\s*[|:\-\])]`), as `|CODE|`, `[CODE]` or `(CODE)` anywhere, or (except IN and IT) as an uppercase
-    ///   whole word in the original name ("UK Comedy", but not "Movies In Theaters");
-    /// - language words, whole word, case-insensitive: hindi french german italian spanish espanol latino portuguese
-    ///   brazil brasil turkish arabic punjabi tamil telugu malayalam kannada bengali urdu dutch polish romanian russian
-    ///   korean japanese chinese filipino vietnamese thai persian farsi greek albanian kurdish.
+    /// A category name that one of the four rules matches, read with the Unicode spaces replaced. Everything else
+    /// passes, an empty name included.
     public static func isForeignCategory(_ name: String) -> Bool {
-        leading.matches(name) || marked.matches(name) || upperWord.matches(name) || languages.matches(name)
+        let s = BrowseText.spaces(name)
+        guard !s.isEmpty else { return false }
+        if caseSensitiveRules.contains(where: { $0.matches(s) }) { return true }
+        let lower = BrowseText.asciiLowercased(s)
+        return asciiCaseInsensitiveRules.contains { $0.matches(lower) }
     }
 
-    /// Matched to TMDB: shown only if `origin` contains "US" and the category rule passes too (US titles filed in a
-    /// foreign-language category are usually dubbed copies). An empty `origin` is unknown: the category rule alone
-    /// decides, as for unmatched titles. The category rule: none of the title's categories is foreign (fallback
-    /// categories such as "__tuner_movies" pass). docs/browse.md "Which titles appear".
+    /// An `origin` entry's country: with the Unicode spaces replaced, two ASCII letters with nothing but `\s` around
+    /// them, upper-cased (" us" → "US"); nil for every other entry ("USA", "U.S.", "U S", "", "uſ", a fullwidth "ＵＳ").
+    /// `COUNTRY` is checked before upper-casing, because "uſ".uppercased() is "US".
+    static func country(_ entry: String) -> String? {
+        BrowseText.group(1, of: countryPattern, in: BrowseText.spaces(entry))?.uppercased()
+    }
+
+    /// Category id → whether its name is foreign.
+    static func foreignByID(_ categories: [Category]) -> [String: Bool] {
+        var result: [String: Bool] = [:]
+        for category in categories where result[category.id] == nil { result[category.id] = isForeignCategory(category.name) }
+        return result
+    }
+
+    /// The category filter for one title: ids missing from `foreign` are left out; it passes when none is left or at
+    /// least one of them is not foreign.
+    static func categoriesPass(_ categoryIDs: [String], foreign: [String: Bool]) -> Bool {
+        var known = false
+        for id in categoryIDs {
+            guard let isForeign = foreign[id] else { continue }
+            if !isForeign { return true }
+            known = true
+        }
+        return !known
+    }
+
+    /// No match, an `origin` without a country (unknown: `[]`, `["USA"]`), or one whose countries include US (`"US"`,
+    /// `"us"`, `" US"`); entries that are not countries are ignored (`["USA", "GB"]` is Great Britain alone).
+    static func originAllowed(_ match: RowsItem?) -> Bool {
+        guard let match else { return true }
+        let countries = match.origin.compactMap(country)
+        return countries.isEmpty || countries.contains("US")
+    }
+
+    /// "Movies & Series: USA only" for one title: its categories pass the category filter (US titles filed only in
+    /// foreign-language categories are usually dubbed copies) and, when it is matched to TMDB, its `origin` is unknown or
+    /// includes US. `categoryIDs` are the title's merged `category_id`/`category_ids`; ids `categoriesByID` doesn't
+    /// know (fallback categories such as "__tuner_movies") are left out.
     public static func isUSA(match: RowsItem?, categoryIDs: [String], categoriesByID: [String: Category]) -> Bool {
-        let categoriesPass = !categoryIDs.contains { id in categoriesByID[id].map { isForeignCategory($0.name) } ?? false }
-        if let match, !match.origin.isEmpty { return categoriesPass && match.origin.contains { $0.uppercased() == "US" } }
-        return categoriesPass
+        let foreign = categoryIDs.reduce(into: [String: Bool]()) { result, id in
+            if let category = categoriesByID[id] { result[id] = isForeignCategory(category.name) }
+        }
+        return categoriesPass(categoryIDs, foreign: foreign) && originAllowed(match)
     }
 }
 
@@ -676,10 +877,33 @@ public struct BrowseIndex: Sendable {
         var ids: [String] = []
         var titles: [String: TitleRef] = [:]
         var searchNames: [String] = []
+        /// Every visible title of each list, copies of one TMDB title included.
+        var rawLists: [BrowseList: [String]] = [:]
+        /// `rawLists` with one poster per TMDB title (`folded`), for queries without a genre.
         var lists: [BrowseList: [String]] = [:]
         var genreOptions: [GenreOption] = []
         var genres: [String: Set<String>] = [:]
         var services: [StreamingService] = []
+        /// Visible title id → the id of the TMDB title it matched.
+        var tmdbIDs: [String: Int] = [:]
+        /// TMDB id → its visible copies when it has more than one, best first: those that pass "USA only", then the
+        /// newest `added`, then catalogue order.
+        var copies: [Int: [String]] = [:]
+
+        /// docs/browse.md "Copies of one title": catalogue titles matched to the same TMDB title are one poster, which
+        /// stands where its first visible copy stands in `ids` and opens its best-ranked visible copy. `visible` is the
+        /// genre filter (the USA switch and the adult rules already left the others out of the side).
+        func folded(_ ids: [String], visible: (String) -> Bool = { _ in true }) -> [String] {
+            var result: [String] = []
+            result.reserveCapacity(ids.count)
+            var seen = Set<Int>()
+            for id in ids where visible(id) {
+                guard let tmdbID = tmdbIDs[id] else { result.append(id); continue }
+                guard seen.insert(tmdbID).inserted else { continue }
+                result.append(copies[tmdbID]?.first(where: visible) ?? id)
+            }
+            return result
+        }
     }
 
     private let rows: CatalogRows
@@ -700,12 +924,15 @@ public struct BrowseIndex: Sendable {
         for category in movies?.categories ?? [] where movieCategories[category.id] == nil { movieCategories[category.id] = category }
         var seriesCategories: [String: Category] = [:]
         for category in series?.categories ?? [] where seriesCategories[category.id] == nil { seriesCategories[category.id] = category }
-        let visibleMovies = usOnly ? allMovies.filter {
-            TitleRegion.isUSA(match: matches.items[$0.id], categoryIDs: $0.categoryIDs, categoriesByID: movieCategories)
-        } : allMovies
-        let visibleSeries = usOnly ? allSeries.filter {
-            TitleRegion.isUSA(match: matches.items[$0.id], categoryIDs: $0.categoryIDs, categoriesByID: seriesCategories)
-        } : allSeries
+        // "Movies & Series: USA only" for every title, also when the switch is off (it ranks copies of one TMDB title).
+        let movieForeign = TitleRegion.foreignByID(movies?.categories ?? [])
+        let seriesForeign = TitleRegion.foreignByID(series?.categories ?? [])
+        let movieUSA = allMovies.map { TitleRegion.categoriesPass($0.categoryIDs, foreign: movieForeign) && TitleRegion.originAllowed(matches.items[$0.id]) }
+        let seriesUSA = allSeries.map { TitleRegion.categoriesPass($0.categoryIDs, foreign: seriesForeign) && TitleRegion.originAllowed(matches.items[$0.id]) }
+        let shownMovies = allMovies.indices.filter { !usOnly || movieUSA[$0] }
+        let shownSeries = allSeries.indices.filter { !usOnly || seriesUSA[$0] }
+        let visibleMovies = shownMovies.map { allMovies[$0] }
+        let visibleSeries = shownSeries.map { allSeries[$0] }
         let services = edition == .direct
         self.rows = rows
         usOnlyValue = usOnly
@@ -714,15 +941,15 @@ public struct BrowseIndex: Sendable {
         self.visibleMovies = visibleMovies
         self.visibleSeries = visibleSeries
         movieSide = BrowseIndex.side(kind: .movie, refs: visibleMovies.map { TitleRef.movie($0) },
-                                     meta: visibleMovies.map { ($0.added, $0.rating, $0.genre, $0.categoryIDs) },
+                                     meta: visibleMovies.map { ($0.added, $0.rating, $0.genre, $0.categoryIDs) }, usa: shownMovies.map { movieUSA[$0] },
                                      categories: movieCategories, rows: rows, matches: matches, services: services)
         seriesSide = BrowseIndex.side(kind: .series, refs: visibleSeries.map { TitleRef.series($0) },
-                                      meta: visibleSeries.map { ($0.added, $0.rating, $0.genre, $0.categoryIDs) },
+                                      meta: visibleSeries.map { ($0.added, $0.rating, $0.genre, $0.categoryIDs) }, usa: shownSeries.map { seriesUSA[$0] },
                                       categories: seriesCategories, rows: rows, matches: matches, services: services)
     }
 
-    private static func side(kind: TitleKind, refs: [TitleRef], meta: [(Int64, String?, String?, [String])], categories: [String: Category],
-                             rows: CatalogRows, matches: TitleMatches, services: Bool) -> Side {
+    private static func side(kind: TitleKind, refs: [TitleRef], meta: [(Int64, String?, String?, [String])], usa: [Bool],
+                             categories: [String: Category], rows: CatalogRows, matches: TitleMatches, services: Bool) -> Side {
         var side = Side()
         side.ids = refs.map(\.id)
         for ref in refs { side.titles[ref.id] = ref }
@@ -730,10 +957,24 @@ public struct BrowseIndex: Sendable {
         let visible = Set(side.ids)
         let usesTMDB = rows.usesTMDB
 
+        // Copies of one TMDB title, best first: those that pass USA only, then the newest `added`, then catalogue order.
+        var copies: [Int: [Int]] = [:]
+        for (index, ref) in refs.enumerated() {
+            guard let item = matches.items[ref.id] else { continue }
+            side.tmdbIDs[ref.id] = item.id
+            copies[item.id, default: []].append(index)
+        }
+        for (tmdbID, indices) in copies where indices.count > 1 {
+            side.copies[tmdbID] = indices.sorted { a, b in
+                if usa[a] != usa[b] { return usa[a] }
+                return meta[a].0 != meta[b].0 ? meta[a].0 > meta[b].0 : a < b
+            }.map { refs[$0].id }
+        }
+
         // Popular / Featured / Top rated from TMDB.
         if usesTMDB {
-            side.lists[.popular] = matches.ids(kind, .popular).filter(visible.contains)
-            side.lists[.featured] = matches.ids(kind, .featured).filter(visible.contains)
+            side.rawLists[.popular] = matches.ids(kind, .popular).filter(visible.contains)
+            side.rawLists[.featured] = matches.ids(kind, .featured).filter(visible.contains)
         }
         var top = usesTMDB ? matches.ids(kind, .topRated).filter(visible.contains) : []
         let topSet = Set(top)
@@ -742,26 +983,28 @@ public struct BrowseIndex: Sendable {
             return (refs[index].id, value, index)
         }.sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.2 < $1.2 }
         top += rated.map(\.0)
-        side.lists[.topRated] = top
-        side.lists[.recentlyAdded] = refs.indices.filter { meta[$0].0 > 0 }
+        side.rawLists[.topRated] = top
+        side.rawLists[.recentlyAdded] = refs.indices.filter { meta[$0].0 > 0 }
             .sorted { meta[$0].0 != meta[$1].0 ? meta[$0].0 > meta[$1].0 : $0 < $1 }.map { refs[$0].id }
         let sortKeys = refs.map { TextFold.sortKey($0.name) }
-        side.lists[.az] = refs.indices.sorted { sortKeys[$0] != sortKeys[$1] ? sortKeys[$0] < sortKeys[$1] : $0 < $1 }.map { refs[$0].id }
+        side.rawLists[.az] = refs.indices.sorted { sortKeys[$0] != sortKeys[$1] ? sortKeys[$0] < sortKeys[$1] : $0 < $1 }.map { refs[$0].id }
 
         // Services: TMDB matches, then titles in categories named for the service (newest first). Direct edition only.
         for service in services ? StreamingService.allCases : [] {
             var ids = usesTMDB ? matches.ids(kind, .service(service)).filter(visible.contains) : []
             var seen = Set(ids)
             let pattern = service.keywordPattern
-            let serviceCategories = Set(categories.values.filter { pattern.matches($0.name) }.map(\.id))
+            let serviceCategories = Set(categories.values.filter { pattern.matches(BrowseText.asciiLowercased($0.name)) }.map(\.id))
             if !serviceCategories.isEmpty {
                 let inCategories = refs.indices.filter { meta[$0].3.contains(where: serviceCategories.contains) }
                     .sorted { meta[$0].0 != meta[$1].0 ? meta[$0].0 > meta[$1].0 : $0 < $1 }
                 for index in inCategories where seen.insert(refs[index].id).inserted { ids.append(refs[index].id) }
             }
-            side.lists[.service(service)] = ids
+            side.rawLists[.service(service)] = ids
             if !ids.isEmpty { side.services.append(service) }
         }
+        let unfolded = side
+        side.lists = unfolded.rawLists.mapValues { unfolded.folded($0) }
 
         // Genres.
         let rowGenres = rows.genres(kind)
@@ -839,16 +1082,16 @@ public struct BrowseIndex: Sendable {
     /// - A–Z: by name, case- and diacritic-insensitive, leading non-alphanumerics and a leading "The " ignored;
     /// - service: TMDB matches in order, then titles in categories named for the service (newest first), deduped
     ///   (direct edition only; empty in the App Store edition).
-    /// Then filtered by genre when `genreID` is set.
+    /// Then filtered by genre when `genreID` is set, and copies of one TMDB title shown as one poster: the best-ranked
+    /// visible copy (one that passes "USA only", then the newest), where the first visible copy stands.
     public func discover(_ query: DiscoverQuery, library: LibrarySnapshot) -> [PosterItem] {
         posters(ids(for: query), library: library)
     }
 
     func ids(for query: DiscoverQuery) -> [String] {
         let side = side(query.kind)
-        let ids = side.lists[query.list] ?? []
-        guard let genreID = query.genreID else { return ids }
-        return ids.filter { side.genres[$0]?.contains(genreID) ?? false }
+        guard let genreID = query.genreID else { return side.lists[query.list] ?? [] }
+        return side.folded(side.rawLists[query.list] ?? []) { side.genres[$0]?.contains(genreID) ?? false }
     }
 
     func posters(_ ids: [String], library: LibrarySnapshot, limit: Int? = nil) -> [PosterItem] {
@@ -942,10 +1185,11 @@ public struct BrowseIndex: Sendable {
         return "S\(season) E\(episode)"
     }
 
-    /// Continue watching, Favorite movies, Favorite series, Recently watched (history, newest first, max 40).
+    /// Continue watching, Favorite movies, Favorite series (A–Z, every favorite copy), Recently watched (history, newest
+    /// first, max 40).
     public func library(_ library: LibrarySnapshot) -> LibrarySections {
-        let favoriteMovies = movieSide.lists[.az]?.filter(library.favoriteTitles.contains) ?? []
-        let favoriteSeries = seriesSide.lists[.az]?.filter(library.favoriteTitles.contains) ?? []
+        let favoriteMovies = movieSide.rawLists[.az]?.filter(library.favoriteTitles.contains) ?? []
+        let favoriteSeries = seriesSide.rawLists[.az]?.filter(library.favoriteTitles.contains) ?? []
         var seen = Set<String>()
         let history = library.history.map(\.titleID).filter { seen.insert($0).inserted }
         return LibrarySections(continueWatching: continueWatching(library), favoriteMovies: posters(favoriteMovies, library: library),

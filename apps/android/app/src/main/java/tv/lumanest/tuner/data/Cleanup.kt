@@ -237,25 +237,36 @@ object Cleanup {
     }
 
     /**
-     * Keep the newest upload of a title/year, retaining other uploads as playback alternatives and their ids as
-     * [Movie.aliases]. Uploads listed only in [foreignCategories] (categories "Movies & Series: USA only" excludes,
-     * usually dubbed copies) stay separate from the others, so the USA filter can still tell them apart.
+     * Folds re-uploads of a film into one movie (docs/browse.md, "Copies of one title"): uploads whose names are equal
+     * once lower-cased and stripped of everything but a-z and 0-9. Uploads listed only in foreign [categories] (every
+     * one of their categories found there fails [VodRegion.isForeignCategory], usually dubbed copies) fold among
+     * themselves and never into the others, so "Movies & Series: USA only" can still tell them apart. Each group keeps
+     * its newest upload (largest [Movie.added]; on a tie, the first in [list]); the others become its backups, newest
+     * first, and their ids its [Movie.aliases]; the group's categories are merged; a missing TMDB id, year or genre
+     * comes from the newest copy that has one.
      */
-    fun movies(list: List<Movie>, foreignCategories: Set<String> = emptySet()): List<Movie> =
-        list.groupBy { movie ->
+    fun movies(list: List<Movie>, categories: List<Category> = emptyList()): List<Movie> {
+        val foreign = HashMap<String, Boolean>(categories.size * 2)
+        categories.forEach { foreign[it.id] = VodRegion.isForeignCategory(it.name) }
+        return list.groupBy { movie ->
             val name = nonAlnum.replace(movie.name.lowercase(Locale.ROOT), "").ifEmpty { movie.id }
-            val foreign = foreignCategories.isNotEmpty() && movie.categoryIds.isNotEmpty() && movie.categoryIds.all { it in foreignCategories }
-            if (foreign) "$name|foreign" else name
+            // Ids missing from the category list are left out; a movie with no category left passes.
+            val known = movie.categoryIds.mapNotNull { foreign[it] }
+            if (known.isNotEmpty() && known.all { it }) "$name|foreign" else name
         }.values.map { copies ->
-            if (copies.size == 1) copies[0]
-            else copies.maxBy { it.added }.let { kept -> kept.copy(
+            if (copies.size == 1) return@map copies[0]
+            // Stable: on a tie, list order.
+            val newest = copies.sortedByDescending { it.added }
+            val kept = newest.first()
+            kept.copy(
                 categoryIds = (kept.categoryIds + copies.flatMap { it.categoryIds }).distinct(),
-                backups = (kept.backups + copies.sortedByDescending { it.added }.flatMap { listOf(it.url) + it.backups }).filter { it != kept.url }.distinct(),
-                // Browsing matches titles to TMDB (docs/browse.md): keep what any copy knew.
-                tmdb = kept.tmdb ?: copies.firstNotNullOfOrNull { it.tmdb },
-                year = kept.year ?: copies.firstNotNullOfOrNull { it.year },
-                genre = kept.genre ?: copies.firstNotNullOfOrNull { it.genre },
+                backups = (kept.backups + newest.flatMap { listOf(it.url) + it.backups }).filter { it != kept.url }.distinct(),
+                // Browsing matches titles to TMDB (docs/browse.md): keep what the newest copy that knows it knew.
+                tmdb = newest.firstNotNullOfOrNull { it.tmdb },
+                year = newest.firstNotNullOfOrNull { it.year },
+                genre = newest.firstNotNullOfOrNull { it.genre },
                 aliases = (kept.aliases + copies.flatMap { listOf(it.id) + it.aliases }).filter { it != kept.id }.distinct().take(MAX_ALIASES),
-            ) }
+            )
         }
+    }
 }

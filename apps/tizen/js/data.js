@@ -3,7 +3,25 @@
     'use strict';
     var countryRows = ["AD|AND|Andorra","AE|ARE|United Arab Emirates","AF|AFG|Afghanistan","AG|ATG|Antigua & Barbuda","AI|AIA|Anguilla","AL|ALB|Albania","AM|ARM|Armenia","AO|AGO|Angola","AQ|ATA|Antarctica","AR|ARG|Argentina","AS|ASM|American Samoa","AT|AUT|Austria","AU|AUS|Australia","AW|ABW|Aruba","AX|ALA|Åland Islands","AZ|AZE|Azerbaijan","BA|BIH|Bosnia & Herzegovina","BB|BRB|Barbados","BD|BGD|Bangladesh","BE|BEL|Belgium","BF|BFA|Burkina Faso","BG|BGR|Bulgaria","BH|BHR|Bahrain","BI|BDI|Burundi","BJ|BEN|Benin","BL|BLM|St. Barthélemy","BM|BMU|Bermuda","BN|BRN|Brunei","BO|BOL|Bolivia","BQ|BES|Caribbean Netherlands","BR|BRA|Brazil","BS|BHS|Bahamas","BT|BTN|Bhutan","BV|BVT|Bouvet Island","BW|BWA|Botswana","BY|BLR|Belarus","BZ|BLZ|Belize","CA|CAN|Canada","CC|CCK|Cocos (Keeling) Islands","CD|COD|Congo - Kinshasa","CF|CAF|Central African Republic","CG|COG|Congo - Brazzaville","CH|CHE|Switzerland","CI|CIV|Côte d’Ivoire","CK|COK|Cook Islands","CL|CHL|Chile","CM|CMR|Cameroon","CN|CHN|China","CO|COL|Colombia","CR|CRI|Costa Rica","CU|CUB|Cuba","CV|CPV|Cape Verde","CW|CUW|Curaçao","CX|CXR|Christmas Island","CY|CYP|Cyprus","CZ|CZE|Czechia","DE|DEU|Germany","DJ|DJI|Djibouti","DK|DNK|Denmark","DM|DMA|Dominica","DO|DOM|Dominican Republic","DZ|DZA|Algeria","EC|ECU|Ecuador","EE|EST|Estonia","EG|EGY|Egypt","EH|ESH|Western Sahara","ER|ERI|Eritrea","ES|ESP|Spain","ET|ETH|Ethiopia","FI|FIN|Finland","FJ|FJI|Fiji","FK|FLK|Falkland Islands","FM|FSM|Micronesia","FO|FRO|Faroe Islands","FR|FRA|France","GA|GAB|Gabon","GB|GBR|United Kingdom","GD|GRD|Grenada","GE|GEO|Georgia","GF|GUF|French Guiana","GG|GGY|Guernsey","GH|GHA|Ghana","GI|GIB|Gibraltar","GL|GRL|Greenland","GM|GMB|Gambia","GN|GIN|Guinea","GP|GLP|Guadeloupe","GQ|GNQ|Equatorial Guinea","GR|GRC|Greece","GS|SGS|South Georgia & South Sandwich Islands","GT|GTM|Guatemala","GU|GUM|Guam","GW|GNB|Guinea-Bissau","GY|GUY|Guyana","HK|HKG|Hong Kong SAR China","HM|HMD|Heard & McDonald Islands","HN|HND|Honduras","HR|HRV|Croatia","HT|HTI|Haiti","HU|HUN|Hungary","ID|IDN|Indonesia","IE|IRL|Ireland","IL|ISR|Israel","IM|IMN|Isle of Man","IN|IND|India","IO|IOT|British Indian Ocean Territory","IQ|IRQ|Iraq","IR|IRN|Iran","IS|ISL|Iceland","IT|ITA|Italy","JE|JEY|Jersey","JM|JAM|Jamaica","JO|JOR|Jordan","JP|JPN|Japan","KE|KEN|Kenya","KG|KGZ|Kyrgyzstan","KH|KHM|Cambodia","KI|KIR|Kiribati","KM|COM|Comoros","KN|KNA|St. Kitts & Nevis","KP|PRK|North Korea","KR|KOR|South Korea","KW|KWT|Kuwait","KY|CYM|Cayman Islands","KZ|KAZ|Kazakhstan","LA|LAO|Laos","LB|LBN|Lebanon","LC|LCA|St. Lucia","LI|LIE|Liechtenstein","LK|LKA|Sri Lanka","LR|LBR|Liberia","LS|LSO|Lesotho","LT|LTU|Lithuania","LU|LUX|Luxembourg","LV|LVA|Latvia","LY|LBY|Libya","MA|MAR|Morocco","MC|MCO|Monaco","MD|MDA|Moldova","ME|MNE|Montenegro","MF|MAF|St. Martin","MG|MDG|Madagascar","MH|MHL|Marshall Islands","MK|MKD|North Macedonia","ML|MLI|Mali","MM|MMR|Myanmar (Burma)","MN|MNG|Mongolia","MO|MAC|Macao SAR China","MP|MNP|Northern Mariana Islands","MQ|MTQ|Martinique","MR|MRT|Mauritania","MS|MSR|Montserrat","MT|MLT|Malta","MU|MUS|Mauritius","MV|MDV|Maldives","MW|MWI|Malawi","MX|MEX|Mexico","MY|MYS|Malaysia","MZ|MOZ|Mozambique","NA|NAM|Namibia","NC|NCL|New Caledonia","NE|NER|Niger","NF|NFK|Norfolk Island","NG|NGA|Nigeria","NI|NIC|Nicaragua","NL|NLD|Netherlands","NO|NOR|Norway","NP|NPL|Nepal","NR|NRU|Nauru","NU|NIU|Niue","NZ|NZL|New Zealand","OM|OMN|Oman","PA|PAN|Panama","PE|PER|Peru","PF|PYF|French Polynesia","PG|PNG|Papua New Guinea","PH|PHL|Philippines","PK|PAK|Pakistan","PL|POL|Poland","PM|SPM|St. Pierre & Miquelon","PN|PCN|Pitcairn Islands","PR|PRI|Puerto Rico","PS|PSE|Palestinian Territories","PT|PRT|Portugal","PW|PLW|Palau","PY|PRY|Paraguay","QA|QAT|Qatar","RE|REU|Réunion","RO|ROU|Romania","RS|SRB|Serbia","RU|RUS|Russia","RW|RWA|Rwanda","SA|SAU|Saudi Arabia","SB|SLB|Solomon Islands","SC|SYC|Seychelles","SD|SDN|Sudan","SE|SWE|Sweden","SG|SGP|Singapore","SH|SHN|St. Helena","SI|SVN|Slovenia","SJ|SJM|Svalbard & Jan Mayen","SK|SVK|Slovakia","SL|SLE|Sierra Leone","SM|SMR|San Marino","SN|SEN|Senegal","SO|SOM|Somalia","SR|SUR|Suriname","SS|SSD|South Sudan","ST|STP|São Tomé & Príncipe","SV|SLV|El Salvador","SX|SXM|Sint Maarten","SY|SYR|Syria","SZ|SWZ|Eswatini","TC|TCA|Turks & Caicos Islands","TD|TCD|Chad","TF|ATF|French Southern Territories","TG|TGO|Togo","TH|THA|Thailand","TJ|TJK|Tajikistan","TK|TKL|Tokelau","TL|TLS|Timor-Leste","TM|TKM|Turkmenistan","TN|TUN|Tunisia","TO|TON|Tonga","TR|TUR|Turkey","TT|TTO|Trinidad & Tobago","TV|TUV|Tuvalu","TW|TWN|Taiwan","TZ|TZA|Tanzania","UA|UKR|Ukraine","UG|UGA|Uganda","UM|UMI|U.S. Outlying Islands","US|USA|United States","UY|URY|Uruguay","UZ|UZB|Uzbekistan","VA|VAT|Vatican City","VC|VCT|St. Vincent & Grenadines","VE|VEN|Venezuela","VG|VGB|British Virgin Islands","VI|VIR|U.S. Virgin Islands","VN|VNM|Vietnam","VU|VUT|Vanuatu","WF|WLF|Wallis & Futuna","WS|WSM|Samoa","YE|YEM|Yemen","YT|MYT|Mayotte","ZA|ZAF|South Africa","ZM|ZMB|Zambia","ZW|ZWE|Zimbabwe"];
     var countries = Object.create(null), aliases = Object.create(null);
-    function text(value) { return value === null || value === undefined ? '' : String(value).replace(/^\s+|\s+$/g, ''); }
+    // Provider fields lose, at both ends, tab, line feed, vertical tab, form feed, carriage return, space and the Unicode
+    // spaces of docs/browse.md (U+0085, U+00A0, U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F, U+3000 and
+    // U+FEFF), and nothing else. Not \s or trim(): the oldest TV browsers' also take U+180E, and modern ones lack U+0085.
+    // The set is built from character codes (pairs of first and last), so no editor can turn it into the characters.
+    // A loop, not a pattern (docs/browse.md, Trimming): ^[...]+|[...]+$ tries its second half again at every space of
+    // a run inside the text, so its time grows with the square of the run (0.4 s for 16,000 spaces on a Samsung TV).
+    var edgeSpaces = (function (ranges) {
+        var set = Object.create(null), i, code;
+        for (i = 0; i < ranges.length; i += 2) for (code = ranges[i]; code <= ranges[i + 1]; code++) set[code] = true;
+        return set;
+    }([0x09, 0x0d, 0x20, 0x20, 0x85, 0x85, 0xa0, 0xa0, 0x1680, 0x1680, 0x2000, 0x200a, 0x2028, 0x2029, 0x202f, 0x202f, 0x205f, 0x205f, 0x3000, 0x3000, 0xfeff, 0xfeff]));
+    // value without the characters of set (character codes) at its ends.
+    function trimCodes(value, set) {
+        var start = 0, end = value.length;
+        while (start < end && set[value.charCodeAt(start)] === true) start++;
+        while (end > start && set[value.charCodeAt(end - 1)] === true) end--;
+        return start === 0 && end === value.length ? value : value.substring(start, end);
+    }
+    function text(value) { return value === null || value === undefined ? '' : trimCodes(String(value), edgeSpaces); }
     function unique(values) { var seen = Object.create(null); return values.filter(function (v) { if (seen[v]) return false; seen[v] = true; return true; }); }
     function copy(item) { var result = {}, key; for (key in item) if (Object.prototype.hasOwnProperty.call(item, key)) result[key] = item[key]; return result; }
     function safeUrl(value) { value = text(value); return /^https?:\/\//i.test(value) ? value : ''; }
@@ -43,8 +61,37 @@
         return source.server + '/' + kind + '/' + encodeURIComponent(source.username) + '/' + encodeURIComponent(source.password) + '/' + encodeURIComponent(id) + '.' + extension;
     }
     function metadata(row, keys) { var values = []; keys.forEach(function (key) { var value = row[key]; (Array.isArray(value) ? value : [value]).forEach(function (v) { if (text(v)) values.push(text(v)); }); }); return unique(values).join(';'); }
-    // The TMDB id a provider gives a movie or series (tmdb, tmdb_id or info.tmdb_id), digits only.
-    function providerTmdbId(row) { var values = [row.tmdb, row.tmdb_id, row.info && typeof row.info === 'object' ? row.info.tmdb_id : ''], i, value; for (i = 0; i < values.length; i++) { value = text(values[i]); if (/^[0-9]+$/.test(value) && !/^0+$/.test(value)) return value; } return ''; }
+    // The TMDB id a provider gives a movie or series (docs/browse.md, Matching step 1): the first of tmdb, tmdb_id,
+    // info.tmdb_id and info.tmdb (the last two only when info is an object) whose value gives one. A string gives one
+    // when, trimmed as a provider field, it is 1 to 12 ASCII digits (TMDB_ID, a trailing ".0" allowed) not all zeros;
+    // a number when it is whole, from 1 to 999999999999. Any other value gives none: never String() it, which makes
+    // ["123"] "123".
+    var TMDB_ID = /^([0-9]{1,12})(\.0)?$/;
+    function tmdbValue(value) {
+        var match;
+        if (typeof value === 'string') { match = TMDB_ID.exec(text(value)); return match ? match[1].replace(/^0+/, '') : ''; }
+        return typeof value === 'number' && Math.floor(value) === value && value >= 1 && value <= 999999999999 ? String(value) : '';
+    }
+    function providerTmdbId(row) {
+        var info = row.info !== null && typeof row.info === 'object' && !Array.isArray(row.info) ? row.info : null,
+            values = info ? [row.tmdb, row.tmdb_id, info.tmdb_id, info.tmdb] : [row.tmdb, row.tmdb_id], i, id;
+        for (i = 0; i < values.length; i++) { id = tmdbValue(values[i]); if (id) return id; }
+        return '';
+    }
+    // docs/browse.md, Spaces and letter case: before a Movies & Series rule reads a text (a category name, an origin
+    // entry, a title's name or a provider's year field), these Unicode spaces become U+0020. Never \s or trim(): which
+    // characters they take differs between engines (JavaScript's \s lacks U+0085; older TV browsers' takes U+180E).
+    var unicodeSpaces = /[\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]/g;
+    function spaceText(value) { return value === null || value === undefined ? '' : String(value).replace(unicodeSpaces, ' '); }
+    // The release year a provider gives (docs/browse.md): the first of year, releaseDate, release_date and releasedate
+    // that starts, after optional spaces, with a year from 1800 to 2099 not followed by another digit (YEAR_FIELD,
+    // read with the Unicode spaces replaced; its \s written out as tab, LF, VT, FF, CR and space); '' when none does.
+    var yearField = /^[ \t\n\x0B\f\r]*((18|19|20)[0-9]{2})([^0-9]|$)/;
+    function providerYear(row) {
+        var values = [row.year, row.releaseDate, row.release_date, row.releasedate], i, match;
+        for (i = 0; i < values.length; i++) { match = yearField.exec(spaceText(values[i])); if (match) return match[1]; }
+        return '';
+    }
     function memberships(row) { return unique([row.category_id].concat(Array.isArray(row.category_ids) ? row.category_ids : []).map(text).filter(Boolean)); }
     // Adult content: a category name with a standalone XXX, adult(s), 18+ or porn token (but not "Adult Swim"),
     // or the Xtream is_adult flag on a category or stream. Hidden unless the passcode-protected lock is open.
@@ -71,7 +118,7 @@
                 url: kind === 'series' ? '' : direct || streamUrl(source, kind === 'live' ? 'live' : 'movie', rawId, kind === 'live' ? format || 'm3u8' : text(row.container_extension) || 'mp4'),
                 backups: [], image: safeUrl(kind === 'series' ? row.cover : row.stream_icon), epgId: text(row.epg_channel_id),
                 categoryId: cats[0] || '', categoryIds: cats, number: Number(row.num) || 0,
-                year: text(row.year || row.releaseDate || row.release_date).substring(0, 4), plot: text(row.plot), rating: text(row.rating) === '0' ? '' : text(row.rating),
+                year: providerYear(row), plot: text(row.plot), rating: text(row.rating) === '0' ? '' : text(row.rating),
                 added: Number(kind === 'series' ? row.last_modified : row.added) || 0,
                 country: metadata(row, ['country', 'country_code', 'country_name', 'stream_country', 'tvg-country']),
                 language: metadata(row, ['language', 'lang', 'original_language', 'audio_language', 'stream_language', 'tvg-language']) };
@@ -228,16 +275,31 @@
         order.forEach(function (key) { var ranked = groups[key].sort(function (a, b) { return b.score - a.score || a.index - b.index; }), kept = copy(ranked[0].item), categoryIds = [], urls = [], chosenName = ranked[0].name; ranked.forEach(function (entry) { if (entry.item.adult) kept.adult = true; categoryIds = categoryIds.concat(entry.item.categoryIds); urls = urls.concat([entry.item.url], entry.item.backups || []); merged[entry.item.id] = kept.id; if (!kept.image && entry.item.image) kept.image = entry.item.image; if (!kept.epgId && entry.item.epgId) kept.epgId = entry.item.epgId; }); ranked.some(function (entry) { if (/[a-z]/.test(entry.name)) { chosenName = entry.name; return true; } return false; }); kept.name = chosenName; kept.categoryIds = unique(categoryIds); kept.backups = unique(urls.filter(function (url) { return url && url !== kept.url; })); result.push(kept); });
         return { items: result, categories: usedCategories(result, catalog.categories, '__tuner_us', 'USA'), merged: merged };
     }
-    // Copies of one movie fold into the newest; a copy in a category the USA filter keeps comes before a newer
-    // copy filed under a foreign tag (usually dubbed), so USA only never plays the foreign one.
+    // Re-uploads of one movie (docs/browse.md, Copies of one title): uploads whose names are equal once lower-cased and
+    // stripped to a-z and 0-9 are one movie, except that uploads listed only in foreign categories fold among
+    // themselves, so a dubbed copy never backs up the US one. Each group keeps its newest upload (on a tie the first);
+    // the others become its backups, newest first, and their ids its aliases; categories merge; a missing TMDB id,
+    // year or genre comes from the newest copy that has one.
     function foldMovies(items, categories) {
         var groups = Object.create(null), order = [], browse = root.TunerData && root.TunerData.browse, passes = browse ? browse.categoryCheck(categories) : function () { return true; };
-        items.forEach(function (item) { var key = text(item.name).toLowerCase().replace(/[^a-z0-9]/g, '') || item.id; if (!groups[key]) { groups[key] = []; order.push(key); } groups[key].push(item); });
+        items.forEach(function (item, index) {
+            var name = text(item.name).toLowerCase().replace(/[^a-z0-9]/g, ''), key = name ? (passes(item) ? 'p:' : 'f:') + name : 'i:' + item.id, added = Number(item.added) || 0;
+            if (!groups[key]) { groups[key] = []; order.push(key); }
+            groups[key].push({ item: item, index: index, added: added > 1e11 ? Math.floor(added / 1000) : added });
+        });
         return order.map(function (key) {
-            var ranked = groups[key].length > 1 ? groups[key].map(function (item) { return { item: item, foreign: passes(item) ? 0 : 1 }; }).sort(function (a, b) { return a.foreign - b.foreign || (b.item.added || 0) - (a.item.added || 0); }) : [{ item: groups[key][0] }],
-                copies = ranked.map(function (entry) { return entry.item; }), kept = copy(copies[0]), ids = [], urls = [];
-            copies.forEach(function (item) { if (item.adult) kept.adult = true; if (!kept.tmdb && item.tmdb) kept.tmdb = item.tmdb; if (!kept.genre && item.genre) kept.genre = item.genre; ids = ids.concat(item.categoryIds); urls = urls.concat([item.url], item.backups || []); });
+            var copies = groups[key].sort(function (a, b) { return b.added - a.added || a.index - b.index; }), kept = copy(copies[0].item), ids = [], urls = [], aliases = [];
+            copies.forEach(function (entry, n) {
+                var item = entry.item;
+                if (item.adult) kept.adult = true;
+                if (!kept.tmdb && item.tmdb) kept.tmdb = item.tmdb;
+                if (!kept.year && item.year) kept.year = item.year;
+                if (!kept.genre && item.genre) kept.genre = item.genre;
+                ids = ids.concat(item.categoryIds); urls = urls.concat([item.url], item.backups || []);
+                if (n) aliases = aliases.concat([item.id], item.aliases || []);
+            });
             kept.categoryIds = unique(ids); kept.categoryId = kept.categoryIds[0] || ''; kept.backups = unique(urls.filter(function (url) { return url && url !== kept.url; }));
+            if (aliases.length) kept.aliases = unique(aliases.filter(function (id) { return id !== kept.id; }));
             return kept;
         });
     }
@@ -674,7 +736,7 @@
             movieInfo: function (movie) { if (cancelled) return root.Promise.reject(aborted()); if (source.type !== 'xtream') return root.Promise.resolve(copy(movie)); var cacheKey = 'm:' + movie.id, token = generation; if (details[cacheKey]) return root.Promise.resolve(details[cacheKey]); return json(api(source, 'get_vod_info', { vod_id: movie.streamId || movie.id.replace(/^m:/, '') }), 25000).then(function (payload) { if (cancelled || token !== generation) throw aborted(); var info = payload.info || {}, result = { plot: text(info.plot || info.description), cast: text(info.cast || info.actors), director: text(info.director), genre: text(info.genre), year: text(info.releasedate || info.release_date || info.year).substring(0, 4), duration: text(info.duration), rating: text(info.rating), image: safeUrl(info.movie_image || info.cover_big), backdrop: safeUrl(first(info.backdrop_path)) }; details[cacheKey] = result; return result; }); } };
     }
     root.TunerData = { createStore: createStore, createClient: createClient, sourceKey: sourceKey, catalogIdentity: catalogIdentity, normalizeSource: normalizeSource, categoryItems: categoryItems,
-        parseXtream: parseXtream, parseCategories: parseCategories, parseM3u: parseM3u, usPolicy: usPolicy, allPolicy: allPolicy, localPolicy: localPolicy, foldLive: foldLive, foldMovies: foldMovies,
+        parseXtream: parseXtream, parseCategories: parseCategories, parseM3u: parseM3u, usPolicy: usPolicy, allPolicy: allPolicy, localPolicy: localPolicy, foldLive: foldLive, foldMovies: foldMovies, providerYear: providerYear, spaceText: spaceText, text: text,
         adultName: adultName, isAdultCategory: isAdultCategory, adultFilter: adultFilter, hashPasscode: hashPasscode, createPasscodeLock: createPasscodeLock,
         parseGuide: parseGuide, parseSeriesInfo: parseSeriesInfo, parseXmltv: parseXmltv, parseXmltvAsync: parseXmltvAsync, xmlTime: xmlTime, marketForZip: marketForZip, displayName: displayName, idleEvent: idleEvent, offAir: offAir };
 }(typeof window !== 'undefined' ? window : this));
@@ -689,8 +751,7 @@
    rows arrive). Lists are arrays of title positions, sorted on first use and kept until the next match. */
 (function (root) {
     'use strict';
-    var D = root.TunerData;
-    function text(value) { return value === null || value === undefined ? '' : String(value).replace(/^\s+|\s+$/g, ''); }
+    var D = root.TunerData, text = D.text;
     function map() { return Object.create(null); }
 
     // Streaming services in Home's order, with the words that put a provider category in one.
@@ -700,65 +761,156 @@
     var SERVICE_WORDS = { netflix: /NETFLIX/, disney: /DISNEY/, max: /HBO|(^|[^A-Z0-9])MAX([^A-Z0-9]|$)/, prime: /AMAZON|(^|[^A-Z0-9])PRIME([^A-Z0-9]|VIDEO|$)/,
         apple: /APPLE/, hulu: /HULU/, paramount: /PARAMOUNT/, peacock: /PEACOCK/ };
 
+    // ---------------------------------------------------------------- spaces and letter case
+    // docs/browse.md, Spaces and letter case. spaces(): the Unicode spaces become U+0020 before any rule below reads a
+    // text. rx() builds the doc's patterns as written, except that it spells their \s out as tab, line feed, vertical
+    // tab, form feed, carriage return and space: what \s means in every engine once the Unicode spaces are gone, which
+    // older TV browsers' own \s (it also takes U+180E) does not give. Rules that ignore case use the i flag without u,
+    // which ignores the case of ASCII letters only: ES5's Canonicalize never maps a character beyond ASCII to an ASCII
+    // one, so ſ is not s, the Kelvin sign is not k and neither falls inside [A-Za-z].
+    var spaces = D.spaceText;
+    function rx(source, flags) { return new RegExp(source.replace(/\\s/g, '[ \\t\\n\\x0B\\f\\r]'), flags || ''); }
+    // Normalize step 1 and the year from a name: the Unicode spaces become spaces, then tab, line feed, vertical tab,
+    // form feed, carriage return and space go from both ends, and nothing else (U+001C to U+001F, U+180E and U+200B
+    // stay). A name made only of tags then reads alike whether or not the provider trimmed it: " - 1999" is "- 1999".
+    // A loop over the character codes, not ^[ \t\n\x0B\f\r]+|[ \t\n\x0B\f\r]+$, whose time grows with the square of a
+    // run of spaces inside the name (docs/browse.md, Trimming).
+    var EDGE = { 9: true, 10: true, 11: true, 12: true, 13: true, 32: true };
+    function trimmed(name) {
+        var s = spaces(name), start = 0, end = s.length;
+        while (start < end && EDGE[s.charCodeAt(start)] === true) start++;
+        while (end > start && EDGE[s.charCodeAt(end - 1)] === true) end--;
+        return start === 0 && end === s.length ? s : s.substring(start, end);
+    }
+
     // ---------------------------------------------------------------- titles
-    // A pipe-delimited tag is short and upper case ("|EN|", "| 4K |"): "EN | The Matrix | 1999" keeps its title.
-    var TAGS = /\[[^\]]*\]|\{[^}]*\}|\|\s*[A-Z0-9+]{1,6}\s*\||\([0-9]{4}\)|\([A-Z0-9 +]{1,4}\)/g;
-    var PREFIX = /^\s*[A-Z0-9+]{2,4}(?:-[A-Z0-9+]{2,4})*\s*(?:\|\s*|[:\-]\s+)/;
-    var SUFFIX = /\s(?:\||-)\s*[A-Z0-9+]{2,4}\s*$/;
-    var QUALITY = { '4k': true, uhd: true, hd: true, fhd: true, hdr: true, hdr10: true, '1080p': true, '720p': true, '2160p': true };
+    // Normalize (docs/browse.md, Matching step 4, and its patterns). Steps 2 and 3 are case-sensitive: only short
+    // upper-case tags go, so "EN | The Matrix | 1999" keeps its title. A year is never a leading tag ("2012 | 1999 |
+    // EN" keeps 2012). whole: skip steps 3.1, 3.2 and 3.4 (the second lookup, "CSI: Miami").
+    // TAG: a short upper-case code, or a quality word where no short upper-case code followed by \s or the end fits, so
+    // "4K" or "HD" matches one way only and YEAR_END gives up on "Movie - 1999 - 4K - ... - 4K - Extended" at once.
+    var TAG = '[A-Z0-9+]{2,4}|(?![A-Z0-9+]{2,4}(\\s|$))([48][Kk]|[UuFf]?[Hh][Dd]|[Ss][Dd]|[Hh][Dd][Rr](10)?|(1080|720|2160)[Pp])';
+    var BRACKETS = rx('\\[[^\\]]*\\]|\\{[^}]*\\}|\\(\\s*(18|19|20)[0-9]{2}\\s*\\)|\\([A-Z0-9 +.]{1,6}\\)', 'g');
+    var LEADING = rx('^\\s*(\\|\\s*[A-Z0-9+]{1,6}\\s*\\|\\s*|(?!(18|19|20)[0-9]{2}([^A-Z0-9+]|$))[A-Z0-9+]{2,4}(\\s*[-_]\\s*[A-Z0-9+]{2,4})*\\s*(\\|\\s*|([:-]|–)\\s+))');
+    var TRAILING = rx('\\s(\\||-|–)\\s*(' + TAG + ')\\s*$');
+    var PIPES = rx('\\|\\s*[A-Z0-9+]{1,6}\\s*\\|', 'g');
+    var YEAR_BRACKETS = rx('[(\\[]\\s*((18|19|20)[0-9]{2})\\s*[)\\]]');
+    var YEAR_END = rx('\\s(\\||-|–)\\s*((18|19|20)[0-9]{2})(\\s+(\\||-|–)\\s*(?!(18|19|20)[0-9]{2}(\\s|$))(' + TAG + '))*\\s*$');
+    var QUALITY = { '4k': true, '8k': true, uhd: true, fhd: true, hd: true, sd: true, hdr: true, hdr10: true, '1080p': true, '720p': true, '2160p': true };
     var FOLD = { 'æ': 'ae', 'œ': 'oe', 'ø': 'o', 'ß': 'ss', 'đ': 'd', 'ł': 'l', 'ð': 'd', 'þ': 'th' };
-    // Normalized title for matching: lower case; no trailing (YYYY), bracketed or pipe-delimited tags or
-    // "US -" style prefixes; no quality words; & becomes and; no punctuation; single spaces; no leading "the".
-    function normalizeTitle(name) {
-        var s = text(name), i, stripped, words, out = [];
-        if (/[\[{|(]/.test(s)) s = s.replace(TAGS, ' ');
-        if (/[|:\-]/.test(s)) {
-            for (i = 0; i < 3; i++) { stripped = s.replace(PREFIX, ''); if (stripped === s) break; s = stripped; }
-            s = s.replace(SUFFIX, '');
-        }
+    // Browsers without String.prototype.normalize fold with a table: what steps 4 and 7 (NFKD, then U+0300 to U+036F
+    // removed) give for the letters of Latin-1, Latin Extended-A and -B, the ligatures U+FB00 to U+FB06, the Kelvin
+    // and Angstrom signs, the fullwidth digits and letters, the Roman numerals and the circled numbers and letters, in
+    // upper and lower case. Characters whose result has no a-z or 0-9 are left alone (step 8 makes a space of either).
+    // Any other character beyond ASCII stays and becomes a space in step 8. tests/browse.test.cjs checks the table
+    // against NFKD for every character of these ranges.
+    var LATIN = map(), ROMAN = 'i ii iii iv v vi vii viii ix x xi xii l c d m'.split(' ');
+    var UNFOLDED = /[\u00a0-\u024f\u2160-\u217f\u2460-\u2473\u24b6-\u24e9\ufb00-\ufb06\uff10-\uff5a\u212a\u212b]/g;
+    (function (bases) { Object.keys(bases).forEach(function (base) { bases[base].split('').forEach(function (ch) { LATIN[ch] = base; }); }); }({
+        a: 'ªÀÁÂÃÄÅàáâãäåĀāĂăĄąǍǎǞǟǠǡǺǻȀȁȂȃȦȧ\u212b', ae: 'ÆæǢǣǼǽ', c: 'ÇçĆćĈĉĊċČč', d: 'ÐðĎďĐđ', dz: 'ǄǅǆǱǲǳ', e: 'ÈÉÊËèéêëĒēĔĕĖėĘęĚěȄȅȆȇȨȩ',
+        ff: 'ﬀ', ffi: 'ﬃ', ffl: 'ﬄ', fi: 'ﬁ', fl: 'ﬂ', g: 'ĜĝĞğĠġĢģǦǧǴǵ', h: 'ĤĥȞȟ', i: 'ÌÍÎÏìíîïĨĩĪīĬĭĮįİǏǐȈȉȊȋ', ij: 'Ĳĳ', j: 'Ĵĵǰ',
+        k: 'ĶķǨǩ\u212a', l: 'ĹĺĻļĽľŁł', 'l ': 'Ŀŀ', lj: 'Ǉǈǉ', n: 'ÑñŃńŅņŇňǸǹ', nj: 'Ǌǋǌ',
+        o: 'ºÒÓÔÕÖØòóôõöøŌōŎŏŐőƠơǑǒǪǫǬǭǾǿȌȍȎȏȪȫȬȭȮȯȰȱ', oe: 'Œœ', r: 'ŔŕŖŗŘřȐȑȒȓ', s: 'ŚśŜŝŞşŠšſȘș', ss: 'ß', st: 'ﬅﬆ', t: 'ŢţŤťȚț',
+        th: 'Þþ', u: 'ÙÚÛÜùúûüŨũŪūŬŭŮůŰűŲųƯưǓǔǕǖǗǘǙǚǛǜȔȕȖȗ', w: 'Ŵŵ', y: 'ÝýÿŶŷŸȲȳ', z: 'ŹźŻżŽž',
+        ' n': 'ŉ', '1': '¹', '2': '²', '3': '³', '1 2': '½', '1 4': '¼', '3 4': '¾' }));
+    function unfold(ch) {
+        var c = ch.charCodeAt(0);
+        if (c >= 0xff10 && c <= 0xff19) return String.fromCharCode(c - 0xfee0);         // fullwidth digits
+        if (c >= 0xff21 && c <= 0xff3a) return String.fromCharCode(c - 0xfec0);         // fullwidth A-Z, as a-z
+        if (c >= 0xff41 && c <= 0xff5a) return String.fromCharCode(c - 0xfee0);         // fullwidth a-z
+        if (c >= 0x2160 && c <= 0x217f) return ROMAN[c & 15];                            // Roman numerals, upper and lower case
+        if (c >= 0x2460 && c <= 0x2473) return String(c - 0x245f);                       // circled 1-20
+        if (c >= 0x24b6 && c <= 0x24e9) return String.fromCharCode(97 + (c - 0x24b6) % 26); // circled A-Z, a-z
+        return LATIN[ch] || ch;
+    }
+    // Steps 3.1 and 3.2: up to three leading tags, then trailing tags, the last one first, while one ends the name.
+    function ends(s) {
+        var i, stripped;
+        for (i = 0; i < 3; i++) { stripped = s.replace(LEADING, ''); if (stripped === s) break; s = stripped; }
+        for (;;) { stripped = s.replace(TRAILING, ''); if (stripped === s) break; s = stripped; }
+        return s;
+    }
+    function normalizeTitle(name, whole) {
+        var s = trimmed(name), i, words, out = [];
+        if (/[\[{(]/.test(s)) s = s.replace(BRACKETS, ' ');
+        if (!whole && /[|:-]|–/.test(s)) s = ends(s);
+        if (s.indexOf('|') >= 0) s = s.replace(PIPES, ' ');
+        if (!whole && /[|:-]|–/.test(s)) s = ends(s);
         s = s.toLowerCase();
         if (s.indexOf('&') >= 0) s = s.replace(/&/g, ' and ');
-        if (s.indexOf("'") >= 0 || /[`´’]/.test(s)) s = s.replace(/['`´’]/g, '');
+        if (/['`´’]/.test(s)) s = s.replace(/['`´’]/g, '');
         if (/[^\x00-\x7f]/.test(s)) {
-            if (s.normalize) s = s.normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
-            s = s.replace(/[æœøßđłðþ]/g, function (ch) { return FOLD[ch]; });
+            s = s.normalize ? s.normalize('NFKD') : s.replace(UNFOLDED, unfold);
+            s = s.replace(/[\u0300-\u036f]/g, '').replace(/[æœøßđłðþ]/g, function (ch) { return FOLD[ch]; });
         }
         words = s.split(/[^a-z0-9]+/);
         for (i = 0; i < words.length; i++) if (words[i] && !QUALITY[words[i]]) out.push(words[i]);
         if (out.length > 1 && out[0] === 'the') out.shift();
         return out.join(' ');
     }
-    // The release year of a catalogue title: its year field, else "(2021)", "[2021]", " - 2021" or " | 2021" in the name.
+    // The release year of a catalogue title: the provider's year fields, else the first year in brackets, "(2021)",
+    // "[2021]" or the mixed "(2021]" (YEAR_BRACKETS), else the year among the trailing tags of step 3.2 nearest the
+    // end (YEAR_END: "Heat - 1995 - 4K", "2012 | 1999 | EN" gives 1999). "Blade Runner 2049" has none. 0 when none.
     function titleYear(item) {
-        var year = text(item && item.year).substring(0, 4), name = text(item && item.name), match;
-        if (/^(19|20)[0-9]{2}$/.test(year)) return Number(year);
-        match = (name.indexOf('(') >= 0 || name.indexOf('[') >= 0 ? /[(\[]\s*((?:19|20)[0-9]{2})\s*[)\]]/.exec(name) : null) ||
-            (name.indexOf('-') >= 0 || name.indexOf('|') >= 0 ? /\s[-|]\s*((?:19|20)[0-9]{2})\s*$/.exec(name) : null);
-        return match ? Number(match[1]) : 0;
+        var name = trimmed(item && item.name), match = D.providerYear(item || {});
+        if (match) return Number(match);
+        match = /[(\[]/.test(name) ? YEAR_BRACKETS.exec(name) : null;
+        if (match) return Number(match[1]);
+        match = /[|-]|–/.test(name) ? YEAR_END.exec(name) : null;
+        return match ? Number(match[2]) : 0;
     }
 
     // ---------------------------------------------------------------- the USA filter
-    // A category fails the USA filter when its name carries a non-US country or language tag: an upper-case
-    // code as a whole word or a "XX |", "|XX|", "XX:" prefix; IN and IT only next to a separator or at an
-    // end ("MOVIES IN 4K" is English); or the country or language written out.
-    var FOREIGN_CODE = /(^|[^A-Za-z0-9])(FR|DE|ES|LAT|MX|BR|PT|TR|AR|HINDI|PK|NL|PL|RO|RU|UK|CA)([^A-Za-z0-9]|$)/;
-    var FOREIGN_TAG = /^\s*(IN|IT)([^A-Za-z0-9]|$)|(^|[^A-Za-z0-9])(IN|IT)\s*$|([|:\[\]()\/\-]|–)\s*(IN|IT)([^A-Za-z0-9]|$)|(^|[^A-Za-z0-9])(IN|IT)\s*([|:\[\]()\/\-]|–)/;
-    var FOREIGN_WORD = /(^|[^a-z])(french|france|german|germany|deutsch|italian|italiano|italia|italy|spanish|espanol|español|spain|castellano|latino|latina|latam|mexico|mexican|brazil|brasil|brazilian|portuguese|portugal|turkish|turkey|arabic|arab|india|indian|hindi|bollywood|tamil|telugu|malayalam|punjabi|pakistan|pakistani|urdu|dutch|netherlands|polish|poland|polska|romanian|romania|russian|russia|british|canada|canadian|quebec)([^a-z]|$)/i;
-    function isForeignCategory(name) { name = text(name); return !!name && (FOREIGN_CODE.test(name) || FOREIGN_TAG.test(name) || FOREIGN_WORD.test(name)); }
+    // The category filter (docs/browse.md): a name is foreign when any of the four patterns matches, on the name with
+    // the Unicode spaces replaced. 1: a country or language code in upper case as a whole word; 2: IN or IT in upper
+    // case, only as a tag ("MOVIES IN 4K" is English); 3: a code in any ASCII letter case written as a tag ("Fr |
+    // Films", "[ru] Kino"); 4: a country or language written out, in any ASCII letter case. No lookbehind: older
+    // Samsung and LG browsers reject it.
+    var CODES = 'FR|DE|ES|LAT|MX|BR|PT|TR|AR|PK|NL|PL|RO|RU|UK|CA|AF';
+    var WORDS = 'french|france|german|germany|deutsch|italian|italiano|italia|italy|spanish|espa(n|ñ|Ñ)ol|spain|castellano|latino|latina|latam|' +
+        'mexico|mexican|brazil|brasil|brazilian|portuguese|portugal|turkish|turkey|arab|arabic|india|indian|hindi|bollywood|tamil|telugu|' +
+        'malayalam|kannada|bengali|punjabi|pakistan|pakistani|urdu|dutch|netherlands|polish|poland|polska|romanian|romania|russian|russia|' +
+        'british|canada|canadian|quebec|korean|japanese|chinese|filipino|vietnamese|thai|persian|farsi|greek|albanian|kurdish';
+    var FOREIGN = [
+        rx('(^|[^A-Za-z0-9])(' + CODES + ')([^A-Za-z0-9]|$)'),
+        rx('(^|[^A-Za-z0-9])(IN|IT)\\s*([|:\\[\\]()/-]|–|$)'),
+        rx('^[^A-Za-z0-9]*(' + CODES + ')\\s*([|:\\])/-]|–)|\\|\\s*(' + CODES + ')\\s*\\||\\[\\s*(' + CODES + ')\\s*\\]|\\(\\s*(' + CODES + ')\\s*\\)', 'i'),
+        rx('(^|[^A-Za-z])(' + WORDS + ')([^A-Za-z]|$)', 'i')
+    ];
+    function isForeignCategory(name) { name = spaces(name); return !!name && (FOREIGN[0].test(name) || FOREIGN[1].test(name) || FOREIGN[2].test(name) || FOREIGN[3].test(name)); }
     function categoryServices(name) { var upper = text(name).toUpperCase(); return SERVICES.filter(function (service) { return SERVICE_WORDS[service.key].test(upper); }).map(function (service) { return service.key; }); }
-    // USA only: a title shows when its category passes and, if it is matched to TMDB and TMDB gave its
-    // countries, they include US. An empty origin is unknown: the category alone decides.
-    function usaAllowed(categoryPasses, origin) {
-        if (!categoryPasses) return false;
-        if (!origin || !origin.length) return true;
-        return origin.indexOf('US') >= 0;
+    // Origin countries (docs/browse.md): an entry is a country when, with the Unicode spaces replaced, it is two ASCII
+    // letters with nothing but \s around them (COUNTRY); the country is those letters in ASCII upper case. Every other
+    // entry is ignored ("USA", "U.S.", "uſ", a fullwidth "ＵＳ", a value that is not a string), so ["USA"] is unknown,
+    // as [] is. COUNTRY is checked before upper-casing: "uſ".toUpperCase() is "US".
+    var COUNTRY = rx('^\\s*([A-Za-z]{2})\\s*$');
+    function originCountries(origin) {
+        var out = [], i, match;
+        if (!Array.isArray(origin)) return out;
+        for (i = 0; i < origin.length; i++) {
+            match = typeof origin[i] === 'string' ? COUNTRY.exec(spaces(origin[i])) : null;
+            if (match) out.push(match[1].toUpperCase());
+        }
+        return out;
     }
-    // The category check alone, for one catalogue's categories: item => whether it passes (no category, an
-    // unknown one, or one without a non-US tag). The index applies the same rule.
+    // USA only: a title shows when its category passes and, if it is matched to TMDB and its origin holds a country,
+    // the countries include US. An origin without one is unknown: the category alone decides.
+    function usaAllowed(categoryPasses, origin) {
+        var countries;
+        if (!categoryPasses) return false;
+        countries = originCountries(origin);
+        return !countries.length || countries.indexOf('US') >= 0;
+    }
+    // The category check alone, for one catalogue's categories: item => whether it passes. Ids missing from the
+    // categories are left out; it passes when none is left or at least one of them is not foreign.
     function categoryCheck(categories) {
-        var foreign = map();
-        (categories || []).forEach(function (cat) { if (cat && isForeignCategory(cat.name)) foreign[cat.id] = true; });
-        return function (item) { var ids = (item && item.categoryIds) || [], i; if (!ids.length) return true; for (i = 0; i < ids.length; i++) if (!foreign[ids[i]]) return true; return false; };
+        var passes = map();
+        (categories || []).forEach(function (cat) { if (cat) passes[cat.id] = !isForeignCategory(cat.name); });
+        return function (item) {
+            var ids = (item && item.categoryIds) || [], known = false, i;
+            for (i = 0; i < ids.length; i++) { if (passes[ids[i]] === true) return true; if (passes[ids[i]] === false) known = true; }
+            return !known;
+        };
     }
 
     // ---------------------------------------------------------------- genres
@@ -817,7 +969,7 @@
         var id = text(raw.id);
         if (!/^[0-9]+$/.test(id)) return null;
         return { id: id, title: text(raw.title), original_title: text(raw.original_title), year: Number(text(raw.year).substring(0, 4)) || 0,
-            origin: Array.isArray(raw.origin) ? raw.origin.map(function (c) { return text(c).toUpperCase(); }).filter(Boolean) : [],
+            origin: originCountries(raw.origin),
             genres: Array.isArray(raw.genres) ? raw.genres.map(text).filter(function (g) { return /^[0-9]+$/.test(g); }) : [] };
     }
     function rowsList(value) { return Array.isArray(value) ? value.slice(0, 200).map(rowsItem).filter(Boolean) : []; }
@@ -884,19 +1036,22 @@
     // step(budget) prepares up to budget titles and returns true once all are done; index is then ready for matchIndex.
     function createIndexBuilder(kind, items, categories) {
         items = items || [];
-        var cats = map(), index = { kind: kind, section: kind === 'series' ? 'tv' : 'movie', titles: [], byId: map(), cats: cats, catServices: map(), lists: map(), fixed: map(), rows: null, matched: 0, genres: [] }, at = 0;
+        var cats = map(), index = { kind: kind, section: kind === 'series' ? 'tv' : 'movie', titles: [], byId: map(), cats: cats, catServices: map(), lists: map(), fixed: map(), rows: null, matched: 0, genres: [] }, at = 0, aliased = false;
         SERVICES.forEach(function (service) { index.catServices[service.key] = []; });
         (categories || []).forEach(function (cat) { cats[cat.id] = { ok: !isForeignCategory(cat.name), services: categoryServices(cat.name), genres: categoryGenreTokens(cat.name) }; });
         return { index: index, step: function (budget) {
-            var end = Math.min(items.length, at + (budget > 0 ? budget : items.length)), item, entry, ids, info, i, j, ok, services, rating, added;
+            var end = Math.min(items.length, at + (budget > 0 ? budget : items.length)), item, entry, ids, info, i, j, ok, known, services, rating, added;
             for (; at < end; at++) {
-                item = items[at]; ids = item.categoryIds || []; ok = !ids.length; services = [];
+                // The category filter: ids missing from the categories are left out; it passes when none is left or one passes.
+                item = items[at]; ids = item.categoryIds || []; ok = false; known = false; services = [];
                 for (i = 0; i < ids.length; i++) {
                     info = cats[ids[i]];
-                    if (!info) { ok = true; continue; }
+                    if (!info) continue;
+                    known = true;
                     if (info.ok) ok = true;
                     for (j = 0; j < info.services.length; j++) if (services.indexOf(info.services[j]) < 0) services.push(info.services[j]);
                 }
+                if (!known) ok = true;
                 rating = Number(item.rating) || 0;
                 // Seconds, as Xtream gives them; a feed in milliseconds is brought to seconds.
                 added = Number(item.added) || 0;
@@ -907,7 +1062,16 @@
                 for (j = 0; j < services.length; j++) index.catServices[services[j]].push(index.titles.length);
                 index.titles.push(entry);
             }
-            return at >= items.length;
+            if (at < items.length) return false;
+            // Uploads folded into a movie (foldMovies) still answer to their ids, unless another title has one.
+            if (!aliased) {
+                aliased = true;
+                for (i = 0; i < index.titles.length; i++) {
+                    ids = index.titles[i].item.aliases || [];
+                    for (j = 0; j < ids.length; j++) if (index.byId[ids[j]] === undefined) index.byId[ids[j]] = i;
+                }
+            }
+            return true;
         } };
     }
     function tmdbLookup(section) {
@@ -925,10 +1089,17 @@
     }
     // 1. A provider TMDB id matches on the id alone. 2. Otherwise the normalized title must match and the years
     // may differ by 1 (an exact year wins). A title without a year matches only when one TMDB title has that name.
-    function matchTmdb(lookup, hint, norm, year) {
-        var candidates, best = null, i, c;
+    // name: the provider's name, looked up again without its leading and trailing tags removed when the normalized
+    // title finds nothing ("CSI: Miami" is tried as "miami", then as "csi miami").
+    function matchTmdb(lookup, hint, norm, year, name) {
+        var found, whole;
         if (hint) return lookup.byId[hint] || null;
-        candidates = norm ? lookup.byTitle[norm] : null;
+        found = matchTitle(lookup, norm, year);
+        if (!found && name && /[|:-]|–/.test(name)) { whole = normalizeTitle(name, true); if (whole !== norm) found = matchTitle(lookup, whole, year); }
+        return found;
+    }
+    function matchTitle(lookup, key, year) {
+        var candidates = key ? lookup.byTitle[key] : null, best = null, i, c;
         if (!candidates) return null;
         if (!year) return candidates.length === 1 ? candidates[0] : null;
         for (i = 0; i < candidates.length; i++) {
@@ -949,7 +1120,7 @@
             step: function (budget) {
                 var end = Math.min(titles.length, at + (budget > 0 ? budget : titles.length)), entry, m, ids, g, i;
                 for (; at < end; at++) {
-                    entry = titles[at]; m = matchTmdb(lookup, entry.hint, entry.norm, entry.year); ids = entry.item.categoryIds || []; g = '';
+                    entry = titles[at]; m = matchTmdb(lookup, entry.hint, entry.norm, entry.year, entry.item.name); ids = entry.item.categoryIds || []; g = '';
                     if (m) { matched++; g = m.g; (byTmdb[m.id] || (byTmdb[m.id] = [])).push(at); }
                     if (!g && entry.pg) g = genreKeys(entry.pg, table, false);
                     if (!g) for (i = 0; i < ids.length; i++) if (catKeys[ids[i]]) g += g ? catKeys[ids[i]].substring(1) : catKeys[ids[i]];
@@ -965,8 +1136,8 @@
                 function mark(found, target) { Object.keys(found).forEach(function (g) { g.split('|').forEach(function (key) { if (key) target[key] = true; }); }); }
                 for (i = 0; i < titles.length; i++) { titles[i].tmdb = result.tmdb[i] || ''; titles[i].us = result.us[i] !== undefined ? result.us[i] : titles[i].ok; titles[i].g = result.g[i] || ''; }
                 mark(used, keys); mark(usUsed, usKeys);
-                // Copies of one TMDB title: the ones that pass the USA filter first.
-                Object.keys(byTmdb).forEach(function (id) { var group = byTmdb[id]; if (group.length > 1) byTmdb[id] = group.filter(function (p) { return titles[p].us; }).concat(group.filter(function (p) { return !titles[p].us; })); });
+                // Copies of one TMDB title, best first: those that pass USA only, then the newest, then catalogue order.
+                Object.keys(byTmdb).forEach(function (id) { var group = byTmdb[id]; if (group.length > 1) group.sort(function (a, b) { return (titles[b].us ? 1 : 0) - (titles[a].us ? 1 : 0) || titles[b].added - titles[a].added || a - b; }); });
                 index.rows = section; index.byTmdb = byTmdb; index.matched = matched; index.lists = map();
                 // The Genre choices: genres some title has (usGenres: some title USA only shows).
                 all = table.open ? Object.keys(table.names).map(function (key) { return { key: key, name: table.names[key] }; }).sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; }) : table.list;
@@ -1017,14 +1188,19 @@
     // opts: usOnly, genre ('' for all).
     function visible(entry, opts) { return (!opts.usOnly || entry.us) && (!opts.genre || entry.g.indexOf('|' + opts.genre + '|') >= 0); }
     // Up to limit visible titles of a list from cursor, one per TMDB title (opts.seen is shared by one row or grid).
+    // A TMDB title stands where its first visible copy stands and shows its best visible copy (index.byTmdb order).
     // Returns { picked: [position], cursor, done }.
     function pick(index, key, opts, cursor, limit) {
-        var list = listOf(index, key), picked = [], i = cursor || 0, seen = opts.seen || (opts.seen = map()), entry, id;
+        var list = listOf(index, key), picked = [], i = cursor || 0, seen = opts.seen || (opts.seen = map()), entry, id, group, best, j;
         while (i < list.length && picked.length < limit) {
             entry = index.titles[list[i]];
             if (visible(entry, opts)) {
                 id = entry.tmdb ? 't' + entry.tmdb : 'i' + entry.item.id;
-                if (!seen[id]) { seen[id] = true; picked.push(list[i]); }
+                if (!seen[id]) {
+                    seen[id] = true; best = list[i]; group = entry.tmdb && index.byTmdb ? index.byTmdb[entry.tmdb] : null;
+                    for (j = 0; group && j < group.length; j++) if (visible(index.titles[group[j]], opts)) { best = group[j]; break; }
+                    picked.push(best);
+                }
             }
             i++;
         }
@@ -1094,7 +1270,7 @@
         return null;
     }
 
-    D.browse = { SERVICES: SERVICES, ROWS_URL: ROWS_URL, ROWS_KEY: ROWS_KEY, normalizeTitle: normalizeTitle, titleYear: titleYear, isForeignCategory: isForeignCategory, categoryCheck: categoryCheck,
+    D.browse = { SERVICES: SERVICES, ROWS_URL: ROWS_URL, ROWS_KEY: ROWS_KEY, normalizeTitle: normalizeTitle, titleYear: titleYear, isForeignCategory: isForeignCategory, originCountries: originCountries, categoryCheck: categoryCheck,
         categoryServices: categoryServices, usaAllowed: usaAllowed, parseRows: parseRows, hasTmdb: hasTmdb, rowsFreshness: rowsFreshness, createRowsClient: createRowsClient,
         createIndexBuilder: createIndexBuilder, createMatcher: createMatcher, matchIndex: matchIndex, buildIndex: buildIndex, matchTmdb: matchTmdb, listOf: listOf, visible: visible, pick: pick,
         homeRowSpecs: homeRowSpecs, discoverLists: discoverLists, homeRows: homeRows, continueWatching: continueWatching, episodeToOpen: episodeToOpen };

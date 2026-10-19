@@ -129,13 +129,15 @@ public struct Movie: Codable, Sendable, Hashable, Identifiable {
     public var url: URL
     /// Other playable uploads of the same film (newest first).
     public var backups: [URL]
-    /// Unix seconds; 0 when unknown.
+    /// Unix seconds (a provider value in milliseconds is divided by 1000); 0 when unknown.
     public var added: Int64
     public var containerExtension: String?
-    /// "2023": provider `year`, else first 4 chars of `releaseDate`/`release_date`/`releasedate`, else a trailing
-    /// "(YYYY)" in the name.
+    /// "2023" (docs/browse.md, "Year of a provider title"): the first of `year`, `releaseDate`, `release_date` and
+    /// `releasedate` that starts with a year from 1800 to 2099, else the name's first year in brackets or the year among its
+    /// trailing tags ("Heat - 1995 - 4K"), all read with the Unicode spaces replaced (`TitleNormalizer.year(fields:name:)`).
     public var year: String?
-    /// Provider `tmdb` / `tmdb_id` (docs/browse.md matching step 1).
+    /// The provider TMDB id: the first usable `tmdb`, `tmdb_id`, `info.tmdb_id` or `info.tmdb` (docs/browse.md matching
+    /// step 1).
     public var tmdbID: Int?
     /// Provider `genre` text when the list carries it ("Action, Drama").
     public var genre: String?
@@ -165,7 +167,7 @@ public struct Series: Codable, Sendable, Hashable, Identifiable {
     public var genre: String?
     public var year: String?
     public var backdrop: URL?
-    /// `last_modified`, unix seconds; 0 when unknown.
+    /// `last_modified`, unix seconds (a provider value in milliseconds is divided by 1000); 0 when unknown.
     public var added: Int64
     public var categoryID: String
     public var categoryIDs: [String]

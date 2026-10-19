@@ -72,6 +72,28 @@ class BrowseLibraryTest {
         assertNull(shows.getValue("8").tmdb)
     }
 
+    @Test fun xtreamYearsAndDatesFollowTheSharedRules() {
+        val x = Xtream(Source("1", "t", SourceType.XTREAM, "http://host:8080", "user", "pass"))
+        val movies = temporary.newFile("vod.json").apply { writeText("""[
+            {"stream_id":1,"name":"A","category_id":"1","year":"20211","releaseDate":"2020-01-01","added":"1700000000000"},
+            {"stream_id":2,"name":"B","category_id":"1","year":"","release_date":"1850","added":"1700000000"},
+            {"stream_id":3,"name":"C","category_id":"1","year":"2150","releasedate":" 1999-05-01","info":{"tmdb":"77"}},
+            {"stream_id":4,"name":"D","category_id":"1","year":2004.0}]""") }
+        val parsed = x.parseMovies(movies).associateBy { it.id }
+        // The first of year, releaseDate, release_date and releasedate starting with 1800 to 2099 and no further digit.
+        assertEquals(listOf("2020", "1850", "1999", "2004"), listOf("m:1", "m:2", "m:3", "m:4").map { parsed.getValue(it).year })
+        // Milliseconds become seconds.
+        assertEquals(listOf(1_700_000_000L, 1_700_000_000L), listOf("m:1", "m:2").map { parsed.getValue(it).added })
+        assertEquals("77", parsed.getValue("m:3").tmdb)
+
+        val series = temporary.newFile("series.json").apply { writeText("""[
+            {"series_id":7,"name":"Show","category_id":"3","year":"2019","releaseDate":"2018-12-01","last_modified":"1700000000123"}]""") }
+        val show = x.parseSeries(series).single()
+        // Series read the same fields in the same order.
+        assertEquals("2019", show.year)
+        assertEquals(1_700_000_000L, show.added)
+    }
+
     @Test fun snapshotsAndDuplicateCleanupKeepTheBrowseFields() {
         val source = Source("account", "Playlist", SourceType.XTREAM, "https://example.invalid", "user", "password")
         val identity = CatalogSnapshots.identity(source, "ts", "")

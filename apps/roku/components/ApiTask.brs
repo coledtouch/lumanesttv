@@ -140,12 +140,6 @@ function grouped(categories as object, items as object) as object
     return {categories: used, byCat: byCat}
 end function
 
-' Categories plus "Other" for titles without one, as buildTitleSection expects.
-function withOther(categories as object) as object
-    categories.Push({id: "__other", name: "Other", adult: false})
-    return categories
-end function
-
 function xtreamCatalog(account as object, rowsJob as object) as dynamic
     base = xtreamBase(account)
     liveRows = xtreamGet(base, "get_live_streams")
@@ -174,8 +168,8 @@ function xtreamCatalog(account as object, rowsJob as object) as dynamic
     rows = rowsFinish(rowsJob)
     return {
         live: grouped(categoriesOf(xtreamGet(base, "get_live_categories")), live),
-        movies: buildTitleSection(movies, withOther(categoriesOf(xtreamGet(base, "get_vod_categories"))), rows.movie, rows.genres.movie, rx),
-        series: buildTitleSection(series, withOther(categoriesOf(xtreamGet(base, "get_series_categories"))), rows.tv, rows.genres.tv, rx),
+        movies: buildTitleSection(movies, categoriesOf(xtreamGet(base, "get_vod_categories")), rows.movie, rows.genres.movie, rx),
+        series: buildTitleSection(series, categoriesOf(xtreamGet(base, "get_series_categories")), rows.tv, rows.genres.tv, rx),
         moviePrefix: base.server + "/movie/" + base.user + "/" + base.pass + "/",
         rows: {source: rows.source, generated: rows.generated}
     }
@@ -240,7 +234,8 @@ function m3uCatalog(account as object, rowsJob as object) as dynamic
     seen = {live: {}, movies: {}, series: {}}
     pending = invalid
     for each raw in r.body.Tokenize(Chr(10))
-        line = raw.Trim()
+        ' trimField, not Trim, which may remove more than spaces from the ends of a title (docs/browse.md, "Trimming").
+        line = trimField(raw)
         if Left(line, 7) = "#EXTINF"
             ' The title follows the last comma outside quoted attributes.
             lastComma = 0
@@ -260,7 +255,7 @@ function m3uCatalog(account as object, rowsJob as object) as dynamic
             logo = ""
             m2 = logoRe.Match(line)
             if m2.Count() > 1 then logo = m2[1]
-            pending = {name: name.Trim(), group: group, icon: logo}
+            pending = {name: trimField(name), group: group, icon: logo}
         else if line <> "" and Left(line, 1) <> "#" and pending <> invalid
             lower = LCase(line)
             section = "live"
