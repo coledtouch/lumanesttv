@@ -41,6 +41,14 @@ jobs:
         run: chmod +x gradlew
       - name: Unit tests, lint and unsigned release build
         run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleRelease
+      # RegexPatternsTest writes every regex the app builds; the icu job below compiles them as a device would.
+      - name: Save the app's regexes for the ICU check
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: android-regex-patterns
+          path: apps/android/app/build/regex-patterns/patterns.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Save test reports
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -72,3 +80,27 @@ jobs:
           path: apps/android/app/build/reports/tests/
           if-no-files-found: ignore
           retention-days: 7
+
+  # Android compiles java.util.regex patterns with ICU, which rejects some patterns the JVM accepts (1.7.0 crashed at
+  # launch on a bare `}` that every unit test accepted). Compile every regex the app builds with ICU, using the
+  # NSRegularExpression of the Swift image the Apple TV Linux job uses (ICU's uregex, as on devices).
+  icu:
+    name: App regexes compile with ICU (as on devices)
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    container:
+      image: swift:6.3.3-noble@sha256:c2f3ac2eb806ce43f68859c3d52bd3bb1cfc88672fb3a948b76e136d98e39278
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: apps/android/tools
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: android-regex-patterns
+          path: regex-patterns
+      - name: Compile every app regex with ICU
+        run: |
+          swiftc -O apps/android/tools/icu-check.swift -o icu-check
+          ./icu-check regex-patterns/patterns.json 80
