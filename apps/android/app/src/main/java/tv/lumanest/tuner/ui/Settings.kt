@@ -49,6 +49,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.platform.LocalInputModeManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -86,6 +87,9 @@ fun SettingsScreen(state: AppState, store: Boolean = Edition.STORE) {
     val categoryOrder by Repo.prefs.categoryOrder.collectAsState()
     val subtitlesOn by Repo.prefs.subtitlesOn.collectAsState()
     val adultUnlocked by Repo.prefs.adultUnlocked.collectAsState()
+    val vodUsOnly by Repo.prefs.vodUsOnly.collectAsState()
+    val startOnLiveTv by Repo.prefs.startOnLiveTv.collectAsState()
+    val catalogRows by Repo.catalogRows.collectAsState()
     var passcodeDialog by remember { mutableStateOf<PasscodeMode?>(null) }
     var restoreAdult by remember { mutableStateOf(false) }
     val adultFocus = remember { FocusRequester() }
@@ -163,12 +167,38 @@ fun SettingsScreen(state: AppState, store: Boolean = Edition.STORE) {
             item {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp)) {
                     Text("Your library", color = Palette.accent, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                    Text("U.S. channels and your full movie and series library. All audio languages are available.", color = Palette.dim, fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.padding(top = 5.dp))
+                    Text("Your channels, movies and series. All audio languages are available.", color = Palette.dim, fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.padding(top = 5.dp))
                 }
             }
             item {
                 SettingRow("Theme", "True Black and more colors for your guide and library", trailing = Palette.theme.name,
                     modifier = Modifier.focusRequester(themeFocus), onClick = { themeSheet = true })
+            }
+            item(key = "start-on") {
+                SettingRow(
+                    "Start on",
+                    if (startOnLiveTv) "Tuner opens on the Live TV guide. Press OK to open on Home." else "Tuner opens on Home. Press OK to open on the Live TV guide.",
+                    trailing = if (startOnLiveTv) "Live TV" else "Home",
+                    onClick = {
+                        Repo.prefs.setStartOnLiveTv(!startOnLiveTv)
+                        Toasts.show(if (!startOnLiveTv) "Tuner will open on Live TV" else "Tuner will open on Home")
+                    },
+                )
+            }
+
+            header("Movies & Series")
+            item(key = "vod-us-only") {
+                SettingRow(
+                    "Movies & Series",
+                    if (vodUsOnly) "USA only: movies and series from the United States. Press OK to show every country."
+                    else "All: every movie and series on your line. Press OK to show USA titles only.",
+                    trailing = if (vodUsOnly) "USA only" else "All",
+                    modifier = Modifier.testTag("setting:vod-us-only"),
+                    onClick = {
+                        Repo.prefs.setVodUsOnly(!vodUsOnly)
+                        Toasts.show(if (!vodUsOnly) "Movies & Series: USA titles only" else "Movies & Series: every country on your line")
+                    },
+                )
             }
 
             header("Playback")
@@ -325,13 +355,19 @@ fun SettingsScreen(state: AppState, store: Boolean = Edition.STORE) {
                     onClick = { Repo.restoreHiddenChannels(); Toasts.show("Hidden channels restored") },
                 )
             }
-            // A focusable row, so the D-pad brings it into view like every other row. Selecting it only says where to
-            // read the policy: TV apps on Google Play must not open a web browser.
+            // Focusable rows, so the D-pad brings them into view like every other row. Selecting the privacy row only
+            // says where to read the policy: TV apps on Google Play must not open a web browser.
+            if (store || catalogRows.usesTmdb) header("About")
             if (store) {
-                header("About")
                 item(key = "privacy") {
                     SettingRow("Privacy policy", Edition.PRIVACY_URL,
                         onClick = { Toasts.show("Read it on your phone or computer at ${Edition.PRIVACY_URL}") })
+                }
+            }
+            // TMDB's terms ask for this notice wherever its data is used; only while the lists come from TMDB.
+            if (catalogRows.usesTmdb) {
+                item(key = "tmdb") {
+                    NoticeRow("Movie and series data", TMDB_NOTICE, Modifier.testTag("setting:tmdb"))
                 }
             }
             item {
@@ -407,6 +443,25 @@ fun SettingsScreen(state: AppState, store: Boolean = Edition.STORE) {
                 ),
                 onClose = { confirmDelete = null; state.restoreFocus = true },
             )
+        }
+    }
+}
+
+/** The attribution TMDB requires, shown in Settings > About while the popularity lists come from TMDB. */
+internal const val TMDB_NOTICE = "This product uses the TMDB API but is not endorsed or certified by TMDB."
+
+/** A focusable row whose text may wrap, for notices the remote must be able to scroll to. */
+@Composable
+private fun NoticeRow(title: String, text: String, modifier: Modifier = Modifier) {
+    FocusBox(
+        onClick = {}, modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp), color = Palette.surface, focusedColor = Palette.focus,
+        ring = false, focusedScale = 1.02f,
+    ) { f ->
+        val fg = if (f) Palette.onFocus else Palette.text
+        Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp)) {
+            Text(title, color = fg, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            Text(text, color = fg.copy(alpha = 0.7f), fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.padding(top = 3.dp))
         }
     }
 }

@@ -20,6 +20,7 @@ import androidx.activity.compose.setContent
 import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import tv.lumanest.tuner.data.Repo
 import tv.lumanest.tuner.player.PlayerHolder
 import tv.lumanest.tuner.player.TwoChannelPlayer
 import tv.lumanest.tuner.player.PipAspectRatio
@@ -132,6 +133,8 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT < 26 || !isInPictureInPictureMode) PlayerHolder.setPipTransition(false)
         TwoChannelPlayer.onAppForeground()
         PlayerHolder.onAppForeground()
+        // The Movies & Series lists: fetched again only when the saved copy is old or the last request failed.
+        Repo.refreshCatalogRows()
     }
 
     override fun onStop() {

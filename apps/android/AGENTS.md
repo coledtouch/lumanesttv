@@ -30,7 +30,8 @@ The connect port changes if wireless debugging is toggled; `adb mdns services` l
 - `data/PhoneSetup.kt`: tiny LAN web form (port 8686) served while the add-playlist screen is open.
 - `player/PlayerHolder.kt`: one shared ExoPlayer; guide preview and full screen reuse it.
 - `ui/Guide.kt`: cable-style grid. One focusable grid with custom D-pad handling (not per-cell focus) for speed with 17k channels. Key handling reads state, not the last composition.
-- `ui/Browse.kt`, `ui/Details.kt`: Movies / Series rows and detail pages. `ui/Player.kt`: live + VOD player.
+- `data/BrowseCatalog.kt`, `data/CatalogRows.kt`, `data/CatalogRowsClient.kt`: Movies & Series browsing (docs/browse.md) in plain Kotlin. The popularity lists from lumanest.tv (12 h disk cache, stale copy on failure), TMDB matching, the "Movies & Series: USA only" rule, genres and every Home/Discover list, indexed off the main thread for `Repo.browse` by `BrowseBuilder`, which reuses the movie or series index whose inputs did not change. `Movie.aliases` (older uploads folded in by `Cleanup.movies`) keep Library keys and saved positions working after a re-upload.
+- `ui/Browse.kt` (Home and Library poster rows), `ui/Discover.kt` (filters and grid), `ui/Details.kt` (detail pages, Add to Library). `ui/Player.kt`: live + VOD player.
 - `ui/TvTextField.kt`: opens a native AlertDialog EditText. Compose text fields were unreliable with the Google TV remote keyboard.
 - `ui/Common.kt`: `Palette` (theme-aware, snapshot state), `Themes`, `FocusBox` (the standard D-pad target).
 
@@ -41,4 +42,5 @@ The connect port changes if wireless debugging is toggled; `adb mdns services` l
 - Example provider: Xtream API at https://mybunny.tv, streams served from turbobunny.net (about 17k live, 17.6k movies, 3.8k series).
 - No em dashes in user-facing text or docs.
 - targetSdk stays 35. Google Play asks TV-only apps (the store edition) for API 34 only, and targeting 36 would let Android 16 ignore `screenOrientation="landscape"` for the lumanest.tv APK on tablets and Chromebooks. Robolectric 4.14 also stops at API 35.
+- The store edition never names a streaming service (Netflix, Disney+, Max, Prime Video, Apple TV+, Hulu, Paramount+, Peacock) in Home rows or Discover lists: `StreamingServices.shown(store)`.
 - Two editions, one codebase: `Edition.STORE` (`-Pstore=true`) is the Google Play / Amazon build. Keep the direct (lumanest.tv) edition's behaviour unchanged when adding store-only rules; screens and `Prefs` take a `store`/`storeBuild` parameter defaulting to `Edition.STORE`, and `Repo.storeEdition` switches the library rules, so tests cover both (`StoreEditionTest`, `StoreEditionScreensTest`, `StoreEditionLibraryTest`). CI also runs those three classes with `-Pstore=true`, so they must pass explicit edition values (the manifest test reads `Edition.STORE` on purpose); other tests assume the direct edition.

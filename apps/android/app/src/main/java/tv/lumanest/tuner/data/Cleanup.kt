@@ -18,6 +18,9 @@ import kotlin.math.abs
  * - no empty event slots ("ESPN+ 78:", "NHL 07 : Offline", "Peacock | Event 20") and no events that already ended.
  */
 object Cleanup {
+    /** Older upload ids kept per film ([Movie.aliases]); snapshots store at most 1,000 strings per list. */
+    private const val MAX_ALIASES = 100
+
     data class Lineup(val channels: List<Channel>, val merged: Map<String, String>)
 
     private val ic = setOf(RegexOption.IGNORE_CASE)
@@ -233,13 +236,26 @@ object Cleanup {
         return Lineup(out, merged)
     }
 
-    /** Keep the newest upload of a title/year, retaining other uploads as playback alternatives. */
-    fun movies(list: List<Movie>): List<Movie> =
-        list.groupBy { nonAlnum.replace(it.name.lowercase(Locale.ROOT), "").ifEmpty { it.id } }.values.map { copies ->
+    /**
+     * Keep the newest upload of a title/year, retaining other uploads as playback alternatives and their ids as
+     * [Movie.aliases]. Uploads listed only in [foreignCategories] (categories "Movies & Series: USA only" excludes,
+     * usually dubbed copies) stay separate from the others, so the USA filter can still tell them apart.
+     */
+    fun movies(list: List<Movie>, foreignCategories: Set<String> = emptySet()): List<Movie> =
+        list.groupBy { movie ->
+            val name = nonAlnum.replace(movie.name.lowercase(Locale.ROOT), "").ifEmpty { movie.id }
+            val foreign = foreignCategories.isNotEmpty() && movie.categoryIds.isNotEmpty() && movie.categoryIds.all { it in foreignCategories }
+            if (foreign) "$name|foreign" else name
+        }.values.map { copies ->
             if (copies.size == 1) copies[0]
             else copies.maxBy { it.added }.let { kept -> kept.copy(
                 categoryIds = (kept.categoryIds + copies.flatMap { it.categoryIds }).distinct(),
                 backups = (kept.backups + copies.sortedByDescending { it.added }.flatMap { listOf(it.url) + it.backups }).filter { it != kept.url }.distinct(),
+                // Browsing matches titles to TMDB (docs/browse.md): keep what any copy knew.
+                tmdb = kept.tmdb ?: copies.firstNotNullOfOrNull { it.tmdb },
+                year = kept.year ?: copies.firstNotNullOfOrNull { it.year },
+                genre = kept.genre ?: copies.firstNotNullOfOrNull { it.genre },
+                aliases = (kept.aliases + copies.flatMap { listOf(it.id) + it.aliases }).filter { it != kept.id }.distinct().take(MAX_ALIASES),
             ) }
         }
 }

@@ -52,13 +52,15 @@ class DeviceNavigationTest {
         assertNotNull(LocalLineup.marketForZip(zip))
         instrumentation.sendStatus(2, android.os.Bundle().apply { putString("stream", "Saved requested local-station market\n") })
     }
-    @Test fun movieSeriesAndGuidePagesOpenWithSavedProvider() {
+    @Test fun homeDiscoverLibraryAndGuidePagesOpenWithSavedProvider() {
         assumeTrue(InstrumentationRegistry.getArguments().getString("uiCheck") == "true")
         instrumentation.targetContext.startActivity(Intent().setClassName("tv.lumanest.tuner", "tv.lumanest.tuner.MainActivity").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        click("Movies")
-        waitFor("MOVIES", "Recently Added", "Continue Watching")
-        click("Series")
-        waitFor("SERIES", "Recently Updated", "Continue Watching")
+        click("Home")
+        waitFor("Recently added – Movies", "Popular – Movies", "Continue watching", "Nothing to recommend yet")
+        click("Discover")
+        waitFor("TYPE")
+        click("Library")
+        waitFor("Your Library is empty", "Continue watching", "Favorite movies", "Favorite series", "Recently watched")
         click("Live TV")
         waitFor("All Channels")
         click("Favorites")

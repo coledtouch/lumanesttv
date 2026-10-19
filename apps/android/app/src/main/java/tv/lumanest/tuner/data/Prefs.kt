@@ -50,7 +50,7 @@ class Prefs(context: Context, private val storeBuild: Boolean = Edition.STORE) {
 
     /**
      * Off by default: the LumaNest customer hub decides which channels a line includes. On hides live channels and
-     * categories that are not U.S. programming (see [ContentPolicy.live]). Movies and series are never filtered.
+     * categories that are not U.S. programming (see [ContentPolicy.live]). Movies and series have their own switch, [vodUsOnly].
      */
     private val _usOnly = MutableStateFlow(sp.getBoolean("usOnlyLive", false))
     val usOnly: StateFlow<Boolean> = _usOnly
@@ -58,6 +58,27 @@ class Prefs(context: Context, private val storeBuild: Boolean = Edition.STORE) {
     fun setUsOnly(on: Boolean) {
         sp.edit().putBoolean("usOnlyLive", on).apply()
         _usOnly.value = on
+    }
+
+    /**
+     * "Movies & Series: USA only / All" (docs/browse.md), separate from the live [usOnly] switch and on by default.
+     * It filters Home, Discover and Search; titles saved to the Library stay there.
+     */
+    private val _vodUsOnly = MutableStateFlow(sp.getBoolean("usOnlyVod", true))
+    val vodUsOnly: StateFlow<Boolean> = _vodUsOnly
+
+    fun setVodUsOnly(on: Boolean) {
+        sp.edit().putBoolean("usOnlyVod", on).apply()
+        _vodUsOnly.value = on
+    }
+
+    /** Where the app opens: Home (the default) or the Live TV guide, as every version before 1.7 did. */
+    private val _startOnLiveTv = MutableStateFlow(sp.getString("startOn", null) == "live")
+    val startOnLiveTv: StateFlow<Boolean> = _startOnLiveTv
+
+    fun setStartOnLiveTv(on: Boolean) {
+        sp.edit().putString("startOn", if (on) "live" else "home").apply()
+        _startOnLiveTv.value = on
     }
 
     /** Guide category chip order: "featured" (main cable groups first), "provider" (as the line delivers them) or "az". */
@@ -148,6 +169,14 @@ class Prefs(context: Context, private val storeBuild: Boolean = Edition.STORE) {
         get() = sp.getString("lastChannel_${_activeId.value}", null)
         @Synchronized set(v) = sp.edit().putString("lastChannel_${_activeId.value}", v).apply()
 
+    private val _libraryFavorites = MutableStateFlow<List<String>>(emptyList())
+    /** Movies and series saved to the Library ("movie:<id>", "series:<id>"), newest first, per playlist. */
+    val libraryFavorites: StateFlow<List<String>> = _libraryFavorites
+
+    private val _watchedTitles = MutableStateFlow<List<String>>(emptyList())
+    /** Movies and series played lately ("movie:<id>", "series:<id>"), newest first, per playlist: Library's Recently watched. */
+    val watchedTitles: StateFlow<List<String>> = _watchedTitles
+
     init { reloadFavorites() }
 
     // ---- sources ----
@@ -212,6 +241,53 @@ class Prefs(context: Context, private val storeBuild: Boolean = Edition.STORE) {
     private fun favKey() = "fav_${_activeId.value}"
     private fun reloadFavorites() {
         _favorites.value = sp.getStringSet(favKey(), emptySet())?.toSet() ?: emptySet()
+        _libraryFavorites.value = readKeys(libraryKey())
+        _watchedTitles.value = readKeys(watchedTitlesKey())
+    }
+
+    // ---- Library: favorite movies and series, and recently watched titles (per source) ----
+    // Kept beside the channel favorites, in the same store, as ordered lists: the Library shows the newest first.
+    private fun libraryKey() = "libraryFav_${_activeId.value}"
+    private fun watchedTitlesKey() = "watchedTitles_${_activeId.value}"
+
+    private fun readKeys(prefKey: String): List<String> = runCatching {
+        val arr = JSONArray(sp.getString(prefKey, null) ?: "[]")
+        (0 until arr.length()).mapNotNull { arr.optString(it).takeIf(::isTitleKey) }.distinct()
+    }.getOrDefault(emptyList())
+
+    private fun writeKeys(prefKey: String, keys: List<String>) {
+        sp.edit().putString(prefKey, JSONArray(keys).toString()).apply()
+    }
+
+    private fun isTitleKey(key: String) = (key.startsWith("movie:") || key.startsWith("series:")) && key.length in 7..300
+
+    /** In the Library under [titleKey] or one of its [aliases] (the keys of older uploads folded into the same film). */
+    fun isLibraryFavorite(titleKey: String, aliases: Collection<String> = emptyList()) =
+        titleKey in _libraryFavorites.value || aliases.any { it in _libraryFavorites.value }
+
+    /**
+     * Adds or removes a movie or series ("movie:<id>", "series:<id>"). A title saved under one of its [aliases] counts
+     * as saved: removing it removes every one of its keys. Returns true when it is now in the Library.
+     */
+    @Synchronized fun toggleLibraryFavorite(titleKey: String, aliases: Collection<String> = emptyList()): Boolean {
+        if (!isTitleKey(titleKey)) return false
+        val current = _libraryFavorites.value
+        val keys = setOf(titleKey) + aliases
+        val added = current.none { it in keys }
+        val next = if (added) (listOf(titleKey) + current).take(LIBRARY_LIMIT) else current.filterNot { it in keys }
+        writeKeys(libraryKey(), next)
+        _libraryFavorites.value = next
+        return added
+    }
+
+    /** Moves a movie or series to the front of Recently watched. */
+    @Synchronized fun recordWatchedTitle(titleKey: String?) {
+        if (titleKey == null || !isTitleKey(titleKey) || _activeId.value == null) return
+        val current = _watchedTitles.value
+        if (current.firstOrNull() == titleKey) return
+        val next = (listOf(titleKey) + (current - titleKey)).take(WATCHED_LIMIT)
+        writeKeys(watchedTitlesKey(), next)
+        _watchedTitles.value = next
     }
 
     @Synchronized fun toggleFavorite(channelKey: String): Boolean {
@@ -358,10 +434,29 @@ class Prefs(context: Context, private val storeBuild: Boolean = Edition.STORE) {
 
     fun resumePosition(id: String): Long = _recents.value.firstOrNull { it.id == id }?.positionMs ?: 0L
 
-    fun saveProgress(r: Recent) {
+    /**
+     * Saves a movie or episode position. A finished one leaves the list; when it was an episode with a [next] one,
+     * that next episode takes its place at position 0 ([Recent.nextUp]), so the series stays in Continue watching.
+     */
+    @Synchronized fun saveProgress(r: Recent, next: Recent? = null) {
         val finished = r.durationMs > 0 && r.positionMs > r.durationMs * 0.95
+        // The first seconds of an up-next episode keep it waiting in Continue watching: the player saves every 10 seconds,
+        // and leaving early must not drop the series from it (an entry needs more than 15 seconds to be saved).
+        val waiting = _recents.value.firstOrNull { it.id == r.id }?.nextUp == true
+        if (waiting && !finished && r.positionMs <= 15_000) {
+            if (r.positionMs > 0) recordWatchedTitle(r.titleKey)
+            return
+        }
         val list = _recents.value.filterNot { it.id == r.id }.toMutableList()
-        if (!finished && r.positionMs > 15_000) list.add(0, r)
+        if (!finished && r.positionMs > 15_000) list.add(0, r.copy(nextUp = false))
+        if (finished && next != null && next.id != r.id) {
+            val saved = list.firstOrNull { it.id == next.id }
+            list.removeAll { it.id == next.id }
+            // An episode already started keeps its position; otherwise it waits at the start.
+            list.add(0, if (saved != null && saved.positionMs > 0 && !saved.nextUp) saved.copy(updated = r.updated)
+                else next.copy(positionMs = 0, durationMs = 0, updated = r.updated, nextUp = true))
+        }
+        if (r.positionMs > 0) recordWatchedTitle(r.titleKey)
         val trimmed = list.take(40)
         val arr = JSONArray()
         trimmed.forEach {
@@ -369,6 +464,8 @@ class Prefs(context: Context, private val storeBuild: Boolean = Edition.STORE) {
                 put("id", it.id); put("title", it.title); put("subtitle", it.subtitle ?: "")
                 put("image", it.image ?: ""); put("url", it.url); put("pos", it.positionMs)
                 put("dur", it.durationMs); put("updated", it.updated)
+                it.titleKey?.let { key -> put("titleKey", key) }
+                if (it.nextUp) put("nextUp", true)
             })
         }
         sp.edit().putString(recentsKey(), arr.toString()).apply()
@@ -384,6 +481,7 @@ class Prefs(context: Context, private val storeBuild: Boolean = Edition.STORE) {
                 subtitle = o.optString("subtitle").ifBlank { null },
                 image = o.optString("image").ifBlank { null }, url = o.getString("url"),
                 positionMs = o.optLong("pos"), durationMs = o.optLong("dur"), updated = o.optLong("updated"),
+                titleKey = o.optString("titleKey").takeIf(::isTitleKey), nextUp = o.optBoolean("nextUp"),
             )
         }
     }.getOrDefault(emptyList())
@@ -391,6 +489,8 @@ class Prefs(context: Context, private val storeBuild: Boolean = Edition.STORE) {
     companion object {
         /** How long a channel that failed on every source stays out of the guide before it gets another chance. */
         const val DEAD_FOR_MS = 3 * 24 * 3600_000L
+        private const val LIBRARY_LIMIT = 500
+        private const val WATCHED_LIMIT = 50
         private const val PASSWORD_KEY = "tuner.source.password"
         private const val ENCRYPTED = "keystore:"
     }

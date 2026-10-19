@@ -20,9 +20,23 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.onNodeWithTag
+import tv.lumanest.tuner.data.CatalogRows
+import tv.lumanest.tuner.data.Category
+import tv.lumanest.tuner.data.LoadStatus
+import tv.lumanest.tuner.data.Movie
 import tv.lumanest.tuner.data.Repo
+import tv.lumanest.tuner.data.Series
+import tv.lumanest.tuner.data.Source
+import tv.lumanest.tuner.data.SourceType
+import tv.lumanest.tuner.data.VodType
 import tv.lumanest.tuner.ui.AppState
 import tv.lumanest.tuner.ui.EditSourceScreen
+import tv.lumanest.tuner.ui.HomeScreen
 import tv.lumanest.tuner.ui.SettingsScreen
 import tv.lumanest.tuner.ui.Tab
 import tv.lumanest.tuner.ui.TunerTheme
@@ -87,6 +101,57 @@ class StoreEditionScreensTest {
         rule.onNodeWithText("onn 4K remote").assertExists()
         rule.onNodeWithText("Xtream Codes login or M3U link").assertExists()
         absent("Privacy policy")
+    }
+
+    /** A library whose series are on Netflix (TMDB's list and a provider category named after it). */
+    private fun seedBrowse() {
+        Repo.init(rule.activity.applicationContext)
+        Repo.prefs.saveSource(Source("store-browse", "Store browse", SourceType.M3U))
+        Repo.prefs.setActive("store-browse")
+        Repo.prefs.setVodUsOnly(true)
+        val shows = (1..8).joinToString(",", "[", "]") { """{"id":${300 + it},"title":"Show $it","year":"2024","origin":["US"]}""" }
+        Repo.catalogRows.value = CatalogRows.parse("""{"v":1,"source":"tmdb","movie":{},"tv":{"popular":$shows,"services":{"netflix":$shows,"hulu":$shows}}}""")!!
+        Repo.movieCategories.value = listOf(Category("nf", "NETFLIX MOVIES"))
+        Repo.movies.value = (1..8).map { Movie("m:$it", "Film $it", null, "7", "nf", "https://example.invalid/$it.mp4", it.toLong()) }
+        Repo.seriesCategories.value = listOf(Category("en", "EN | Series"))
+        Repo.series.value = (1..8).map { Series("$it", "Show $it", null, null, "8", "en", null, "2024", null, it.toLong()) }
+        Repo.vodStatus.value = LoadStatus.Ready; Repo.seriesStatus.value = LoadStatus.Ready; Repo.liveStatus.value = LoadStatus.Ready
+    }
+
+    private fun awaitHome() = rule.waitUntil(5_000) { rule.onAllNodesWithTag("browse-content:home").fetchSemanticsNodes().isNotEmpty() }
+
+    @Test fun storeHomeAndDiscoverNameNoStreamingService() {
+        seedBrowse()
+        val state = AppState(Tab.HOME)
+        try {
+            show { HomeScreen(state, store = true) }
+            awaitHome()
+            listOf("Popular – Series", "Recently added – Movies", "Top rated – Series").forEach { rule.onNodeWithText(it).assertExists() }
+            listOf("Netflix", "Hulu").forEach(::absent)
+            rule.runOnIdle { state.openDiscover(VodType.SERIES, "netflix") }
+            rule.waitUntil(5_000) { rule.onAllNodesWithTag("discover-grid").fetchSemanticsNodes().isNotEmpty() }
+            // A service list (from a saved See all, say) falls back to the default list.
+            rule.onNode(hasContentDescription("List: Popular")).assertExists()
+            rule.onNodeWithTag("discover-filter:list").performClick()
+            rule.onNode(hasClickAction() and hasText("A–Z")).assertExists()
+            listOf("Netflix", "Hulu", "Disney", "Prime Video", "Peacock").forEach(::absent)
+        } finally { Repo.catalogRows.value = CatalogRows.NONE; Repo.prefs.deleteSource("store-browse") }
+    }
+
+    @Test fun directHomeAndDiscoverKeepTheServices() {
+        seedBrowse()
+        val state = AppState(Tab.HOME)
+        try {
+            show { HomeScreen(state, store = false) }
+            awaitHome()
+            listOf("Netflix – Movies", "Netflix – Series", "Hulu – Series").forEach { rule.onNodeWithText(it).assertExists() }
+            rule.runOnIdle { state.openDiscover(VodType.SERIES, "netflix") }
+            rule.waitUntil(5_000) { rule.onAllNodesWithTag("discover-grid").fetchSemanticsNodes().isNotEmpty() }
+            rule.onNode(hasContentDescription("List: Netflix")).assertExists()
+            rule.onNodeWithTag("discover-filter:list").performClick()
+            rule.onNode(hasClickAction() and hasText("Hulu")).assertExists()
+            rule.onNode(hasClickAction() and hasText("Netflix") and !hasTestTag("discover-filter:list")).assertExists()
+        } finally { Repo.catalogRows.value = CatalogRows.NONE; Repo.prefs.deleteSource("store-browse") }
     }
 
     @Test fun storeAddPlaylistUsesNeutralWording() {

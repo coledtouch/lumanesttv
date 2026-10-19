@@ -1,12 +1,15 @@
 package tv.lumanest.tuner
 
+import tv.lumanest.tuner.data.BrowseCatalog
+import tv.lumanest.tuner.data.BrowseTitle
+import tv.lumanest.tuner.data.CatalogRows
 import tv.lumanest.tuner.data.LoadStatus
 import tv.lumanest.tuner.data.Recent
 import tv.lumanest.tuner.data.Repo
 import tv.lumanest.tuner.data.Source
 import tv.lumanest.tuner.data.SourceType
-import tv.lumanest.tuner.ui.eligibleMovieRecents
-import tv.lumanest.tuner.ui.eligibleSeriesRecents
+import tv.lumanest.tuner.ui.BrowseActions
+import tv.lumanest.tuner.ui.libraryBrowseRows
 import tv.lumanest.tuner.ui.mostWatchedLineup
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -61,6 +64,17 @@ class StoreEditionLibraryTest {
         }
     }
 
+    /** The browse index the screens build from the loaded library ([Repo.browse] does the same off the main thread). */
+    private fun catalog() = BrowseCatalog.build(Repo.movies.value, Repo.movieCategories.value, Repo.series.value, Repo.seriesCategories.value, CatalogRows.NONE)
+
+    /** Continue watching, as Home and the Library show it. */
+    private fun continueWatching() = catalog().continueWatching(Repo.prefs.recents.value).map { it.title.name }
+
+    /** The Library's rows (Continue watching, Favorite movies, Favorite series, Recently watched) and their titles. */
+    private fun library(): Map<String, List<String>> = libraryBrowseRows(catalog(), Repo.prefs.recents.value, Repo.prefs.libraryFavorites.value,
+        Repo.prefs.watchedTitles.value, BrowseActions(open = {}, resume = {}, seeAll = { _, _, _ -> }, toggleLibrary = {}))
+        .associate { row -> row.title to row.items.map { it.title } }
+
     /** What the guide's Favorites category lists (see GuideScreen). */
     private fun favoritesLineup() = (Repo.channels.value + Repo.trending.value).filter { it.key in Repo.prefs.favorites.value }.distinctBy { it.key }
 
@@ -111,14 +125,19 @@ class StoreEditionLibraryTest {
                 Repo.prefs.recordWatched(channels.getValue(name).key, now = 1_000L * (i + 1))
             }
             val parody = Repo.movies.value.single { it.name == "XXX Parody" }
+            val afterDark = Repo.series.value.single { it.name == "After Dark" }
             val now = System.currentTimeMillis()
-            Repo.prefs.saveProgress(Recent(parody.id, parody.name, null, null, parody.url, 60_000, 3_600_000, now))
-            Repo.prefs.saveProgress(Recent("e:9", "After Dark", "S1 E1", null, "http://127.0.0.1/series/e9.mp4", 60_000, 3_600_000, now))
+            Repo.prefs.saveProgress(Recent(parody.id, parody.name, null, null, parody.url, 60_000, 3_600_000, now, titleKey = BrowseTitle.movieKey(parody.id)))
+            // An episode saved before 1.7 names its series only by title.
+            Repo.prefs.saveProgress(Recent("e:9", "After Dark", "S1 E1", null, "http://127.0.0.1/series/e9.mp4", 60_000, 3_600_000, now + 1))
+            Repo.prefs.toggleLibraryFavorite(BrowseTitle.movieKey(parody.id))
+            Repo.prefs.toggleLibraryFavorite(BrowseTitle.seriesKey(afterDark.id))
             assertEquals(listOf("Playboy TV", "CNN", "Canal Rojo"),
                 mostWatchedLineup(Repo.channels.value, Repo.trending.value, Repo.prefs.watchedChannelKeys.value).map { it.name })
             assertEquals(3, favoritesLineup().size)
-            assertEquals(listOf("XXX Parody"), eligibleMovieRecents(Repo.prefs.recents.value, Repo.movies.value).map { it.title })
-            assertEquals(listOf("After Dark"), eligibleSeriesRecents(Repo.prefs.recents.value, Repo.series.value).map { it.title })
+            assertEquals(listOf("After Dark", "XXX Parody"), continueWatching())
+            assertEquals(mapOf("Continue watching" to listOf("After Dark", "XXX Parody"), "Favorite movies" to listOf("XXX Parody"),
+                "Favorite series" to listOf("After Dark"), "Recently watched" to listOf("XXX Parody")), library())
 
             // The same TV updated to the store edition (same package and key, same saved data).
             Repo.storeEdition = true
@@ -139,8 +158,9 @@ class StoreEditionLibraryTest {
             listOf("Playboy", "Rojo", "XXX", "Night Shift", "After Dark").forEach { hidden -> assertTrue(hidden, names.none { hidden in it }) }
             assertEquals(listOf("CNN"), favoritesLineup().map { it.name })
             assertEquals(listOf("CNN"), mostWatchedLineup(Repo.channels.value, Repo.trending.value, Repo.prefs.watchedChannelKeys.value).map { it.name })
-            assertTrue(eligibleMovieRecents(Repo.prefs.recents.value, Repo.movies.value).isEmpty())
-            assertTrue(eligibleSeriesRecents(Repo.prefs.recents.value, Repo.series.value).isEmpty())
+            // Continue watching and the Library (favorites and history saved by the APK included) leave them out too.
+            assertTrue(continueWatching().isEmpty())
+            assertTrue(library().isEmpty())
         } finally {
             Repo.storeEdition = Edition.STORE
             server.close(); executor.shutdownNow()

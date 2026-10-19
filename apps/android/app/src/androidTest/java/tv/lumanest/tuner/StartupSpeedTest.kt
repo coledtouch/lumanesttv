@@ -53,7 +53,7 @@ class StartupSpeedTest {
             SystemClock.sleep(50)
         }
         val visible = nodes()
-        val labels = visible.mapNotNull { it.text?.toString() }.filter { it in setOf("Live TV", "Movies", "Series", "All Channels") }
+        val labels = visible.mapNotNull { it.text?.toString() }.filter { it in setOf("Home", "Live TV", "Discover", "Library", "All Channels") }
         throw AssertionError("The saved guide or navigation did not become accessible: package=${visible.firstOrNull()?.packageName}, nodes=${visible.size}, controls=$labels")
     }
 
@@ -113,7 +113,10 @@ class StartupSpeedTest {
             scenario = launched
             launched.onActivity { activity = it }
             assertTrue("The app activity did not open", activity != null)
-            awaitUi { val tree = nodes(); navigation("Live TV", tree) != null && navigation("Movies", tree) != null && tree.any { it.text?.toString() == "All Channels" } }
+            // Tuner opens on Home unless Settings > Start on says Live TV; the benchmark measures the guide either way.
+            awaitUi { val tree = nodes(); navigation("Live TV", tree) != null && navigation("Discover", tree) != null }
+            if (nodes().none { it.text?.toString() == "All Channels" }) clickNavigation("Live TV")
+            awaitUi { nodes().any { it.text?.toString() == "All Channels" } }
 
             val refreshStarted = SystemClock.elapsedRealtime()
             instrumentation.runOnMainSync { Repo.load(force = true) }
@@ -121,11 +124,11 @@ class StartupSpeedTest {
             // wait for fresh provider downloads or guide/film parsing to finish.
             repeat(15) {
                 assertTrue("Refresh temporarily emptied the saved lineup", Repo.channels.value.isNotEmpty() && emptyEmissions.get() == 0)
-                val tree = nodes(); assertTrue("Navigation became unavailable during refresh", navigation("Live TV", tree) != null && navigation("Movies", tree) != null)
+                val tree = nodes(); assertTrue("Navigation became unavailable during refresh", navigation("Live TV", tree) != null && navigation("Discover", tree) != null)
                 SystemClock.sleep(100)
             }
-            clickNavigation("Movies")
-            awaitUi { val tree = nodes(); navigation("Movies", tree) != null && navigation("Live TV", tree) != null }
+            clickNavigation("Discover")
+            awaitUi { val tree = nodes(); navigation("Discover", tree) != null && navigation("Live TV", tree) != null }
             clickNavigation("Live TV")
             awaitUi { nodes().any { it.text?.toString() == "All Channels" } }
             assertTrue("Refresh published an empty channel lineup", emptyEmissions.get() == 0)

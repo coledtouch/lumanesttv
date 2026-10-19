@@ -125,12 +125,12 @@ class GuideStartupTest {
         rule.onNodeWithContentDescription("Live TV").assertIsFocused()
         rule.onNodeWithContentDescription("Live TV").performKeyInput { pressKey(Key.DirectionRight) }
         advance()
-        rule.onNodeWithContentDescription("Movies").assertIsFocused()
+        rule.onNodeWithContentDescription("Discover").assertIsFocused()
         rule.runOnIdle { assertEquals(Tab.GUIDE, state.tab) }
-        rule.onNodeWithContentDescription("Movies").performKeyInput { pressKey(Key.Enter) }
+        rule.onNodeWithContentDescription("Discover").performKeyInput { pressKey(Key.Enter) }
         advance()
         rule.runOnIdle {
-            assertEquals(Tab.MOVIES, state.tab)
+            assertEquals(Tab.DISCOVER, state.tab)
             assertFalse(Repo.liveStatus.value is LoadStatus.Ready)
             assertEquals(null, PlayerHolder.currentUrl)
         }
