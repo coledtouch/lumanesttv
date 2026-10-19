@@ -182,6 +182,11 @@ p {
   overflow: hidden;
   cursor: pointer;
 }
+.preview-frame:focus {
+  outline: none;
+  border-color: #f9f8fc;
+  box-shadow: 0 0 0 6px #f9f8fc;
+}
 .preview-frame .watching {
   position: absolute;
   top: 0;
@@ -249,6 +254,10 @@ p {
   flex: none;
   color: #f2edfa;
   font-weight: bold;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-right: 14px;
 }
 .timeline-labels {
   display: flex;
@@ -487,9 +496,37 @@ p {
   outline: none;
 }
 .field input:focus,
-.field select:focus {
-  border-color: #a47cff;
-  box-shadow: 0 0 0 2px #a47cff;
+.field select:focus,
+.search-bar:focus {
+  border-color: #f9f8fc;
+  box-shadow: 0 0 0 4px #f9f8fc;
+  outline: none;
+}
+/* A text field being typed in: yellow ring. A focused, read-only field has the white ring above. */
+.editing {
+  border-color: #ffd057 !important;
+  box-shadow: 0 0 0 4px #ffd057 !important;
+}
+/* Playlist type: a button styled like a field; OK switches it, the arrows only move focus. */
+.field-toggle {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  width: 100%;
+  text-align: left;
+  font-size: 29px;
+  color: #f5f1fb;
+  background: #1f1038;
+  border: 2px solid #3f305f;
+  border-radius: 14px;
+  padding: 19px;
+}
+.field-toggle small {
+  font-size: 21px;
+  color: #b0a3c5;
+}
+.field-toggle:focus small {
+  color: #4a3d63;
 }
 .field-row {
   display: flex;
@@ -521,15 +558,18 @@ p {
   border-radius: 17px;
   margin: 12px 0 28px;
 }
-.search-bar:focus {
-  outline: 3px solid #a279ff;
+.search-hint {
+  font-size: 22px;
+  margin: -16px 0 12px;
 }
+/* Results scroll with the focus (scrollToElement measures against this box) and end above the screen edge. */
 .search-results {
   display: flex;
   flex-wrap: wrap;
-  max-height: 730px;
+  max-height: 640px;
   overflow: auto;
   padding: 5px;
+  position: relative;
 }
 .search-result {
   display: flex;
@@ -628,6 +668,7 @@ p {
   border-radius: 28px;
   padding: 48px;
   overflow: auto;
+  position: relative;
 }
 .dialog h2 {
   font-size: 39px;
@@ -637,9 +678,44 @@ p {
   font-size: 28px;
   color: #cbbfdd;
   margin-bottom: 25px;
+  white-space: pre-line;
 }
 .dialog button {
   margin: 14px 14px 0 0;
+}
+/* List dialogs (subtitles, audio, Multi View channels): one choice per line, Up/Down. */
+.dialog.choices button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin: 12px 0 0;
+}
+.picker-list {
+  max-height: 520px;
+  overflow: auto;
+  position: relative;
+}
+/* Below the top bar (clear of the clock) in the guide; in the top corner while watching full screen. */
+.channel-entry {
+  position: absolute;
+  top: 130px;
+  right: 60px;
+  z-index: 21;
+  background: #000e;
+  padding: 18px 28px;
+  border-radius: 16px;
+  font-size: 44px;
+  font-weight: bold;
+}
+body.fullscreen .channel-entry {
+  top: 40px;
+}
+.channel-entry small {
+  display: block;
+  font-size: 20px;
+  font-weight: normal;
+  color: #d4cbe6;
+  margin-top: 6px;
 }
 .dialog select {
   font-size: 27px;
@@ -651,7 +727,7 @@ p {
 }
 #toast {
   position: absolute;
-  bottom: 110px;
+  bottom: 40px;
   left: 520px;
   right: 520px;
   text-align: center;
@@ -662,6 +738,19 @@ p {
   padding: 22px;
   font-size: 29px;
   z-index: 20;
+}
+/* The toast moves to the top when the focused control is in the lower half, and clear of the player bar. */
+#toast.top {
+  top: 120px;
+  bottom: auto;
+}
+body.fullscreen #toast,
+body.multiview-fullscreen #toast {
+  top: 210px;
+  bottom: auto;
+}
+#main:focus {
+  outline: none;
 }
 #player-overlay {
   position: absolute;
@@ -677,6 +766,27 @@ p {
   background: linear-gradient(#000b, transparent);
   font-size: 37px;
   font-weight: bold;
+}
+.player-top .banner-program {
+  font-size: 27px;
+  font-weight: normal;
+  color: #e6def2;
+  margin-top: 10px;
+}
+.player-top .banner-list {
+  font-size: 22px;
+  font-weight: normal;
+  color: #b9accd;
+  margin-top: 6px;
+}
+.player-top .banner-surf {
+  display: inline-block;
+  margin-top: 12px;
+  font-size: 23px;
+  background: #f9f8fc;
+  color: #1a1027;
+  padding: 6px 14px;
+  border-radius: 10px;
 }
 .player-bottom {
   position: absolute;
@@ -722,6 +832,13 @@ p {
   border-radius: 5px;
   margin: 18px 0 28px;
   overflow: hidden;
+  /* Below the floated time, so the focus ring does not run under it. */
+  clear: both;
+}
+.progress-track.focusable:focus {
+  height: 14px;
+  outline: none;
+  box-shadow: 0 0 0 4px #f9f8fc;
 }
 .progress-fill {
   height: 100%;
@@ -780,9 +897,15 @@ body.black .dialog {
 }
 body.black .field input,
 body.black .field select,
-body.black .search-bar {
+body.black .search-bar,
+body.black .field-toggle {
   background: #0a0a0a;
   border-color: #3a3a3a;
+}
+body.black .field input:focus,
+body.black .search-bar:focus {
+  border-color: #f9f8fc;
+  box-shadow: 0 0 0 4px #f9f8fc;
 }
 body.black #topbar nav button {
   background: transparent;

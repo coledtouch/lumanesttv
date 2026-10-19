@@ -18,7 +18,9 @@
     category: "__all",
     row: 0,
     offset: 0,
-    minute: 0,
+    // Guide time: focusAt null = "now", else the browsed time (ms); viewBase null = follow the current half hour.
+    focusAt: null,
+    viewBase: null,
     catalogs: { live: [], movies: [], series: [] },
     cats: { live: [], movies: [], series: [] },
     status: {},
@@ -37,6 +39,12 @@
     dialog: false,
     sourceGeneration: 0,
     focusId: null,
+    // Last focused control per page (3 Search, 4 Settings), restored when the page is entered again.
+    pageFocus: {},
+    // Where full-screen live playback was opened from when that was not the guide (Search).
+    playOrigin: null,
+    guidePlaced: false,
+    guideWaiting: false,
   };
   var topbar = document.getElementById("topbar"),
     main = document.getElementById("main");
@@ -47,6 +55,13 @@
     searchTimer,
     savedRecentAt = 0,
     currentPlayItem = null;
+  // Focus to restore when a dialog closes; unsaved Settings fields; channel surfing; typed channel number.
+  var dialogReturn = null,
+    sourceDraft = {},
+    surfTarget = null,
+    surfTimer = null,
+    lastSurfKey = 0,
+    entry = { digits: "", timer: null };
   var dual = null,
     dualActive = false,
     dualRestarting = false,
@@ -72,6 +87,9 @@
   var subtitleLayer = el("div", "subtitle-layer hidden");
   subtitleLayer.id = "subtitle-layer";
   document.getElementById("app").appendChild(subtitleLayer);
+  var entryBadge = el("div", "channel-entry hidden");
+  entryBadge.id = "channel-entry";
+  document.getElementById("app").appendChild(entryBadge);
   var player = window.TunerPlayer.create({
     objectElement: document.getElementById("av-player"),
     videoElement: document.getElementById("html-player"),
@@ -109,38 +127,253 @@
     n.id = id;
     n.onclick = action;
     n.onfocus = function () {
-      S.focusId = id;
-      if (dualActive && S.tab === 5 && !S.dialog) dualFocusId = id;
+      remember(id);
     };
     return n;
   }
-  function focus(id) {
-    var n = document.getElementById(id);
-    if (n && !n.disabled) {
-      n.focus();
-      S.focusId = id;
-      if (
-        n.parentNode &&
-        /chip-row|cards|episodes/.test(n.parentNode.className)
-      )
-        scrollToElement(n);
+  // Focus model: exactly one thing looks focused. Page controls remember themselves so a page restores
+  // its last focus when it is entered again; the tab bar, dialogs and the player bar never overwrite it.
+  function remember(id) {
+    S.focusId = id;
+    if (
+      id &&
+      !S.dialog &&
+      !S.fullscreen &&
+      !S.detail &&
+      !/^(tab-|dialog-|pin-|play-|dual-result-|dual-channel-query)/.test(id)
+    ) {
+      // Pointer or script focus that lands on a page control leaves the tab bar.
+      if (S.zone === "nav" && S.tab >= 3 && !(dualActive && S.tab === 5))
+        S.zone = "form";
+      if (S.zone !== "nav") {
+        if (S.tab === 5) dualFocusId = id;
+        else if (S.tab === 3 || S.tab === 4) S.pageFocus[S.tab] = id;
+      }
     }
+    refreshBrandHint();
+  }
+  // Focuses a visible, enabled control. Returns false (and changes nothing) when it cannot.
+  function focus(id) {
+    var n = id && document.getElementById(id);
+    if (!n || n.disabled || !(n.offsetWidth > 0)) return false;
+    n.focus();
+    remember(id);
+    if (
+      n.parentNode &&
+      /chip-row|cards|episodes|search-results|picker-list/.test(
+        n.parentNode.className
+      )
+    )
+      scrollToElement(n);
+    // Native focus scrolls the nearest scrollable ancestor; the scaled stage itself must never move.
+    var root = document.scrollingElement || document.documentElement;
+    if (root && root.scrollTop) root.scrollTop = 0;
+    if (document.body && document.body.scrollTop) document.body.scrollTop = 0;
+    return true;
   }
   function scrollToElement(n) {
     var p = n.parentNode;
     if (n.offsetLeft < p.scrollLeft) p.scrollLeft = n.offsetLeft - 5;
     else if (n.offsetLeft + n.offsetWidth > p.scrollLeft + p.clientWidth)
       p.scrollLeft = n.offsetLeft + n.offsetWidth - p.clientWidth + 6;
-    if (p.className === "episodes") {
+    if (/episodes|search-results|picker-list/.test(p.className)) {
       if (n.offsetTop < p.scrollTop) p.scrollTop = n.offsetTop;
       else if (n.offsetTop + n.offsetHeight > p.scrollTop + p.clientHeight)
         p.scrollTop = n.offsetTop + n.offsetHeight - p.clientHeight;
     }
   }
+  function focusables(scope) {
+    return Array.prototype.slice
+      .call(scope.querySelectorAll("button,select,input,.focusable"))
+      .filter(function (n) {
+        return n.id && !n.disabled && n.offsetWidth > 0;
+      });
+  }
+  // Arrows over explicit rows of ids: Left/Right within a row, Up/Down between rows, no wrap.
+  // Returns false at an edge or when focus is not in the rows.
+  function moveInRows(rows, code) {
+    var cur = document.activeElement && document.activeElement.id,
+      list = [],
+      r,
+      c = -1,
+      i,
+      t;
+    rows.forEach(function (row) {
+      var ids = row.filter(function (id) {
+        var n = document.getElementById(id);
+        return n && !n.disabled && n.offsetWidth > 0;
+      });
+      if (ids.length) list.push(ids);
+    });
+    for (r = 0; r < list.length && c < 0; r++) c = list[r].indexOf(cur);
+    if (c < 0) return false;
+    r--;
+    if (code === 37 || code === 39) {
+      i = c + (code === 37 ? -1 : 1);
+      return i >= 0 && i < list[r].length ? focus(list[r][i]) : false;
+    }
+    t = r + (code === 38 ? -1 : 1);
+    return t >= 0 && t < list.length
+      ? focus(list[t][Math.min(c, list[t].length - 1)])
+      : false;
+  }
+  // Arrows on a free 2-D page: the nearest focusable in the arrow's direction, preferring controls in
+  // line with the current one.
+  // - Left/Right stay on the row: only controls that line up vertically (within a few pixels).
+  // - Up/Down leave the line among siblings (a wrapped grid's short row). With nothing in line, they
+  //   go to the nearest row above/below in the same column of the page, landing on its first control.
+  // - Entering a chip row from above or below lands on its chosen (.active) chip.
+  function moveSpatial(scope, code) {
+    var cur = document.activeElement,
+      nodes = focusables(scope),
+      best = null,
+      bestScore = 0,
+      offLine = [],
+      vertical = code === 38 || code === 40,
+      a,
+      near,
+      chosen;
+    if (nodes.indexOf(cur) < 0) return false;
+    a = cur.getBoundingClientRect();
+    nodes.forEach(function (n) {
+      if (n === cur) return;
+      var b = n.getBoundingClientRect(),
+        gap,
+        ortho,
+        score;
+      gap =
+        code === 40
+          ? b.top - (a.top + a.height)
+          : code === 38
+            ? a.top - (b.top + b.height)
+            : code === 39
+              ? b.left - (a.left + a.width)
+              : a.left - (b.left + b.width);
+      if (gap < -4) return;
+      ortho = vertical
+        ? Math.max(0, b.left - (a.left + a.width), a.left - (b.left + b.width))
+        : Math.max(0, b.top - (a.top + a.height), a.top - (b.top + b.height));
+      if (!vertical && ortho > 10) return;
+      if (vertical && ortho > 0 && n.parentNode !== cur.parentNode) {
+        if (sameColumn(cur, n))
+          offLine.push({ n: n, gap: Math.max(0, gap), left: b.left });
+        return;
+      }
+      score = (ortho > 0 ? 100000 : 0) + Math.max(0, gap) + 3 * ortho;
+      if (!best || score < bestScore) {
+        best = n;
+        bestScore = score;
+      }
+    });
+    if (!best && offLine.length) {
+      near = Math.min.apply(
+        null,
+        offLine.map(function (o) {
+          return o.gap;
+        })
+      );
+      offLine
+        .filter(function (o) {
+          return o.gap <= near + 10;
+        })
+        .forEach(function (o) {
+          if (!best || o.left < bestScore) {
+            best = o.n;
+            bestScore = o.left;
+          }
+        });
+    }
+    if (!best) return false;
+    if (
+      vertical &&
+      best.parentNode !== cur.parentNode &&
+      /\bchip-row\b/.test(best.parentNode.className)
+    ) {
+      chosen = best.parentNode.querySelector(".active");
+      if (chosen && chosen.id && focus(chosen.id)) return true;
+    }
+    return focus(best.id);
+  }
+  // Whether two controls sit in the same column of the page: the branches of their nearest common
+  // container overlap horizontally (Settings' form and its side panel do not).
+  function sameColumn(a, b) {
+    var ca = a,
+      cb = b,
+      ra,
+      rb;
+    while (ca.parentNode && !ca.parentNode.contains(b)) ca = ca.parentNode;
+    while (cb.parentNode && cb.parentNode !== ca.parentNode) cb = cb.parentNode;
+    ra = ca.getBoundingClientRect();
+    rb = cb.getBoundingClientRect();
+    return rb.left < ra.left + ra.width && ra.left < rb.left + rb.width;
+  }
+  function toNav() {
+    S.zone = "nav";
+    S.nav = S.tab;
+    render();
+  }
+  function enterPage() {
+    S.focusId = null;
+    S.zone = S.tab === 0 ? "grid" : S.tab === 1 || S.tab === 2 ? "cards" : "form";
+    render();
+  }
+  function enterGrid() {
+    S.zone = "grid";
+    S.focusId = null;
+  }
+  // Safety net after every key: a zone that needs DOM focus never keeps it on nothing or a hidden node.
+  function ensureFocus() {
+    var a = document.activeElement,
+      first;
+    if (window.TunerPairing && window.TunerPairing.isOpen && window.TunerPairing.isOpen())
+      return;
+    if (a && a !== document.body && a.offsetWidth > 0) return;
+    if (S.dialog) {
+      first = focusables(dialogLayer)[0];
+      if (first) focus(first.id);
+      return;
+    }
+    if (S.fullscreen) {
+      if (S.zone === "player-actions") focus("play-toggle");
+      return;
+    }
+    if (dualActive && S.tab === 5) return;
+    if (S.zone === "nav") {
+      focus("tab-" + S.nav);
+      return;
+    }
+    if (S.tab === 0 && !S.detail) {
+      if (S.zone !== "grid" && S.zone !== "video") renderGuide();
+      return;
+    }
+    render();
+  }
+  function backLabel() {
+    if (S.detail)
+      return S.detail.origin && S.detail.origin.tab === 3 ? "Search" : "Titles";
+    if (S.tab === 0 && S.zone === "grid")
+      return S.focusAt !== null ? "Now" : "Categories";
+    if (S.tab === 0 && S.zone === "empty") return "Categories";
+    return "Tabs";
+  }
+  function refreshBrandHint() {
+    var n = document.getElementById("brand-hint");
+    if (n) n.textContent = S.zone === "nav" ? "OK Open" : "Back " + backLabel();
+  }
   function toast(message) {
-    var n = document.getElementById("toast");
+    var n = document.getElementById("toast"),
+      a = document.activeElement,
+      top = false,
+      r;
+    // Keep the message away from the focused control: low focus puts it at the top. The guide's list
+    // highlight has no DOM focus and its rows fill the lower half, so the toast goes to the top there.
+    if (S.tab === 0 && S.zone === "grid" && !S.fullscreen && !S.detail) top = true;
+    else if (a && a !== document.body && a.getBoundingClientRect) {
+      r = a.getBoundingClientRect();
+      top = r.top + r.height / 2 > (window.innerHeight || 1080) / 2;
+    }
     n.textContent = message;
-    n.className = "";
+    n.className = top ? "top" : "";
     clearTimeout(toastTimer);
     toastTimer = setTimeout(function () {
       n.className = "hidden";
@@ -203,20 +436,141 @@
           { id: "__hot", name: "Most Watched" },
         ].concat(S.cats.live);
   }
+  // cats: liveCategories(), when the caller already has it (it sorts every category).
+  function activeChipIndex(cats) {
+    return Math.max(
+      0,
+      (cats || liveCategories())
+        .map(function (c) {
+          return c.id;
+        })
+        .indexOf(S.category)
+    );
+  }
+  function categoryName(cats) {
+    if (S.category === "__all") return "All channels";
+    cats = cats || liveCategories();
+    var cat = cats[activeChipIndex(cats)];
+    return (cat && cat.name) || "All channels";
+  }
+  // Guide time model. The window shows two hours from viewStart(); the highlighted block is the one
+  // that contains selectedAt(). Right/Left walk program to program (scheduleStep).
+  function nowBase() {
+    return Math.floor(Date.now() / 1800000) * 1800000;
+  }
   function viewStart() {
-    return Math.floor(Date.now() / 1800000) * 1800000 + S.minute * 60000;
+    return S.viewBase !== null ? S.viewBase : nowBase();
   }
   function selectedAt() {
-    return S.minute === 0 ? Date.now() : viewStart() + 900000;
+    return S.focusAt !== null ? S.focusAt : Date.now();
   }
-  function selectedProgram(channel) {
-    var programs = (channel && S.guide[channel.id]) || [],
-      at = selectedAt();
-    return (
-      programs.filter(function (p) {
-        return p.start <= at && p.end > at;
-      })[0] || null
-    );
+  function listings(c) {
+    return (c && S.guide[c.id]) || [];
+  }
+  // Always returns a block for a channel: a real program, a synthetic "No information" gap (holes under
+  // five minutes belong to the next program), or "Schedule unavailable" when the channel has no guide.
+  function programAt(c, at) {
+    var list = listings(c),
+      prev = null,
+      next = null,
+      i;
+    if (!c) return null;
+    if (!list.length)
+      return {
+        title: "Schedule unavailable",
+        description: "Watch live",
+        start: viewStart(),
+        end: viewStart() + 7200000,
+        none: true,
+      };
+    for (i = 0; i < list.length; i++) {
+      if (list[i].start <= at && list[i].end > at) return list[i];
+      if (list[i].end <= at) prev = list[i];
+      else if (!next && list[i].start > at) next = list[i];
+    }
+    if (next && prev && next.start - prev.end < 300000) return next;
+    return {
+      title: "No information",
+      description: "Watch live",
+      start: prev ? prev.end : Math.min(at, viewStart()),
+      end: next ? next.start : Math.max(at + 1, viewStart() + 7200000),
+      gap: true,
+      last: !next,
+    };
+  }
+  function selectedProgram(c) {
+    return programAt(c, selectedAt());
+  }
+  function realProgram(p) {
+    return !!(p && !p.gap && !p.none);
+  }
+  function scheduleStep(code) {
+    var c = selectedLive(),
+      now = Date.now(),
+      p,
+      q,
+      t;
+    if (!c) return;
+    p = programAt(c, selectedAt());
+    if (code === 39) {
+      if (p.none || p.last || p.end > now + 86400000) return;
+      t = p.end;
+    } else if (p.start <= now) {
+      if (S.focusAt === null) return;
+      t = null;
+    } else {
+      q = programAt(c, p.start - 1);
+      t = q.start <= now ? null : q.start;
+    }
+    S.focusAt = t;
+    if (t === null) {
+      S.viewBase = null;
+      return;
+    }
+    if (S.viewBase === null) S.viewBase = nowBase();
+    if (t < S.viewBase || t >= S.viewBase + 5400000)
+      S.viewBase = Math.max(nowBase(), Math.floor(t / 1800000) * 1800000);
+  }
+  // The blocks drawn in one guide row: listings clipped to the two-hour window, holes filled with
+  // "No information" (short holes join the next program), or one "Schedule unavailable" block.
+  function rowBlocks(c) {
+    var start = viewStart(),
+      end = start + 7200000,
+      list = listings(c),
+      out = [],
+      cursor = start,
+      i,
+      q,
+      from;
+    function gap(a, b) {
+      out.push({
+        p: { title: "No information", description: "Watch live", start: a, end: b, gap: true },
+        from: a,
+        to: b,
+      });
+    }
+    if (!list.length)
+      return [
+        {
+          p: { title: "Schedule unavailable", description: "Watch live", start: start, end: end, none: true },
+          from: start,
+          to: end,
+        },
+      ];
+    for (i = 0; i < list.length && cursor < end; i++) {
+      q = list[i];
+      if (q.end <= cursor) continue;
+      if (q.start >= end) break;
+      from = Math.max(q.start, cursor);
+      if (from > cursor) {
+        if (from - cursor < 300000) from = cursor;
+        else gap(cursor, from);
+      }
+      out.push({ p: q, from: from, to: q.end });
+      cursor = q.end;
+    }
+    if (cursor < end) gap(cursor, end);
+    return out;
   }
   function requestGuide(channel) {
     if (
@@ -233,9 +587,13 @@
     client.guide(channel).then(
       function (programs) {
         if (generation !== S.sourceGeneration) return;
-        S.guide[channel.id] = programs || [];
+        S.guide[channel.id] = (programs || []).slice().sort(function (a, b) {
+          return a.start - b.start;
+        });
         delete S.guidesPending[channel.id];
         if (S.tab === 0 && !S.fullscreen && !S.dialog) renderGuide();
+        else if (S.fullscreen && !S.dialog && (surfTarget || S.watched) === channel)
+          renderPlayerOverlay();
       },
       function () {
         if (generation === S.sourceGeneration) {
@@ -251,9 +609,9 @@
     brand.appendChild(image("assets/icon.png"));
     var label = el("div");
     label.appendChild(el("strong", "", "tuner"));
-    label.appendChild(
-      el("small", "", S.zone === "nav" ? "OK Open" : "Back Tabs")
-    );
+    var hint = el("small", "", "");
+    hint.id = "brand-hint";
+    label.appendChild(hint);
     brand.appendChild(label);
     topbar.appendChild(brand);
     var nav = el("nav");
@@ -270,14 +628,16 @@
       b.onfocus = function () {
         S.zone = "nav";
         S.nav = i;
-        S.focusId = b.id;
+        remember(b.id);
       };
       nav.appendChild(b);
     });
     topbar.appendChild(nav);
     topbar.appendChild(el("div", "clock", clock(Date.now())));
+    refreshBrandHint();
   }
-  function openTab(i) {
+  // onNav: stay on the tab bar (Back from another tab's bar lands on Live TV's tab).
+  function openTab(i, onNav) {
     if (S.tab === 5 && i !== 5) stopDual();
     if (S.fullscreen) leaveFullscreen();
     closeDialog(false);
@@ -286,7 +646,13 @@
     S.tab = i;
     S.nav = i;
     S.focusId = null;
-    S.zone = i === 0 ? "grid" : i === 1 || i === 2 ? "cards" : "form";
+    S.zone = onNav
+      ? "nav"
+      : i === 0
+        ? "grid"
+        : i === 1 || i === 2
+          ? "cards"
+          : "form";
     if (i !== 0) hidePreview();
     render();
     if (i === 0) resumeGuidePreview();
@@ -329,9 +695,22 @@
     else if (S.tab === 5) renderMultiView();
     else renderSettings();
   }
+  function guideLoading() {
+    return (
+      !S.catalogs.live.length &&
+      !!store.settings.source &&
+      (!S.status.live || S.status.live.state === "loading")
+    );
+  }
   function statusEmpty(kind, text) {
     var box = el("div", "guide-status");
     var status = S.status[kind];
+    if (kind === "live" && guideLoading()) {
+      // No button while loading: OK must not restart the download.
+      box.appendChild(el("h2", "", "Loading your channels"));
+      box.appendChild(el("p", "muted", "This takes a few seconds."));
+      return box;
+    }
     box.appendChild(
       el(
         "h2",
@@ -364,17 +743,79 @@
     );
     return box;
   }
+  function previewHintText(focused) {
+    if (S.watched) return focused ? "▶ OK Full screen" : "↑ Select for full screen";
+    return focused ? "▶ OK Preview" : "OK on a channel to watch";
+  }
+  function setPreviewHint(focused) {
+    var hint = main.querySelector(".preview-hint"),
+      status = player.state && player.state.status;
+    if (!hint) return;
+    hint.textContent =
+      S.watched && status === "loading"
+        ? "Connecting…"
+        : S.watched && status === "error"
+          ? "Playback unavailable · OK Retry"
+          : previewHintText(focused);
+  }
+  function guideHint(p) {
+    if (S.zone === "categories")
+      return "← → Categories  ·  OK Show channels  ·  ↑ Preview  ·  Back Tabs";
+    if (S.zone === "actions")
+      return "← → Choose  ·  OK Select  ·  ↓ Categories  ·  Back Tabs";
+    if (S.zone === "nav") return "← → Tabs  ·  OK Open  ·  Back Close Tuner";
+    if (realProgram(p) && p.start > Date.now())
+      return "OK Details  ·  ← → Schedule  ·  Back " + backLabel();
+    return (
+      "OK Watch  ·  Hold OK Favorite  ·  ← → Schedule  ·  CH +/− Page  ·  Back " +
+      backLabel()
+    );
+  }
   function renderGuide() {
     if (S.fullscreen || S.tab !== 0 || S.detail) return;
     var old = S.focusId;
     main.textContent = "";
-    var items = liveItems();
+    var items = liveItems(),
+      cats = liveCategories(),
+      chipAt = activeChipIndex(cats),
+      catName = categoryName(cats);
+    if (guideLoading()) {
+      // Loading: focus waits on the categories and moves to the list once channels arrive.
+      if (S.zone === "grid" || S.zone === "empty") {
+        S.zone = "categories";
+        S.guideWaiting = true;
+        old = S.focusId = "live-cat-" + chipAt;
+      }
+    } else if (items.length) {
+      if (S.zone === "empty" || (S.guideWaiting && S.zone === "categories"))
+        enterGrid();
+      S.guideWaiting = false;
+      // Only the first guide shown after loading jumps to the channel being watched (or last watched),
+      // whichever tab was open when the channels arrived; later visits keep the row.
+      if (!S.guidePlaced) {
+        var placeId = S.watched ? S.watched.id : store.lastWatched();
+        for (var placeAt = 0; placeAt < items.length; placeAt++)
+          if (items[placeAt].id === placeId) {
+            S.row = placeAt;
+            S.offset = Math.max(0, placeAt - 1);
+            break;
+          }
+        S.guidePlaced = true;
+      }
+    } else if (S.guideWaiting && S.zone === "categories") {
+      // Loading ended without channels: focus moves from the categories to the status action.
+      S.guideWaiting = false;
+      S.zone = "empty";
+    }
     S.row = Math.max(0, Math.min(S.row, items.length - 1));
     if (S.row < S.offset) S.offset = S.row;
     if (S.row >= S.offset + 4) S.offset = S.row - 3;
     S.offset = Math.max(0, Math.min(S.offset, Math.max(0, items.length - 4)));
     var c = items[S.row],
       p = selectedProgram(c),
+      real = realProgram(p),
+      previewFocused =
+        S.zone === "actions" && old !== "guide-fav",
       hero = el("section", "hero");
     var copy = el("div", "copy");
     copy.appendChild(
@@ -385,10 +826,10 @@
       )
     );
     copy.appendChild(
-      el("h1", "", p ? p.title : c ? c.name : "Welcome to Tuner")
+      el("h1", "", real ? p.title : c ? c.name : "Welcome to Tuner")
     );
     var meta = el("div", "metadata");
-    if (p) {
+    if (real) {
       if (p.start <= Date.now() && p.end > Date.now())
         meta.appendChild(el("span", "badge", "ON NOW"));
       meta.appendChild(
@@ -396,81 +837,88 @@
       );
     } else
       meta.textContent = c
-        ? "Live channel · Schedule unavailable"
+        ? "Live channel · " + (p && p.gap ? "No information" : "Schedule unavailable")
         : "A guide made for your TV";
     copy.appendChild(meta);
     copy.appendChild(
       el(
         "p",
         "description",
-        (p && p.description) ||
+        (real && p.description) ||
           (c
-            ? "Browse channels and programs while the watched channel keeps playing. Press OK to watch."
+            ? S.watched
+              ? "Browse channels and programs while " +
+                S.watched.name +
+                " keeps playing. Press OK to watch."
+              : "Browse channels and programs. Press OK to watch."
             : "Live TV, Movies and Series in one simple place.")
       )
     );
     hero.appendChild(copy);
-    var preview = el("div", "preview-frame");
+    var preview = el("div", "preview-frame focusable");
     preview.id = "preview-frame";
     preview.setAttribute("role", "button");
     preview.tabIndex = 0;
     preview.onclick = function () {
-      if (S.watched) enterFullscreen();
-      else if (c) watch(c, false);
+      if (S.watched) {
+        // Back from full screen returns to the preview it was opened from.
+        S.playOrigin = { tab: 0, zone: "actions", focus: "preview-frame" };
+        enterFullscreen();
+      } else if (c) watch(c, false);
     };
     preview.onfocus = function () {
       S.zone = "actions";
-      S.focusId = preview.id;
+      remember(preview.id);
+      setPreviewHint(true);
+    };
+    preview.onblur = function () {
+      setPreviewHint(false);
     };
     if (!S.watched)
       preview.appendChild(el("div", "empty-video", "Choose a channel"));
     else
       preview.appendChild(el("div", "watching", "Watching " + S.watched.name));
-    preview.appendChild(
-      el(
-        "div",
-        "preview-hint",
-        S.watched ? "▶ OK Full screen" : "▶ OK Start preview"
-      )
-    );
+    preview.appendChild(el("div", "preview-hint", ""));
     hero.appendChild(preview);
     if (c) {
       var actions = el("div", "hero-actions");
-      actions.appendChild(
-        button(
-          store.isFavourite(c.id) ? "★ Saved" : "☆ Favorite",
-          "guide-fav",
-          function () {
-            toggleFavorite(c);
-          }
-        )
+      var fav = button(
+        store.isFavourite(c.id) ? "★ Saved" : "☆ Favorite",
+        "guide-fav",
+        function () {
+          toggleFavorite(c);
+        }
       );
-      actions.appendChild(
-        button("Watch", "guide-watch", function () {
-          watch(c, true);
-        })
-      );
+      fav.onfocus = function () {
+        S.zone = "actions";
+        remember(fav.id);
+      };
+      actions.appendChild(fav);
       hero.appendChild(actions);
     }
     main.appendChild(hero);
-    var cats = liveCategories(),
-      chips = el("div", "chip-row");
+    setPreviewHint(previewFocused);
+    var chips = el("div", "chip-row");
+    // Jump, do not animate, while the row is rebuilt; smooth scrolling returns at the end.
+    chips.style.scrollBehavior = "auto";
     cats.forEach(function (cat, i) {
       var b = button(
         cat.name,
         "live-cat-" + i,
         function () {
-          S.category = cat.id;
-          S.row = 0;
-          S.offset = 0;
-          S.zone = "grid";
+          if (S.category !== cat.id) {
+            S.category = cat.id;
+            S.row = 0;
+            S.offset = 0;
+          }
+          enterGrid();
           renderGuide();
         },
         cat.id === S.category ? "active" : ""
       );
       b.onfocus = function () {
         S.zone = "categories";
-        S.focusId = b.id;
+        remember(b.id);
       };
       chips.appendChild(b);
     });
@@ -486,34 +934,45 @@
               : "Channels"
         )
       );
-      if (S.category === "__fav" || S.category === "__hot") {
+      if (
+        !guideLoading() &&
+        (S.category === "__fav" || S.category === "__hot")
+      ) {
         main.querySelector(".guide-status p").textContent =
           S.category === "__fav"
-            ? "Hold OK on a channel, or choose its star, to save it here."
+            ? "Hold OK on a channel, or select ☆ Favorite above the list, to save it here."
             : "Channels you watch will appear here automatically.";
         var emptyAction = document.getElementById("empty-action");
         emptyAction.textContent = "Browse all channels";
         emptyAction.onclick = function () {
           S.category = "__all";
           S.row = Math.max(0, S.catalogs.live.indexOf(S.watched));
-          S.offset = Math.max(0, S.row - 3);
-          S.zone = "grid";
+          S.offset = Math.max(0, S.row - 1);
+          enterGrid();
           renderGuide();
         };
       }
     } else {
-      var head = el("div", "time-header");
-      head.appendChild(el("div", "today", S.minute ? "Schedule" : "Today"));
+      var head = el("div", "time-header"),
+        at = selectedAt();
+      head.appendChild(
+        el(
+          "div",
+          "today",
+          (S.focusAt !== null ? "Schedule" : "Today") + " · " + catName
+        )
+      );
       var labels = el("div", "timeline-labels");
       for (var t = 0; t < 4; t++)
         labels.appendChild(el("span", "", clock(viewStart() + t * 1800000)));
       head.appendChild(labels);
       main.appendChild(head);
       items.slice(S.offset, S.offset + 4).forEach(function (channel, index) {
-        var row = el("div", "guide-row");
+        var row = el("div", "guide-row"),
+          selectedRow = S.offset + index === S.row;
         var cell = el(
           "div",
-          "channel-cell" + (S.offset + index === S.row ? " selected" : "")
+          "channel-cell" + (selectedRow ? " selected" : "")
         );
         cell.appendChild(
           el("span", "channel-number", channel.number || S.offset + index + 1)
@@ -524,26 +983,12 @@
           cell.appendChild(el("span", "star", "★"));
         row.appendChild(cell);
         var programs = el("div", "programs"),
-          listings = S.guide[channel.id] || [];
-        var visible = listings.filter(function (q) {
-          return q.end > viewStart() && q.start < viewStart() + 7200000;
-        });
-        if (!visible.length)
-          visible = [
-            {
-              title: "Schedule unavailable",
-              description: "Watch live",
-              start: viewStart(),
-              end: viewStart() + 7200000,
-            },
-          ];
-        visible.forEach(function (q) {
-          var left = Math.max(0, ((q.start - viewStart()) / 7200000) * 100),
-            right = Math.min(100, ((q.end - viewStart()) / 7200000) * 100);
-          var selected =
-            S.offset + index === S.row &&
-            q.start <= selectedAt() &&
-            q.end > selectedAt();
+          start = viewStart();
+        rowBlocks(channel).forEach(function (b) {
+          var q = b.p,
+            left = Math.max(0, ((b.from - start) / 7200000) * 100),
+            right = Math.min(100, ((b.to - start) / 7200000) * 100);
+          var selected = selectedRow && b.from <= at && b.to > at;
           var block = el(
             "div",
             "program" + (selected && S.zone === "grid" ? " focused" : "")
@@ -555,14 +1000,14 @@
             el(
               "span",
               "",
-              q.description === "Watch live"
+              q.gap || q.none
                 ? "Watch live"
                 : clock(q.start) + " – " + clock(q.end)
             )
           );
           block.onclick = function () {
             S.row = S.offset + index;
-            S.zone = "grid";
+            enterGrid();
             activateChannel(channel, q);
           };
           programs.appendChild(block);
@@ -573,30 +1018,103 @@
       });
       var foot = el("div", "guide-footer");
       foot.appendChild(
-        el("span", "", S.row + 1 + " / " + items.length + " channels")
-      );
-      foot.appendChild(
         el(
           "span",
           "",
-          "OK Watch / details  ·  Hold OK Favorite  ·  ← → Schedule  ·  CH +/− Page  ·  Back Tabs"
+          S.row + 1 + " / " + items.length + " channels  ·  " + catName
         )
       );
+      foot.appendChild(el("span", "", guideHint(p)));
       main.appendChild(foot);
     }
     if (S.zone === "nav") focus("tab-" + S.nav);
     else if (S.zone === "categories")
-      focus(old && document.getElementById(old) ? old : "live-cat-0");
+      focus(
+        old && /^live-cat-/.test(old) && document.getElementById(old)
+          ? old
+          : "live-cat-" + chipAt
+      );
     else if (S.zone === "actions")
-      focus(old && document.getElementById(old) ? old : "preview-frame");
+      focus(old === "guide-fav" || old === "preview-frame" ? old : "preview-frame") ||
+        focus("preview-frame");
     else if (!items.length) {
       S.zone = "empty";
       focus("empty-action");
+    } else if (
+      document.activeElement &&
+      document.activeElement !== document.body &&
+      document.activeElement.blur
+    )
+      document.activeElement.blur();
+    // Keep the chosen category in view (a focused chip scrolls itself). Done once the whole guide is
+    // built, so a key press lays the page out once.
+    if (S.zone !== "categories") {
+      var activeChip = document.getElementById("live-cat-" + chipAt);
+      if (activeChip) scrollToElement(activeChip);
     }
+    chips.style.scrollBehavior = "";
+    refreshBrandHint();
     if (S.watched) previewRect();
   }
+  function toChips() {
+    S.zone = "categories";
+    S.focusId = "live-cat-" + activeChipIndex();
+    renderGuide();
+  }
+  function toHero() {
+    if (!liveItems().length) return toNav();
+    S.zone = "actions";
+    S.focusId = "preview-frame";
+    renderGuide();
+  }
+  function guideArrow(code) {
+    var items = liveItems(),
+      f = document.activeElement;
+    if (S.zone === "grid") {
+      if (code === 38 && S.row === 0) return toChips();
+      if (code === 38 || code === 40)
+        S.row = Math.max(
+          0,
+          Math.min(items.length - 1, S.row + (code === 40 ? 1 : -1))
+        );
+      else scheduleStep(code);
+      renderGuide();
+      return;
+    }
+    if (S.zone === "empty") {
+      if (code === 38) toChips();
+      return;
+    }
+    if (S.zone === "actions") {
+      if (code === 37 || code === 39)
+        moveInRows([["guide-fav", "preview-frame"]], code);
+      else if (code === 38) toNav();
+      else toChips();
+      return;
+    }
+    // Category chips.
+    if (code === 37 || code === 39) {
+      moveInRows(
+        [
+          liveCategories().map(function (cat, i) {
+            return "live-cat-" + i;
+          }),
+        ],
+        code
+      );
+      return;
+    }
+    if (code === 38) return toHero();
+    // Down shows the focused category's channels; on the chosen one it returns to the same row.
+    if (f && /^live-cat-/.test(f.id) && !/\bactive\b/.test(f.className))
+      f.click();
+    else {
+      enterGrid();
+      renderGuide();
+    }
+  }
   function activateChannel(c, p) {
-    if (p && p.start > Date.now()) {
+    if (realProgram(p) && p.start > Date.now()) {
       showDialog(
         p.title,
         clock(p.start) + " – " + clock(p.end) + "\n" + (p.description || ""),
@@ -630,24 +1148,7 @@
     else if (S.tab === 0) renderGuide();
     else if (S.tab === 3) renderSearch();
   }
-  function watch(c, full) {
-    if (!c) return;
-    if (dualActive) stopDual();
-    if (S.tab !== 0) {
-      S.tab = 0;
-      S.nav = 0;
-      S.category = "__all";
-      S.minute = 0;
-      S.row = Math.max(0, S.catalogs.live.indexOf(c));
-      S.offset = Math.max(0, S.row - 3);
-      S.detail = null;
-      S.detailInfo = null;
-    }
-    currentPlayItem = c;
-    S.watched = c;
-    store.recordWatched(c.id);
-    // Open a full-screen stream with full-screen geometry, never the guide preview's.
-    if (full) player.setRect(FULL_RECT);
+  function playLive(c) {
     player.play({
       url: c.url,
       backups: c.backups,
@@ -655,8 +1156,165 @@
       title: c.name,
       id: c.id,
     });
+  }
+  // Whether c is the stream already loading or playing (so it must not be tuned again).
+  function playingNow(c) {
+    var st = player.state;
+    return !!(
+      c &&
+      st &&
+      st.request &&
+      st.request.id === c.id &&
+      /^(loading|playing|paused)$/.test(st.status)
+    );
+  }
+  function watch(c, full) {
+    if (!c) return;
+    if (dualActive) stopDual();
+    if (S.fullscreen) {
+      // Channel change while watching: the key already restarted the controls timer.
+      clearTimeout(surfTimer);
+      surfTimer = null;
+      surfTarget = null;
+      // The channel already playing (its own number, or a surf that came back to it) is not retuned.
+      var retune = !playingNow(c);
+      S.watched = currentPlayItem = c;
+      if (retune) {
+        store.recordWatched(c.id);
+        player.setRect(FULL_RECT);
+        playLive(c);
+      }
+      if (!S.playOrigin || S.playOrigin.tab === 0) syncGuideRow(c);
+      S.controls = true;
+      requestGuide(c);
+      renderPlayerOverlay();
+      return;
+    }
+    if (full && S.tab !== 0)
+      S.playOrigin = { tab: S.tab, zone: S.zone, focus: S.focusId };
+    if (S.tab === 0) {
+      S.focusAt = null;
+      S.viewBase = null;
+      syncGuideRow(c);
+    }
+    // OK on the channel already playing in the preview opens it without restarting the stream.
+    if (full && S.watched && S.watched.id === c.id && playingNow(c)) {
+      enterFullscreen();
+      return;
+    }
+    currentPlayItem = c;
+    S.watched = c;
+    store.recordWatched(c.id);
+    // Open a full-screen stream with full-screen geometry, never the guide preview's.
+    if (full) player.setRect(FULL_RECT);
+    playLive(c);
     if (full) enterFullscreen();
     else renderGuide();
+  }
+  // Channels CH and Up/Down step through: the guide's list, or every channel when opened from Search.
+  function surfList() {
+    var list =
+      S.playOrigin && S.playOrigin.tab !== 0 ? S.catalogs.live : liveItems();
+    return S.watched && list.indexOf(S.watched) >= 0 ? list : S.catalogs.live;
+  }
+  // The first press tunes at once; rapid or held presses only move the banner and tune 500 ms after the last.
+  function changeChannel(delta) {
+    var list = surfList(),
+      n = list.length,
+      from = surfTarget || S.watched,
+      i,
+      next,
+      quick;
+    if (!n) return;
+    i = list.indexOf(from);
+    next = list[i < 0 ? 0 : (i + delta + n) % n];
+    if (n === 1 && next === S.watched) {
+      // A one-channel list: nothing to change to, so show the banner instead of retuning.
+      S.controls = true;
+      renderPlayerOverlay();
+      toast(
+        "No other channels in " +
+          (list === S.catalogs.live ? "your playlist" : categoryName())
+      );
+      return;
+    }
+    quick = Date.now() - lastSurfKey < 700;
+    lastSurfKey = Date.now();
+    if (!quick && !surfTarget) {
+      watch(next, true);
+      return;
+    }
+    surfTarget = next;
+    clearTimeout(surfTimer);
+    surfTimer = setTimeout(commitSurf, 500);
+    S.controls = true;
+    requestGuide(next);
+    renderPlayerOverlay();
+  }
+  function commitSurf() {
+    clearTimeout(surfTimer);
+    surfTimer = null;
+    var c = surfTarget;
+    surfTarget = null;
+    if (c && S.fullscreen) watch(c, true);
+  }
+  function syncGuideRow(c, force) {
+    var at = liveItems().indexOf(c);
+    if (at < 0 && force && c) {
+      S.category = "__all";
+      at = liveItems().indexOf(c);
+    }
+    if (at < 0) return;
+    S.row = at;
+    if (S.row < S.offset || S.row >= S.offset + 4)
+      S.offset = Math.max(0, S.row - 1);
+  }
+  // CH+ pages up (d = -4), CH- pages down (d = 4); the highlight keeps its place in the window.
+  function pageGuide(d) {
+    var n = liveItems().length;
+    if (!n) return;
+    S.offset = Math.max(0, Math.min(Math.max(0, n - 4), S.offset + d));
+    S.row = Math.max(0, Math.min(n - 1, S.row + d));
+    enterGrid();
+    render();
+  }
+  // Number keys: up to four digits, shown in a badge, then tune (full screen) or jump the guide.
+  function numberKey(d) {
+    clearTimeout(entry.timer);
+    entry.digits = (entry.digits + d).slice(0, 4);
+    entryBadge.textContent = "CH " + entry.digits + "_";
+    entryBadge.appendChild(el("small", "", "OK Go  ·  Back Cancel"));
+    entryBadge.className = "channel-entry";
+    if (entry.digits.length >= 4) commitNumber();
+    else entry.timer = setTimeout(commitNumber, 1500);
+  }
+  function clearEntry() {
+    clearTimeout(entry.timer);
+    entry.timer = null;
+    entry.digits = "";
+    entryBadge.textContent = "";
+    entryBadge.className = "channel-entry hidden";
+  }
+  function commitNumber() {
+    var typed = entry.digits,
+      n = Number(typed),
+      c;
+    clearEntry();
+    if (!typed || S.dialog) return;
+    c = S.catalogs.live.filter(function (x) {
+      return Number(x.number) === n;
+    })[0];
+    if (!c) return toast("No channel " + n);
+    if (S.fullscreen) {
+      if (player.state.request && player.state.request.live) watch(c, true);
+      return;
+    }
+    if (S.tab !== 0 || S.detail) return;
+    if (liveItems().indexOf(c) < 0) S.category = "__all";
+    S.row = liveItems().indexOf(c);
+    S.offset = Math.max(0, S.row - 1);
+    enterGrid();
+    render();
   }
   function previewRect() {
     if (S.fullscreen) return;
@@ -736,7 +1394,7 @@
       );
       b.onfocus = function () {
         S.zone = "categories";
-        S.focusId = b.id;
+        remember(b.id);
       };
       chips.appendChild(b);
     });
@@ -770,7 +1428,7 @@
         card.onfocus = function () {
           S.zone = "cards";
           S.cards[kind] = i;
-          S.focusId = card.id;
+          remember(card.id);
           updateBrowseHero(item, kind);
           scrollToElement(card);
         };
@@ -1021,6 +1679,15 @@
   function enterFullscreen() {
     S.fullscreen = true;
     S.controls = true;
+    S.zone = "video";
+    S.focusId = null;
+    // The page behind the player is hidden; nothing there may keep DOM focus.
+    if (
+      document.activeElement &&
+      document.activeElement !== document.body &&
+      document.activeElement.blur
+    )
+      document.activeElement.blur();
     applyTheme();
     overlay.className = "";
     player.setRect(FULL_RECT);
@@ -1032,10 +1699,31 @@
     renderPlayerOverlay();
     scheduleHideControls();
   }
+  // Returns to where playback was opened: the detail page (VOD), the Search result, the guide's
+  // preview, or the guide row of the channel being watched. The guide always shows that channel's row,
+  // switching to All channels when it is outside the chosen category (e.g. tuned by number).
   function leaveFullscreen() {
+    clearTimeout(surfTimer);
+    surfTimer = null;
+    surfTarget = null;
+    var o = S.playOrigin;
+    S.playOrigin = null;
     S.fullscreen = false;
-    S.zone = S.detail ? "detail" : S.tab === 0 ? "grid" : "form";
-    S.focusId = null;
+    if (S.detail) {
+      S.zone = "detail";
+      S.focusId = null;
+    } else if (o && o.tab !== 0) {
+      S.tab = S.nav = o.tab;
+      S.zone = o.zone;
+      S.focusId = o.focus;
+      if (o.tab === 3 || o.tab === 4) S.pageFocus[o.tab] = o.focus;
+    } else {
+      if (o && S.tab === 0) {
+        S.zone = o.zone;
+        S.focusId = o.focus;
+      } else enterGrid();
+      syncGuideRow(S.watched, true);
+    }
     applyTheme();
     overlay.className = "hidden";
     clearTimeout(overlayTimer);
@@ -1054,17 +1742,10 @@
     if (S.fullscreen) {
       renderPlayerOverlay();
       if (S.controls && !overlayTimer) scheduleHideControls();
-    }
-    else if (S.tab === 0 && S.watched) {
-      var hint = main.querySelector(".preview-hint");
-      if (hint)
-        hint.textContent =
-          state.status === "loading"
-            ? "Connecting…"
-            : state.status === "error"
-              ? "Playback unavailable · OK Retry"
-              : "▶ OK Full screen";
-    }
+    } else if (S.tab === 0 && S.watched)
+      setPreviewHint(
+        !!document.activeElement && document.activeElement.id === "preview-frame"
+      );
   }
   function onPlayerTime(position, duration) {
     var fill = document.getElementById("play-progress"),
@@ -1098,23 +1779,95 @@
     }
     saveRecent();
   }
+  function playerIsLive() {
+    return !!(player.state && player.state.request && player.state.request.live);
+  }
+  // Hint for the state the next key acts on: INFO (banner only), CONTROLS (a bar button focused) or error.
+  function playerHint() {
+    var state = player.state || {},
+      live = playerIsLive(),
+      origin = S.playOrigin && S.playOrigin.tab === 3 ? "Search" : "Guide",
+      a = document.activeElement && document.activeElement.id;
+    if (live && surfTarget)
+      return (
+        "OK Watch now  ·  ↑ ↓ Channel  ·  Back " +
+        (S.zone === "player-actions" ? "Hide controls" : origin)
+      );
+    if (state.status === "error")
+      return live
+        ? "OK Retry  ·  ↑ ↓ Other channel  ·  Back " + origin
+        : "OK Retry  ·  Back Details";
+    if (S.zone === "player-actions") {
+      if (live)
+        return "← → Choose  ·  OK Select  ·  ↑ ↓ Channel  ·  Back Hide controls";
+      return a === "play-seek"
+        ? "← → Seek 10 seconds  ·  ↓ Buttons  ·  Back Hide controls"
+        : "← → Choose  ·  ↑ Seek  ·  OK Select  ·  Back Hide controls";
+    }
+    return live
+      ? "OK Controls  ·  ↑ ↓ Channel  ·  0–9 Number  ·  Yellow Subtitles  ·  Back " +
+          origin
+      : (state.status === "paused" ? "OK Play" : "OK Pause") +
+          "  ·  ← → Seek 10 seconds  ·  Yellow Subtitles  ·  Back Details";
+  }
+  function refreshPlayerHint() {
+    var n = document.getElementById("player-hint");
+    if (n) n.textContent = playerHint();
+  }
+  function surfListName() {
+    return surfList() === S.catalogs.live ? "All channels" : categoryName();
+  }
+  // Live banner: number and name, the programme on now, and the list Up/Down and CH step through.
+  function playerBanner(state) {
+    var top = el("div", "player-top"),
+      c = surfTarget || S.watched,
+      p;
+    if (!playerIsLive() || !c) {
+      top.appendChild(
+        el("div", "banner-title", (state.request && state.request.title) || "Tuner")
+      );
+      return top;
+    }
+    top.appendChild(
+      el("div", "banner-title", (c.number ? c.number + "  " : "") + c.name)
+    );
+    if (!S.guide[c.id]) requestGuide(c);
+    p = programAt(c, Date.now());
+    top.appendChild(
+      el(
+        "div",
+        "banner-program",
+        realProgram(p)
+          ? p.title + "  ·  " + clock(p.start) + " – " + clock(p.end)
+          : p && p.gap
+            ? "No information"
+            : "Schedule unavailable"
+      )
+    );
+    top.appendChild(el("div", "banner-list", surfListName()));
+    if (surfTarget) top.appendChild(el("div", "banner-surf", "OK Watch now"));
+    return top;
+  }
   function renderPlayerOverlay() {
     if (!S.fullscreen) return;
     var state = player.state || {},
+      live = playerIsLive(),
+      error = state.status === "error",
       old = S.focusId;
+    // A failed stream always shows the controls with Retry focused.
+    if (error && !S.dialog && S.zone !== "player-actions") {
+      S.zone = "player-actions";
+      S.focusId = old = "play-toggle";
+      S.controls = true;
+    }
+    var bar = S.zone === "player-actions";
     overlay.textContent = "";
     if (subtitleLayer.className.indexOf("hidden") < 0)
       subtitleLayer.className = "subtitle-layer" + (S.controls ? " raised" : "");
-    if (S.controls || state.status === "error") {
-      overlay.appendChild(
-        el(
-          "div",
-          "player-top",
-          (state.request && state.request.title) || "Tuner"
-        )
-      );
+    if (S.controls || bar) {
+      overlay.appendChild(playerBanner(state));
       var bottom = el("div", "player-bottom");
-      if (!state.request || !state.request.live) {
+      if (!live) {
         var time = el(
           "span",
           "time-text",
@@ -1122,80 +1875,122 @@
         );
         time.id = "play-time";
         bottom.appendChild(time);
-        var track = el("div", "progress-track"),
+        var track = el("div", "progress-track focusable"),
           fill = el("div", "progress-fill");
+        track.id = "play-seek";
+        track.tabIndex = 0;
+        track.setAttribute("role", "slider");
+        track.onclick = function () {
+          player.toggle();
+        };
+        track.onfocus = function () {
+          remember(track.id);
+          refreshPlayerHint();
+        };
         fill.id = "play-progress";
         fill.style.width =
           (state.duration ? (state.position / state.duration) * 100 : 0) + "%";
         track.appendChild(fill);
         bottom.appendChild(track);
       }
-      var actions = el("div", "player-actions");
-      actions.appendChild(
-        button(
-          state.status === "paused" ? "▶ Play" : "Ⅱ Pause",
-          "play-toggle",
-          function () {
-            player.toggle();
-          }
-        )
-      );
-      if (state.request && state.request.live && S.watched)
+      if (bar) {
+        var actions = el("div", "player-actions");
         actions.appendChild(
           button(
-            store.isFavourite(S.watched.id) ? "★ Saved" : "☆ Favorite",
-            "play-fav",
+            error ? "↻ Retry" : state.status === "paused" ? "▶ Play" : "Ⅱ Pause",
+            "play-toggle",
             function () {
-              toggleFavorite(S.watched);
+              var now = player.state || {};
+              if (now.status === "error") {
+                if (now.request) player.play(now.request);
+              } else player.toggle();
             }
           )
         );
-      actions.appendChild(
-        button("CC Subtitles", "play-subtitles", subtitleDialog)
-      );
-      actions.appendChild(button("Audio", "play-tracks", audioDialog));
-      actions.appendChild(button("Back", "play-back", leaveFullscreen));
-      bottom.appendChild(actions);
-      bottom.appendChild(
-        el(
-          "div",
-          "player-hint",
-          state.request && state.request.live
-            ? "OK Controls  ·  ↑ ↓ Change channel  ·  Yellow Subtitles  ·  Back Guide"
-            : "OK Play / pause  ·  ← → Seek 10 seconds  ·  Yellow Subtitles  ·  Back Titles"
-        )
-      );
+        if (live && S.watched)
+          actions.appendChild(
+            button(
+              store.isFavourite(S.watched.id) ? "★ Saved" : "☆ Favorite",
+              "play-fav",
+              function () {
+                toggleFavorite(S.watched);
+              }
+            )
+          );
+        actions.appendChild(
+          button("CC Subtitles", "play-subtitles", subtitleDialog)
+        );
+        actions.appendChild(button("Audio", "play-tracks", audioDialog));
+        actions.appendChild(
+          button("Back", "play-back", function () {
+            leaveFullscreen();
+          })
+        );
+        bottom.appendChild(actions);
+      }
+      var hint = el("div", "player-hint", "");
+      hint.id = "player-hint";
+      bottom.appendChild(hint);
       overlay.appendChild(bottom);
-      if (S.zone === "player-actions")
+      if (bar && !S.dialog)
         focus(document.getElementById(old) ? old : "play-toggle");
+      hint.textContent = playerHint();
     }
-    if (state.status === "loading" || state.status === "error") {
+    if (state.status === "loading" || error) {
       var status = el("div", "player-status");
       status.appendChild(
-        el(
-          "h2",
-          "",
-          state.status === "loading" ? "Connecting…" : "Playback unavailable"
-        )
+        el("h2", "", error ? "Playback unavailable" : "Connecting…")
       );
       status.appendChild(
         el(
           "p",
           "muted",
-          state.status === "error"
+          error
             ? state.error || "Try another stream or retry."
             : "Preparing the stream on your TV"
         )
       );
-      if (state.status === "error")
-        status.appendChild(
-          button("Retry", "play-retry", function () {
-            var r = state.request;
-            if (r) player.play(r);
-          })
-        );
       overlay.appendChild(status);
     }
+  }
+  // Reveals the player bar with one of its buttons focused.
+  function showPlayerControls(id) {
+    S.controls = true;
+    S.zone = "player-actions";
+    S.focusId = id || "play-toggle";
+    renderPlayerOverlay();
+    focus(S.focusId);
+    refreshPlayerHint();
+  }
+  function playerArrow(code) {
+    var live = playerIsLive(),
+      bar = ["play-toggle", "play-fav", "play-subtitles", "play-tracks", "play-back"],
+      a = document.activeElement && document.activeElement.id;
+    if (live) {
+      // Up/Down change channel in every state, like the guide list: Down is the next (higher) channel.
+      if (code === 38 || code === 40) changeChannel(code === 40 ? 1 : -1);
+      else if (S.zone === "player-actions") {
+        moveInRows([bar], code);
+        refreshPlayerHint();
+      } else showPlayerControls("play-toggle");
+      return;
+    }
+    if (S.zone === "player-actions") {
+      if (a === "play-seek" && (code === 37 || code === 39)) {
+        player.seek(code === 37 ? -10000 : 10000);
+        return;
+      }
+      moveInRows([["play-seek"], bar], code);
+      refreshPlayerHint();
+      return;
+    }
+    if (code === 37 || code === 39) {
+      player.seek(code === 37 ? -10000 : 10000);
+      S.controls = true;
+      renderPlayerOverlay();
+      return;
+    }
+    showPlayerControls("play-toggle");
   }
   // One timer hides the playback controls 5 seconds after the last remote key or state change.
   // It re-arms itself while a dialog is open, playback is paused or failed, so it can never be lost.
@@ -1245,7 +2040,8 @@
   }
   function subtitleDialog() {
     var tracks = player.tracks().subtitles || [],
-      on = !!(player.subtitlesShowing && player.subtitlesShowing());
+      on = !!(player.subtitlesShowing && player.subtitlesShowing()),
+      selected = 0;
     if (!tracks.length) {
       showDialog("Subtitles", "No subtitles in this stream.", []);
       return;
@@ -1260,8 +2056,9 @@
         },
       },
     ];
-    tracks.forEach(function (track) {
+    tracks.forEach(function (track, i) {
       var name = trackName(track, "Subtitles");
+      if (on && track.selected) selected = i + 1;
       actions.push({
         text: (on && track.selected ? "✓ " : "") + name,
         run: function () {
@@ -1271,13 +2068,20 @@
         },
       });
     });
-    showDialog("Subtitles", "Choose subtitles or captions for this stream.", actions);
+    showDialog(
+      "Subtitles",
+      "Choose subtitles or captions for this stream.",
+      actions,
+      { list: true, focus: selected }
+    );
   }
   function audioDialog() {
     var tracks = player.tracks().audio || [],
-      actions = [];
-    tracks.forEach(function (track) {
+      actions = [],
+      selected = 0;
+    tracks.forEach(function (track, i) {
       var name = trackName(track, "Audio");
+      if (track.selected) selected = i;
       actions.push({
         text: (track.selected ? "✓ " : "") + name,
         run: function () {
@@ -1291,17 +2095,23 @@
       tracks.length > 1
         ? "Choose an audio track. All available languages are allowed."
         : "This stream does not offer other audio tracks.",
-      tracks.length > 1 ? actions : []
+      tracks.length > 1 ? actions : [],
+      { list: true, focus: selected }
     );
   }
-  function showDialog(title, text, actions) {
+  // opts.list: a vertical list (Up/Down); otherwise a button row (Left/Right). opts.focus: first focused
+  // action; opts.closeText / opts.focusClose: the close button's label and whether it starts focused.
+  function showDialog(title, text, actions, opts) {
+    opts = opts || {};
+    actions = actions || [];
+    if (!S.dialog) dialogReturn = { id: S.focusId, zone: S.zone };
     S.dialog = true;
     dialogLayer.className = "";
     dialogLayer.textContent = "";
-    var box = el("div", "dialog");
+    var box = el("div", opts.list ? "dialog choices" : "dialog");
     box.appendChild(el("h2", "", title));
     box.appendChild(el("p", "", text));
-    (actions || []).forEach(function (action, i) {
+    actions.forEach(function (action, i) {
       box.appendChild(
         button(action.text, "dialog-" + i, function () {
           action.run();
@@ -1309,15 +2119,22 @@
       );
     });
     box.appendChild(
-      button("Close", "dialog-close", function () {
+      button(opts.closeText || "Close", "dialog-close", function () {
         closeDialog();
       })
     );
     dialogLayer.appendChild(box);
-    focus(actions && actions.length ? "dialog-0" : "dialog-close");
+    focus(
+      opts.focusClose || !actions.length
+        ? "dialog-close"
+        : "dialog-" + Math.max(0, Math.min(actions.length - 1, opts.focus || 0))
+    );
   }
+  // Closes the dialog and, unless restore is false, puts focus back on the control that opened it.
   function closeDialog(restore) {
-    var returnFocus = pin && pin.returnFocus;
+    var ret =
+      pin && pin.returnFocus ? { id: pin.returnFocus, zone: S.zone } : dialogReturn;
+    dialogReturn = null;
     if (pin) {
       clearTimeout(pin.timer);
       pin = null;
@@ -1326,16 +2143,49 @@
     dialogLayer.className = "hidden";
     dialogLayer.textContent = "";
     if (restore !== false) {
+      if (ret) {
+        S.zone = ret.zone;
+        S.focusId = ret.id;
+      }
       if (S.fullscreen) {
         S.controls = true;
+        if (S.zone !== "player-actions") S.zone = "video";
         renderPlayerOverlay();
         scheduleHideControls();
       } else {
         render();
-        if (returnFocus && document.getElementById(returnFocus)) focus(returnFocus);
+        if (ret && ret.id && S.zone !== "grid" && S.zone !== "nav") focus(ret.id);
       }
     }
     if (dualActive && S.tab === 5) scheduleDualControls();
+  }
+  // Dialog arrows: list dialogs move with Up/Down, button rows with Left/Right; nothing wraps.
+  function dialogArrow(code) {
+    var box = dialogLayer.querySelector(".dialog"),
+      ids = focusables(dialogLayer).map(function (n) {
+        return n.id;
+      });
+    if (box && /\bchoices\b/.test(box.className)) {
+      if (code === 38 || code === 40)
+        moveInRows(
+          ids.map(function (id) {
+            return [id];
+          }),
+          code
+        );
+    } else if (code === 37 || code === 39) moveInRows([ids], code);
+  }
+  // CH+/CH- in the Multi View channel list jumps eight channels.
+  function pickerPage(d) {
+    var a = document.activeElement,
+      list =
+        a && a.parentNode && /picker-list/.test(a.parentNode.className)
+          ? focusables(a.parentNode)
+          : null,
+      i;
+    if (!list || !list.length) return;
+    i = list.indexOf(a);
+    focus(list[Math.max(0, Math.min(list.length - 1, i + d))].id);
   }
   function renderSearch() {
     main.textContent = "";
@@ -1343,25 +2193,24 @@
     var input = el("input", "search-bar");
     input.id = "search-input";
     input.type = "search";
-    input.placeholder = "Search channels, movies and series";
+    input.placeholder = "Press OK to type a channel, movie or series";
     input.value = S.query;
     input.oninput = function () {
       S.query = input.value;
       clearTimeout(searchTimer);
       searchTimer = setTimeout(renderSearchResults, 180);
     };
+    makeTextField(input);
     main.appendChild(input);
+    main.appendChild(
+      el("p", "muted search-hint", "OK Type  ·  ↓ Results  ·  Back Tabs")
+    );
     var results = el("div", "search-results");
     results.id = "search-results";
     main.appendChild(results);
     renderSearchResults();
     if (S.zone === "nav") focus("tab-" + S.nav);
-    else
-      focus(
-        S.focusId && document.getElementById(S.focusId)
-          ? S.focusId
-          : "search-input"
-      );
+    else focus(S.pageFocus[3]) || focus("search-input");
   }
   function renderSearchResults() {
     var results = document.getElementById("search-results");
@@ -1444,9 +2293,51 @@
     input.value = value || "";
     input.autocomplete = "off";
     input.spellcheck = false;
+    input.oninput = function () {
+      sourceDraft[id] = input.value;
+    };
+    makeTextField(input);
     wrap.appendChild(l);
     wrap.appendChild(input);
     return wrap;
+  }
+  // Text fields are focusable but read-only until OK, so arrows and Back always work on them and the
+  // TV keyboard opens only on request. While editing, Done/Enter, Cancel, Back or Up/Down end it.
+  function makeTextField(input) {
+    input.readOnly = true;
+    input.onfocus = function () {
+      remember(input.id);
+    };
+    input.onblur = function () {
+      if (!input.readOnly) stopEditing(input, "blur");
+    };
+    input.onclick = function () {
+      if (input.readOnly) startEditing(input, true);
+    };
+    return input;
+  }
+  function startEditing(f, reopen) {
+    // Blur first so onblur cannot reset readOnly; focusing the editable field opens the TV keyboard.
+    if (reopen) f.blur();
+    f.readOnly = false;
+    f.className = f.className.replace(/\s*\bediting\b/g, "") + " editing";
+    if (reopen) f.focus();
+    try {
+      f.setSelectionRange(f.value.length, f.value.length);
+    } catch (e) {}
+  }
+  function stopEditing(f, how) {
+    var nodes, i;
+    f.readOnly = true;
+    f.className = f.className.replace(/\s*\bediting\b/g, "");
+    if (how !== "done") return;
+    if (f.id === "search-input") focus("result-0");
+    else if (f.id === "dual-channel-query") focus("dual-result-0");
+    else {
+      nodes = focusables(document.getElementById("source-form") || main);
+      i = nodes.indexOf(f);
+      if (i >= 0 && nodes[i + 1]) focus(nodes[i + 1].id);
+    }
   }
   function renderSettings() {
     main.textContent = "";
@@ -1473,56 +2364,84 @@
     var grid = el("div", "settings-grid"),
       form = el("form", "settings-main");
     form.id = "source-form";
+    form.noValidate = true;
     var source = store.settings.source || {},
       mode = el("div", "field"),
-      modeLabel = el("label", "", "Playlist type"),
-      select = el("select");
-    select.id = "source-type";
-    ["xtream", "m3u"].forEach(function (type) {
-      var o = el(
-        "option",
-        "",
-        type === "xtream" ? "Xtream Codes" : "M3U playlist"
+      modeLabel = el("label", "", "Playlist type");
+    // A button that switches the type on OK: arrows always move focus, never change the choice.
+    var typeButton = button(
+      "",
+      "source-type",
+      function () {
+        var had = document.activeElement === typeButton;
+        sourceDraft.type = currentSourceType() === "xtream" ? "m3u" : "xtream";
+        setTypeButton();
+        renderFields();
+        if (had) focus("source-type");
+      },
+      "field-toggle"
+    );
+    function setTypeButton() {
+      var type = currentSourceType();
+      typeButton.value = type;
+      typeButton.textContent = "";
+      typeButton.appendChild(
+        el("span", "", type === "xtream" ? "Xtream Codes" : "M3U playlist")
       );
-      o.value = type;
-      select.appendChild(o);
-    });
-    select.value = source.type || "xtream";
+      typeButton.appendChild(el("small", "", "OK to switch"));
+    }
+    setTypeButton();
+    modeLabel.htmlFor = "source-type";
     mode.appendChild(modeLabel);
-    mode.appendChild(select);
+    mode.appendChild(typeButton);
     form.appendChild(mode);
     var fields = el("div");
     fields.id = "source-fields";
     form.appendChild(fields);
+    function draft(id, saved) {
+      return sourceDraft[id] !== undefined ? sourceDraft[id] : saved;
+    }
     function renderFields() {
       fields.textContent = "";
-      if (select.value === "xtream") {
+      if (currentSourceType() === "xtream") {
         fields.appendChild(
-          field("Server URL", "source-server", source.server, "url")
+          field("Server URL", "source-server", draft("source-server", source.server), "url")
         );
         var row = el("div", "field-row");
-        row.appendChild(field("Username", "source-user", source.username));
         row.appendChild(
-          field("Password", "source-password", source.password, "password")
+          field("Username", "source-user", draft("source-user", source.username))
+        );
+        row.appendChild(
+          field(
+            "Password",
+            "source-password",
+            draft("source-password", source.password),
+            "password"
+          )
         );
         fields.appendChild(row);
       } else {
         fields.appendChild(
-          field("Playlist URL", "source-m3u", source.m3uUrl, "url")
+          field("Playlist URL", "source-m3u", draft("source-m3u", source.m3uUrl), "url")
         );
         fields.appendChild(
-          field("Guide URL (optional)", "source-epg", source.epgUrl, "url")
+          field(
+            "Guide URL (optional)",
+            "source-epg",
+            draft("source-epg", source.epgUrl),
+            "url"
+          )
         );
       }
     }
-    select.onchange = renderFields;
     renderFields();
     var actions = el("div", "settings-actions");
     var save = button("Save and connect", "save-source", saveSource);
     save.type = "submit";
     save.onclick = null;
     actions.appendChild(save);
-    actions.appendChild(button("Refresh", "refresh-source", function () { connect(true); }));
+    if (store.settings.source)
+      actions.appendChild(button("Refresh", "refresh-source", function () { connect(true); }));
     form.appendChild(actions);
     form.onsubmit = function (e) {
       e.preventDefault();
@@ -1646,14 +2565,14 @@
       el(
         "p",
         "",
-        "Arrow keys browse. OK opens or watches. Back returns to tabs. Hold OK on a live channel to save a Favorite. Channel +/− pages the guide."
+        "Arrows move. OK selects; on a text field OK opens the keyboard. Back goes up one level. In the guide: Hold OK saves a Favorite, ← → browse the schedule, Channel +/− pages, number keys jump to a channel."
       )
     );
     side.appendChild(
       button("About Tuner", "about-tuner", function () {
         showDialog(
           "Tuner for Samsung TV",
-          "Version 1.4.12 · Samsung TV\nLive TV, guide, movies, series and Favorites. Two-channel PiP works on supported TVs and playlists. Embedded torrent playback is not available on Samsung.",
+          "Version 1.4.13 · Samsung TV\nLive TV, guide, movies, series and Favorites. Two-channel PiP works on supported TVs and playlists. Embedded torrent playback is not available on Samsung.",
           []
         );
       })
@@ -1663,7 +2582,16 @@
     if (pairRow) form.insertBefore(pairRow, form.firstChild);
     main.appendChild(grid);
     if (S.zone === "nav") focus("tab-" + S.nav);
-    else focus(!store.settings.source && window.TunerPairing ? "pair-phone" : "source-type");
+    else
+      focus(S.pageFocus[4]) ||
+        focus(!store.settings.source && window.TunerPairing ? "pair-phone" : "source-type");
+  }
+  function currentSourceType() {
+    return (
+      sourceDraft.type ||
+      (store.settings.source && store.settings.source.type) ||
+      "xtream"
+    );
   }
   function openPairing() {
     window.TunerPairing.open({
@@ -1671,6 +2599,7 @@
       onSource: function (source) {
         if (!store.saveSettings({ source: source }))
           return toast(store.lastError || "The playlist could not be saved.");
+        sourceDraft = {};
         connect();
         openTab(0);
         toast("Paired with LumaNest TV. Loading your channels.");
@@ -1679,7 +2608,7 @@
     });
   }
   function saveSource() {
-    var type = document.getElementById("source-type").value,
+    var type = currentSourceType(),
       source = { type: type, name: "My playlist" };
     if (type === "xtream") {
       source.server = document
@@ -1704,6 +2633,7 @@
     }
     if (!store.saveSettings({ source: source }))
       return toast(store.lastError || "The playlist could not be saved.");
+    sourceDraft = {};
     connect();
     openTab(0);
     toast("Playlist saved. Loading your channels.");
@@ -1945,7 +2875,10 @@
     S.sourceGeneration++;
     if (client) client.cancel();
     S.category = "__all";
-    S.minute = 0;
+    S.focusAt = null;
+    S.viewBase = null;
+    S.guidePlaced = false;
+    S.playOrigin = null;
     S.detail = null;
     S.detailInfo = null;
     dualChannels = [null, null];
@@ -1996,20 +2929,35 @@
     });
     client.load(force === true);
   }
+  // Back goes up exactly one level and lands where the user came from.
   function back() {
+    if (entry.digits) {
+      clearEntry();
+      return;
+    }
     if (S.dialog) {
       closeDialog();
       return;
     }
     if (dualActive && S.tab === 5) {
       if (dualControls) hideDualControls();
-      else openTab(0);
+      else {
+        // Back to the setup screen with both channels still chosen.
+        stopDual();
+        dualFocusId = "dual-start";
+        S.zone = "form";
+        render();
+      }
       return;
     }
     if (S.fullscreen) {
-      if (S.zone === "player-actions") {
+      if (
+        S.zone === "player-actions" &&
+        !(player.state && player.state.status === "error")
+      ) {
         S.zone = "video";
         S.controls = false;
+        S.focusId = null;
         renderPlayerOverlay();
       } else leaveFullscreen();
       return;
@@ -2018,23 +2966,21 @@
       backDetail();
       return;
     }
-    if (S.tab === 0 && S.minute > 0) {
-      S.minute = 0;
-      renderGuide();
+    if (S.tab === 0 && S.zone !== "nav") {
+      if (S.zone === "grid" && S.focusAt !== null) {
+        S.focusAt = null;
+        S.viewBase = null;
+        renderGuide();
+      } else if (S.zone === "grid" || S.zone === "empty") toChips();
+      else toNav();
       return;
     }
     if (S.zone !== "nav") {
-      S.zone = "nav";
-      S.nav = S.tab;
-      renderNav();
-      focus("tab-" + S.tab);
+      toNav();
       return;
     }
     if (S.tab !== 0) {
-      openTab(0);
-      S.zone = "nav";
-      renderNav();
-      focus("tab-0");
+      openTab(0, true);
       return;
     }
     showDialog("Close Tuner?", "Your Favorites and settings are saved.", [
@@ -2050,64 +2996,28 @@
           }
         },
       },
-    ]);
-  }
-  function buttonsIn(parent) {
-    return Array.prototype.slice
-      .call(parent.querySelectorAll("button,select,input"))
-      .filter(function (n) {
-        return !n.disabled && n.offsetWidth > 0;
-      });
-  }
-  function moveFocus(parent, delta) {
-    var nodes = buttonsIn(parent),
-      i = nodes.indexOf(document.activeElement);
-    focus(
-      (nodes[Math.max(0, Math.min(nodes.length - 1, i + delta))] || nodes[0]).id
-    );
+    ], { closeText: "Cancel", focusClose: true });
   }
   function handleArrow(code) {
+    S.guideWaiting = false;
     if (S.dialog) {
       if (pin) passcodeArrow(code);
-      else moveFocus(dialogLayer, code === 37 || code === 38 ? -1 : 1);
+      else dialogArrow(code);
       return;
     }
     if (dualActive && S.tab === 5) {
       if (!dualControls) showDualControls();
       else {
-        moveFocus(main, code === 37 || code === 38 ? -1 : 1);
+        if (code === 37 || code === 39)
+          moveInRows(
+            [["dual-pick-0", "dual-pick-1", "dual-layout", "dual-audio-0", "dual-audio-1", "dual-stop"]],
+            code
+          );
         scheduleDualControls();
       }
       return;
     }
-    if (S.fullscreen) {
-      var live = player.state.request && player.state.request.live;
-      if (S.zone === "player-actions") {
-        moveFocus(overlay, code === 37 || code === 38 ? -1 : 1);
-        return;
-      }
-      if (live && (code === 38 || code === 40)) {
-        var items = S.catalogs.live,
-          i = items.indexOf(S.watched);
-        watch(
-          items[(i + (code === 40 ? 1 : -1) + items.length) % items.length],
-          true
-        );
-        return;
-      }
-      if (!live && (code === 37 || code === 39)) {
-        player.seek(code === 37 ? -10000 : 10000);
-        S.controls = true;
-        renderPlayerOverlay();
-        scheduleHideControls();
-        return;
-      }
-      S.zone = "player-actions";
-      S.controls = true;
-      renderPlayerOverlay();
-      focus("play-toggle");
-      return;
-    }
+    if (S.fullscreen) return playerArrow(code);
     if (S.zone === "nav") {
       if (code === 37 || code === 39) {
         S.nav = Math.max(
@@ -2116,61 +3026,16 @@
         );
         focus("tab-" + S.nav);
       } else if (code === 40) {
-        S.zone =
-          S.tab === 0 ? "grid" : S.tab === 1 || S.tab === 2 ? "cards" : "form";
-        render();
+        if (S.nav !== S.tab) openTab(S.nav);
+        else enterPage();
       }
       return;
     }
     if (S.detail) {
-      moveFocus(main, code === 37 || code === 38 ? -1 : 1);
+      moveSpatial(main, code);
       return;
     }
-    if (S.tab === 0) {
-      if (S.zone === "grid") {
-        var items = liveItems();
-        if (code === 38 && S.row === 0) {
-          S.zone = "categories";
-          focus(
-            "live-cat-" +
-              Math.max(
-                0,
-                liveCategories()
-                  .map(function (c) {
-                    return c.id;
-                  })
-                  .indexOf(S.category)
-              )
-          );
-          return;
-        }
-        if (code === 38 || code === 40)
-          S.row = Math.max(
-            0,
-            Math.min(items.length - 1, S.row + (code === 40 ? 1 : -1))
-          );
-        else
-          S.minute = Math.max(
-            0,
-            Math.min(1440, S.minute + (code === 37 ? -30 : 30))
-          );
-        renderGuide();
-        return;
-      }
-      if (code === 40) {
-        S.zone = "grid";
-        renderGuide();
-      } else if (code === 38) {
-        S.zone = "nav";
-        renderNav();
-        focus("tab-0");
-      } else {
-        var parent =
-          document.activeElement && document.activeElement.parentNode;
-        moveFocus(parent || main, code === 37 ? -1 : 1);
-      }
-      return;
-    }
+    if (S.tab === 0) return guideArrow(code);
     if (S.tab === 1 || S.tab === 2) {
       var kind = browseKind();
       if (S.zone === "cards") {
@@ -2192,14 +3057,36 @@
       if (code === 40) {
         S.zone = "cards";
         renderBrowse();
-      } else if (code === 38) {
-        S.zone = "nav";
-        renderNav();
-        focus("tab-" + S.tab);
-      } else moveFocus(document.activeElement.parentNode, code === 37 ? -1 : 1);
+      } else if (code === 38) toNav();
+      else {
+        var parent = document.activeElement && document.activeElement.parentNode;
+        if (parent)
+          moveInRows(
+            [
+              focusables(parent).map(function (n) {
+                return n.id;
+              }),
+            ],
+            code
+          );
+      }
       return;
     }
-    moveFocus(main, code === 37 || code === 38 ? -1 : 1);
+    if (S.tab === 5) {
+      if (
+        !moveInRows(
+          [
+            ["dual-pick-0", "dual-pick-1", "dual-layout", "dual-start"],
+            ["dual-audio-0", "dual-audio-1"],
+          ],
+          code
+        ) &&
+        code === 38
+      )
+        toNav();
+      return;
+    }
+    if (!moveSpatial(main, code) && code === 38) toNav();
   }
   function stopDual() {
     clearTimeout(dualControlsTimer);
@@ -2207,6 +3094,7 @@
     dualActive = false;
     dualControls = true;
     dualStates = [{ status: "idle" }, { status: "idle" }];
+    if (document.activeElement === main) main.blur();
     applyTheme();
   }
   function scheduleDualControls() {
@@ -2352,6 +3240,8 @@
       controls.appendChild(
         button("Stop", "dual-stop", function () {
           stopDual();
+          dualFocusId = "dual-start";
+          S.zone = "form";
           renderMultiView();
         })
       );
@@ -2390,7 +3280,9 @@
               ? "Connecting…"
               : dualActive
                 ? "This channel has stopped. Choose a channel above."
-                : "Choose a channel above, then Watch both."
+                : dualChannels[0] && dualChannels[1]
+                  ? "Ready. Select Watch both to start."
+                  : "Choose a channel above, then Watch both."
         );
         frame.appendChild(message);
       }
@@ -2403,8 +3295,8 @@
         "p",
         "dual-footer",
         dualActive
-          ? "OK / Arrows Controls  ·  Back Hide controls, then leave Multi View"
-          : "Uses both playlist streams. Stop this playlist on other TVs first.  ·  Back Tabs  ·  Leaving stops both games"
+          ? "← → Choose  ·  OK Select  ·  Back Hide controls, then stop"
+          : "Uses both playlist streams. Stop this playlist on other TVs first.  ·  ↑ Tabs  ·  OK Choose  ·  Back Tabs  ·  Leaving stops both games"
       )
     );
     if (dualActive) {
@@ -2419,40 +3311,55 @@
         S.focusId = null;
       }
     } else if (S.zone === "nav") focus("tab-" + S.nav);
-    else
-      focus(
-        S.focusId && document.getElementById(S.focusId)
-          ? S.focusId
-          : "dual-pick-0"
-      );
+    else focus(dualFocusId) || focus("dual-pick-0");
   }
+  // Multi View channel list: every channel (Favorites first) or the channels matching the search,
+  // with numbers. Up/Down walk it, CH+/CH- jump eight, Back or Cancel return to the slot's button.
   function pickDualChannel(slot) {
     clearTimeout(dualControlsTimer);
-    dualFocusId = "dual-pick-" + slot;
+    if (!S.dialog) dialogReturn = { id: "dual-pick-" + slot, zone: S.zone };
     S.dialog = true;
     dialogLayer.className = "";
     dialogLayer.textContent = "";
-    var box = el("div", "dialog");
+    var box = el("div", "dialog choices");
     box.appendChild(el("h2", "", "Choose channel " + (slot + 1)));
     var input = el("input", "search-bar");
     input.id = "dual-channel-query";
     input.type = "search";
-    input.placeholder = "Search a channel or team";
+    input.placeholder = "Press OK to search a channel or team";
+    makeTextField(input);
     box.appendChild(input);
-    var results = el("div");
+    var results = el("div", "picker-list"),
+      current = -1;
     box.appendChild(results);
     function update() {
       results.textContent = "";
+      current = -1;
       var q = input.value.toLowerCase().trim(),
+        favourites = Object.create(null),
         items = S.catalogs.live.filter(function (c) {
-          return q
-            ? c.name.toLowerCase().indexOf(q) >= 0
-            : /ESPN|NFL|NBC|CBS|FOX|ABC|SPORT|NESN/i.test(c.name);
+          return !q || c.name.toLowerCase().indexOf(q) >= 0;
         });
-      items.slice(0, 12).forEach(function (c, i) {
+      store.favourites().forEach(function (id) {
+        favourites[id] = true;
+      });
+      if (!q)
+        items = items
+          .filter(function (c) {
+            return favourites[c.id] === true;
+          })
+          .concat(
+            items.filter(function (c) {
+              return favourites[c.id] !== true;
+            })
+          )
+          .slice(0, 100);
+      else items = items.slice(0, 60);
+      items.forEach(function (c, i) {
+        if (dualChannels[slot] && dualChannels[slot].id === c.id) current = i;
         results.appendChild(
           button(
-            c.name,
+            (c.number ? c.number + "  " : "") + c.name,
             "dual-result-" + i,
             function () {
               if (dualChannels[1 - slot] && dualChannels[1 - slot].id === c.id)
@@ -2460,6 +3367,11 @@
               var previous = dualChannels[slot];
               dualChannels[slot] = c;
               closeDialog(false);
+              dualFocusId = dualActive
+                ? "dual-pick-" + slot
+                : !dualChannels[1 - slot]
+                  ? "dual-pick-" + (1 - slot)
+                  : "dual-start";
               if (dualActive && dual && (!previous || previous.id !== c.id || previous.url !== c.url))
                 playDualChannel(slot);
               renderMultiView();
@@ -2480,7 +3392,8 @@
       })
     );
     dialogLayer.appendChild(box);
-    focus("dual-channel-query");
+    focus(current >= 0 ? "dual-result-" + current : "dual-result-0") ||
+      focus("dual-channel-query");
   }
   function startDual() {
     if (!dualChannels[0] || !dualChannels[1])
@@ -2558,38 +3471,58 @@
   function canHoldFavorite() {
     return (
       !S.dialog &&
-      ((S.tab === 0 && !S.fullscreen && S.zone === "grid") ||
+      !surfTarget &&
+      ((S.tab === 0 && !S.fullscreen && !S.detail && S.zone === "grid") ||
         (S.fullscreen && S.zone !== "player-actions" && S.watched))
     );
   }
   var enterDown = 0,
-    enterHeld = false;
-  document.addEventListener("keydown", function (e) {
+    enterHeld = false,
+    FIELD_PASS_KEYS = [
+      458, 427, 428, 33, 34, 10252, 179, 415, 19, 412, 417, 413, 403, 404, 405,
+      406, 10221, 460,
+    ];
+  function keyDown(e) {
     var code = e.keyCode || e.which,
-      tag = e.target && e.target.tagName;
+      tag = e.target && e.target.tagName,
+      i;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
+      var field = e.target,
+        editing = !field.readOnly;
       if (code === 10009 || code === 27) {
         e.preventDefault();
-        if (S.dialog) closeDialog();
+        if (editing) stopEditing(field, "cancel");
+        else if (S.dialog) closeDialog();
         else {
-          e.target.blur();
-          S.zone = "nav";
-          renderNav();
-          focus("tab-" + S.tab);
+          field.blur();
+          toNav();
         }
-      } else if (code === 38 || code === 40) {
+      } else if (code === 13 || code === 65376 || code === 65385) {
+        // OK/Enter, the TV keyboard's Done (65376) and Cancel (65385).
         e.preventDefault();
-        var direction = code === 38 ? -1 : 1;
-        if (S.dialog) moveFocus(dialogLayer, direction);
-        else if (
-          code === 40 &&
-          S.tab === 3 &&
-          document.getElementById("result-0")
-        )
-          focus("result-0");
-        else moveFocus(main, direction);
+        if (!editing) {
+          if (code === 13) startEditing(field, true);
+        } else stopEditing(field, code === 65385 ? "cancel" : "done");
+      } else if (code >= 37 && code <= 40) {
+        if (editing && (code === 37 || code === 39)) return; // move the caret
+        e.preventDefault();
+        if (editing) stopEditing(field, "move");
+        if (S.dialog) dialogArrow(code);
+        else handleArrow(code);
+      } else if (
+        !editing &&
+        e.key &&
+        e.key.length === 1 &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey
+      ) {
+        // Typing (number keys, a PC keyboard) starts editing; the character is still inserted.
+        startEditing(field, false);
+        return;
       }
-      return;
+      // A field that is not being edited passes remote keys on: Guide, CH, media and color keys.
+      if (editing || FIELD_PASS_KEYS.indexOf(code) < 0) return;
     }
     if (code === 10009 || code === 27 || code === 8) {
       e.preventDefault();
@@ -2598,13 +3531,24 @@
     }
     // Any remote key while watching restarts the single controls timer.
     if (S.fullscreen) scheduleHideControls();
-    if (pin && S.dialog) {
-      var digit = code >= 48 && code <= 57 ? code - 48 : code >= 96 && code <= 105 ? code - 96 : -1;
-      if (digit >= 0) {
-        e.preventDefault();
-        if (!e.repeat) passcodeDigit(String(digit));
-        return;
-      }
+    var digit =
+      code >= 48 && code <= 57 ? code - 48 : code >= 96 && code <= 105 ? code - 96 : -1;
+    if (pin && S.dialog && digit >= 0) {
+      e.preventDefault();
+      if (!e.repeat) passcodeDigit(String(digit));
+      return;
+    }
+    // Number keys jump the guide to a channel, or tune it while watching live.
+    if (
+      digit >= 0 &&
+      !S.dialog &&
+      !dualActive &&
+      ((S.tab === 0 && !S.detail && !S.fullscreen) ||
+        (S.fullscreen && playerIsLive()))
+    ) {
+      e.preventDefault();
+      if (!e.repeat) numberKey(String(digit));
+      return;
     }
     // Subtitles: the CC/Caption key (Samsung 10221, LG 460) or the yellow key while watching.
     if (code === 10221 || code === 460 || code === 405) {
@@ -2623,6 +3567,11 @@
     }
     if (code === 13) {
       e.preventDefault();
+      if (entry.digits) {
+        // OK confirms a typed channel number at once; its keyup does nothing more.
+        if (!e.repeat) commitNumber();
+        return;
+      }
       if (dualActive && dualControls && !S.dialog) scheduleDualControls();
       if (!enterDown) {
         enterDown = Date.now();
@@ -2642,17 +3591,25 @@
       handleArrow(code);
       return;
     }
-    if (code === 427 || code === 428) {
+    // Channel up/down (Samsung 427/428, LG 33/34).
+    if (code === 427 || code === 428 || code === 33 || code === 34) {
       e.preventDefault();
-      if (S.fullscreen) handleArrow(code === 427 ? 38 : 40);
-      else if (S.tab === 0) {
-        S.zone = "grid";
-        S.row = Math.max(
-          0,
-          Math.min(liveItems().length - 1, S.row + (code === 427 ? -4 : 4))
-        );
-        renderGuide();
-      }
+      var up = code === 427 || code === 33;
+      if (S.dialog) pickerPage(up ? -8 : 8);
+      else if (S.fullscreen) {
+        if (playerIsLive()) changeChannel(up ? 1 : -1);
+      } else if (dualActive && S.tab === 5) return;
+      else if (S.tab === 0 && !S.detail) pageGuide(up ? -4 : 4);
+      else if (
+        S.tab === 3 &&
+        !S.detail &&
+        document.activeElement &&
+        /^result-/.test(document.activeElement.id)
+      )
+        // Page five rows within the results; paging stops at the first or last row.
+        for (i = 0; i < 5; i++)
+          if (!moveSpatial(document.getElementById("search-results"), up ? 38 : 40))
+            break;
       return;
     }
     if (code === 10252 || code === 179 || code === 415 || code === 19) {
@@ -2667,11 +3624,36 @@
       }
       return;
     }
+    // Rewind / Fast forward seek 30 seconds in movies and episodes.
+    if (code === 412 || code === 417) {
+      e.preventDefault();
+      if (S.fullscreen && !S.dialog && !playerIsLive() && player.state.request) {
+        player.seek(code === 412 ? -30000 : 30000);
+        S.controls = true;
+        renderPlayerOverlay();
+      }
+      return;
+    }
+    if (code === 413) {
+      e.preventDefault();
+      if (S.fullscreen && !S.dialog) leaveFullscreen();
+      return;
+    }
     if (code === 458) {
       e.preventDefault();
+      if (S.dialog) return;
       if (!S.fullscreen) openTab(0);
-      else leaveFullscreen();
+      else if (playerIsLive()) {
+        // Guide: back to the guide on the channel being watched, wherever playback was opened.
+        S.playOrigin = null;
+        S.tab = S.nav = 0;
+        leaveFullscreen();
+      } else leaveFullscreen();
     }
+  }
+  document.addEventListener("keydown", function (e) {
+    keyDown(e);
+    ensureFocus();
   });
   document.addEventListener("keyup", function (e) {
     if ((e.keyCode || e.which) !== 13 || !enterDown) return;
@@ -2699,26 +3681,33 @@
       return;
     }
     if (S.fullscreen) {
+      if (surfTarget) {
+        commitSurf();
+        return;
+      }
       if (
         S.zone === "player-actions" &&
         document.activeElement &&
+        document.activeElement !== document.body &&
         document.activeElement.click
       )
         document.activeElement.click();
       else {
         if (player.state.request && !player.state.request.live) player.toggle();
-        S.controls = true;
-        S.zone = "player-actions";
-        renderPlayerOverlay();
-        focus("play-toggle");
+        showPlayerControls("play-toggle");
         scheduleHideControls();
       }
       return;
     }
-    if (S.tab === 0 && S.zone === "grid") {
+    if (S.tab === 0 && S.zone === "grid" && !S.detail) {
       if (c) activateChannel(c, selectedProgram(c));
-    } else if (document.activeElement && document.activeElement.click)
+    } else if (
+      document.activeElement &&
+      document.activeElement !== document.body &&
+      document.activeElement.click
+    )
       document.activeElement.click();
+    ensureFocus();
   });
   window.addEventListener("blur", function () {
     enterDown = 0;
@@ -2766,6 +3755,8 @@
       "MediaPlay",
       "MediaPause",
       "MediaStop",
+      "MediaRewind",
+      "MediaFastForward",
       "Guide",
       "ColorF0Red",
       "ColorF2Yellow",

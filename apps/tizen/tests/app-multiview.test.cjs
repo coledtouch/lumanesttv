@@ -406,13 +406,18 @@ test('picker stays open past hide deadline, same channel keeps playback, replace
   h.advance(5000); assert.match(h.node('dual-tray').className, /hidden/);
 });
 
-test('Back hides visible controls then releases both games and returns to Live TV', () => {
+test('Back hides visible controls, then stops both games and returns to the Multi View setup', () => {
   const h = harness(); h.start(); h.key(10009);
   assert.match(h.node('dual-tray').className, /hidden/); assert.equal(h.dualCalls.filter(call => call[0] === 'stop').length, 0);
   h.key(10009); assert.doesNotMatch(h.document.body.className, /multiview-fullscreen/);
   assert.equal(h.dualCalls.filter(call => call[0] === 'stop').length, 1);
   assert.equal(h.document.getElementById('dual-tray'), null);
-  assert.ok(h.node('topbar').offsetWidth > 0); assert.ok(h.node('preview-frame'));
+  assert.equal(h.document.activeElement.id, 'dual-start', 'the setup screen focuses Watch both');
+  assert.match(h.node('dual-pick-0').textContent, /ESPN/); assert.match(h.node('dual-pick-1').textContent, /NFL Network/);
+  assert.ok(h.node('topbar').offsetWidth > 0);
+  h.key(10009); assert.equal(h.document.activeElement.id, 'tab-5', 'then Back reaches the tab bar');
+  h.key(10009); assert.equal(h.document.activeElement.id, 'tab-0', 'then Live TV');
+  assert.ok(h.node('preview-frame'));
   assert.equal(h.playerCalls.filter(call => Array.isArray(call) && call[0] === 'play').length, 0);
 });
 
@@ -425,4 +430,15 @@ test('buffering callbacks keep controls hidden and lifecycle still suspends and 
   assert.match(h.node('dual-tray').className, /hidden/);
   h.unload(); assert.deepEqual(h.dualCalls.at(-1), ['stop']); assert.equal(h.playerCalls.at(-1), 'stop');
   assert.equal(h.creates, 1);
+});
+
+test('Stop returns to the setup screen with Watch both focused, and Up from the setup row reaches the tabs', () => {
+  const h = harness(); h.start(); h.advance(5000); h.key(13);
+  for (let i = 0; i < 5; i++) h.key(39);
+  assert.equal(h.document.activeElement.id, 'dual-stop');
+  h.key(13);
+  assert.equal(h.document.getElementById('dual-tray'), null);
+  assert.equal(h.document.activeElement.id, 'dual-start');
+  h.key(38); assert.equal(h.document.activeElement.id, 'tab-5');
+  h.key(40); assert.equal(h.document.activeElement.id, 'dual-start', 'Down returns to the last control');
 });

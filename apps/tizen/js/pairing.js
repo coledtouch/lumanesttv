@@ -171,7 +171,8 @@
       e.stopPropagation();
       e.preventDefault();
       if (BACK.indexOf(key) >= 0) close(false);
-      else if (key === 37 || key === 39) (document.activeElement === fresh ? cancel : fresh).focus();
+      else if (key === 37) fresh.focus();
+      else if (key === 39) cancel.focus();
     }
     function onKeyUp(e) {
       var key = e.keyCode || e.which;
