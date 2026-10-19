@@ -12,8 +12,9 @@ export default async function Pair({searchParams}: {searchParams: Promise<{code?
   const support = settings().SUPPORT_EMAIL || 'support@lumanest.tv';
   const code = (await searchParams).code;
   return <>
-    <SiteHeader portal={portal} current="/apps"/>
+    {/* No Plans or Renew links: TV apps from the App Store send customers here with a QR code. */}
+    <SiteHeader portal={portal} current="/apps" purchases={false}/>
     <main className="pair-page" id="main-content"><PairFlow initialCode={typeof code === 'string' ? code.slice(0, 20) : ''} portal={portal}/></main>
-    <SiteFooter portal={portal} support={support}/>
+    <SiteFooter portal={portal} support={support} purchases={false}/>
   </>;
 }
