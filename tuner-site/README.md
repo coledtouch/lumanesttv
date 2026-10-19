@@ -4,7 +4,7 @@ The public website for the **Tuner by LumaNest TV** app, published by **LumaNest
 
 - **Address:** `https://tunertv.app` (with `www.tunertv.app` redirecting to it). Short, matches the app's name, and `.app` is HTTPS-only: every browser refuses plain `http://` for it, so there's nothing to misconfigure.
 - **Hosting:** a Cloudflare Worker named `tuner-site` that only serves static files. No Worker script, no build step, no JavaScript, no cookies, no analytics, self-hosted fonts.
-- **Contact:** `support@lumanest.tv`, set once in `site.config.json`.
+- **Contact:** `support@tunertv.app` (Cloudflare Email Routing forwards it to the owner's inbox), set once in `site.config.json`.
 
 | Path | What it is |
 | --- | --- |
@@ -28,7 +28,7 @@ Use these after the [verify step](#5-verify) passes. `https://lumanest.tv/privac
 | Store | Field | Value |
 | --- | --- | --- |
 | Google Play | Store presence → Store settings → Store listing contact details → **Website** | `https://tunertv.app` |
-| Google Play | Store listing contact details → **Email** | `support@lumanest.tv` |
+| Google Play | Store listing contact details → **Email** | `support@tunertv.app` |
 | Google Play | Policy → App content → **Privacy policy** | `https://tunertv.app/privacy` |
 | Google Play | App content → Data safety → data deletion link (optional; Tuner creates no accounts) | `https://tunertv.app/delete` |
 | Apple App Store Connect | App Information → **Privacy Policy URL** | `https://tunertv.app/privacy` |
@@ -36,14 +36,14 @@ Use these after the [verify step](#5-verify) passes. `https://lumanest.tv/privac
 | Apple App Store Connect | Version page → **Marketing URL** (optional) | `https://tunertv.app` |
 | Apple App Store Connect | App Privacy → **User Privacy Choices URL** (optional) | `https://tunertv.app/delete` |
 | Amazon Appstore | Privacy policy URL | `https://tunertv.app/privacy` |
-| Amazon Appstore | Contact: email / website | `support@lumanest.tv` / `https://tunertv.app/support` |
+| Amazon Appstore | Contact: email / website | `support@tunertv.app` / `https://tunertv.app/support` |
 | Samsung Seller Office | Privacy policy URL | `https://tunertv.app/privacy` |
-| Samsung Seller Office | Support email / homepage (field names vary by form) | `support@lumanest.tv` / `https://tunertv.app` |
+| Samsung Seller Office | Support email / homepage (field names vary by form) | `support@tunertv.app` / `https://tunertv.app` |
 | LG Seller Lounge | Privacy policy URL | `https://tunertv.app/privacy` |
-| LG Seller Lounge | Support email / homepage | `support@lumanest.tv` / `https://tunertv.app` |
+| LG Seller Lounge | Support email / homepage | `support@tunertv.app` / `https://tunertv.app` |
 | Roku Developer Dashboard | Store info: privacy policy URL | `https://tunertv.app/privacy` |
 | Roku Developer Dashboard | Terms of use URL, if asked | `https://tunertv.app/terms` |
-| Roku Developer Dashboard | Support email / support URL | `support@lumanest.tv` / `https://tunertv.app/support` |
+| Roku Developer Dashboard | Support email / support URL | `support@tunertv.app` / `https://tunertv.app/support` |
 
 ### Blockers before submitting to any store
 
@@ -125,24 +125,17 @@ Then open `https://tunertv.app` on a phone and a computer, in light and dark mod
 
 The privacy policy says this site uses no cookies, analytics or trackers. Keep **Web Analytics**, **Zaraz** and **Bot Fight Mode** off for the `tunertv.app` zone. If you ever turn one on, update "This website" in `public/privacy.html` first.
 
-### 7. Optional: support@tunertv.app
+### 7. support@tunertv.app (Email Routing)
 
-Only if you want a Tuner-branded address. The site uses `support@lumanest.tv` until you change it.
+The site's contact address is `support@tunertv.app`. Cloudflare Email Routing forwards it to the owner's inbox; nothing is stored at Cloudflare.
 
 1. Zone `tunertv.app` → **Email** → **Email Routing** → **Get started**.
-2. Create the custom address `support` and set its destination to the inbox you read. Cloudflare emails that inbox a link to verify it.
+2. Create the custom address `support` with the action **Send to an email** and the owner's inbox as the destination. Cloudflare emails that inbox a link to verify it; open it.
 3. Let Cloudflare add the MX and TXT (SPF) records it proposes, then enable routing.
-4. Send a test message to `support@tunertv.app` and check it arrives.
-5. Point the site at it:
+4. Send a test message to `support@tunertv.app` from another account and check it arrives.
+5. Deploy the site (`npx --yes wrangler@4.149.0 deploy`) so the pages show the new address, and update the email field in each store.
 
-   ```powershell
-   # In site.config.json, set "supportEmail": "support@tunertv.app", then:
-   node tools/site.mjs set-email
-   node tools/site.mjs
-   npx --yes wrangler@4.149.0 deploy
-   ```
-
-6. Update the email fields in each store.
+To change the address later: set `supportEmail` in `site.config.json`, run `node tools/site.mjs set-email` and `node tools/site.mjs`, then deploy.
 
 Email Routing only receives and forwards mail. Replies go out from your own mailbox address unless you also set that mailbox up to send as `support@tunertv.app`.
 
