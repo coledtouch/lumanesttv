@@ -11,7 +11,7 @@ const devices = [
   ['browser', 'Computer / browser', 'Watch in your browser. No installation needed.'],
 ];
 
-const roku = {version: '1.0.2', file: '/downloads/tuner-roku-1.0.2.zip'};
+const roku = {version: '1.0.3', file: '/downloads/tuner-roku-1.0.3.zip'};
 
 const glyph = {fill: 'none', stroke: 'currentColor', strokeWidth: 1.7, strokeLinecap: 'round', strokeLinejoin: 'round'} as const;
 function DeviceGlyph({id}: {id: string}) {

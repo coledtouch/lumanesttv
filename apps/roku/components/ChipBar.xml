@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A row of chips: the top menu and Discover's Type / List / Genre filters.
+     Left and Right move focusIndex; OK sets chosen. selectedIndex is underlined (the open section). -->
+<component name="ChipBar" extends="Group">
+  <interface>
+    <field id="labels" type="array" onChange="layoutChips" />
+    <field id="focusIndex" type="integer" value="0" onChange="paint" />
+    <field id="selectedIndex" type="integer" value="-1" onChange="paint" />
+    <field id="chosen" type="integer" alwaysNotify="true" />
+    <field id="chipHeight" type="integer" value="64" />
+    <field id="font" type="string" value="font:MediumBoldSystemFont" />
+  </interface>
+  <script type="text/brightscript" uri="pkg:/components/ChipBar.brs" />
+</component>

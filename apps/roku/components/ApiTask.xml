@@ -1,9 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Runs one network request off the render thread: pairing with lumanest.tv, loading the catalogue, or a series' episodes. -->
+<!-- Runs one network request off the render thread: pairing with lumanest.tv, loading the catalogue
+     (with the Movies & Series lists from lumanest.tv/api/catalog/rows), or one title's details. -->
 <component name="ApiTask" extends="Task">
   <interface>
     <field id="request" type="assocarray" />
     <field id="response" type="assocarray" alwaysNotify="true" />
   </interface>
   <script type="text/brightscript" uri="pkg:/components/ApiTask.brs" />
+  <script type="text/brightscript" uri="pkg:/components/RowsClient.brs" />
+  <script type="text/brightscript" uri="pkg:/source/lib/BrowseLogic.brs" />
 </component>
