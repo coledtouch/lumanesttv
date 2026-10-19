@@ -1,0 +1,28 @@
+// Tuner product website (tunertv.app): a static-assets-only Cloudflare Worker. There is no Worker script,
+// so every request is served straight from ./public. Deploy from this folder with the Wrangler version this
+// site pins (the same one in README.md and .github/workflows/tuner-site.yml; tools/site.mjs checks they agree):
+//   npx --yes wrangler@4.149.0 deploy
+{
+  "name": "tuner-site",
+  "compatibility_date": "2026-10-13",
+  "assets": {
+    "directory": "./public",
+    // /privacy serves privacy.html; /privacy.html and /privacy/ redirect to /privacy.
+    "html_handling": "auto-trailing-slash",
+    // Unknown paths get public/404.html with a 404 status.
+    "not_found_handling": "404-page"
+  },
+  // Keeps https://tuner-site.<your-subdomain>.workers.dev for checking a deploy before the domain is attached.
+  // public/_headers marks that copy noindex. Set it to false once tunertv.app works, if you don't need it.
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": {"enabled": false},
+
+  // tunertv.app is registered in the same Cloudflare account, so deploying attaches both names: Wrangler creates
+  // the DNS records and certificates. www.tunertv.app is then redirected to tunertv.app by the Redirect Rule
+  // described in README.md.
+  "routes": [
+    {"pattern": "tunertv.app", "custom_domain": true},
+    {"pattern": "www.tunertv.app", "custom_domain": true}
+  ]
+}

@@ -1,0 +1,39 @@
+name: Tuner site
+
+on:
+  push:
+    branches: [main]
+    paths: ['tuner-site/**', '.github/workflows/tuner-site.yml']
+  pull_request:
+    paths: ['tuner-site/**', '.github/workflows/tuner-site.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tuner-site-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: tuner-site
+    env:
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24'
+      - name: Check links, anchors, images, contact email and deploy config
+        run: node tools/site.mjs
+      - name: Validate HTML
+        run: npx --yes html-validate@11.16.1 "public/**/*.html"
+      - name: Wrangler dry run (no deployment)
+        run: npx --yes wrangler@4.149.0 deploy --dry-run
