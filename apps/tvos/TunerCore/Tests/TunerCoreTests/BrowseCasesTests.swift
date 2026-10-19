@@ -111,7 +111,7 @@ final class BrowseCasesTests: XCTestCase {
             let names = entry.categories
             let categories = names.enumerated().map { Category(id: "c\($0.offset)", name: $0.element) }
             let match = entry.origin.map { RowsItem(id: 4242, title: "Matched Title", year: "2020", origin: $0) }
-            var byID: [String: Category] = [:]
+            var byID: [String: TunerCore.Category] = [:]
             for category in categories { byID[category.id] = category }
             // Plus an id the category list doesn't know: it is left out.
             let alone = TitleRegion.isUSA(match: match, categoryIDs: categories.map(\.id) + ["unknown"], categoriesByID: byID)
@@ -157,10 +157,13 @@ final class BrowseCasesTests: XCTestCase {
         XCTAssertTrue(failures.isEmpty, "TMDB id cases that fail:\n" + failures.joined(separator: "\n"))
     }
 
+    // `TunerCore.Category` (here and in `byID` above): on Apple platforms Foundation also brings in the Objective-C
+    // runtime's `Category` typedef, which makes a bare `Category` ambiguous in a type position (initializer calls are fine).
+
     /// One catalogue title of `kind` listed in `categories` (one provider row per category, merged by the parser), matched
     /// by its provider TMDB id to a title with `origin`, or unmatched when `origin` is nil. Returns whether "USA only"
     /// shows it, whether it matched, and whether "All" shows it.
-    private func catalogueTitle(_ kind: TitleKind, categories: [Category], origin: [String]?) -> (Bool, Bool, Bool) {
+    private func catalogueTitle(_ kind: TitleKind, categories: [TunerCore.Category], origin: [String]?) -> (Bool, Bool, Bool) {
         let ids = categories.map(\.id)
         let tmdbID = origin == nil ? nil : 4242
         // Another TMDB title, so the rows count as TMDB data when the case's title is unmatched.
