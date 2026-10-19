@@ -3,8 +3,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  POSTER_FILE, VodError, carriesSecret, classifyPoster, compactMovieInfo, compactSeriesInfo, createPosterBook, durationOf, entryExt, entryKind, imageAddress,
-  isPosterFile, readJsonArray, sniffImage, validImageToken, vodPlayURL, xtreamServer, xtreamURL, type ImageToken,
+  CATALOGUE_HOST, POSTER_FILE, POSTER_TAG_LENGTH, VodError, carriesSecret, catalogueHostAddress, catalogueHostOf, catalogueImageAddress, classifyPoster, compactMovieInfo,
+  compactSeriesInfo, createCataloguePosters, createPosterBook, createPosterCounter, durationOf, electCatalogueHost, entryExt, entryKind, imageAddress, isPosterFile,
+  isPosterPath, posterTag, readJsonArray, sniffImage, validImageToken, vodPlayURL, xtreamServer, xtreamURL, type ImageToken,
 } from '../lib/player-vod-data.ts';
 import {open, mac, seal, sealStable} from '../lib/player-crypto.ts';
 
@@ -222,6 +223,260 @@ test('a poster book seals one stable token per directory, bound to one line, up 
   assert.notEqual(await seal({u: 'x'}, SECRET, 'player-image'), await seal({u: 'x'}, SECRET, 'player-image'), 'ordinary tokens stay random');
   assert.notEqual(await mac('x', SECRET, 'player-line'), await mac('x', SECRET, 'player-cache'), 'each purpose has its own key');
   assert.equal(await mac('x', SECRET, 'player-line'), await mac('x', SECRET, 'player-line'));
+});
+
+// ---------------------------------------------------------------- the catalogue image host
+
+// lib/player.ts / lib/player-vod.ts predicates in the shape the tests use: tv.lumanest.tv is a direct provider host;
+// refused (refusedImageHost) is true for provider hosts by any scheme (plain.provider.net is approved for http only)
+// and for the site's own hosts (lumanest.tv and anything under it). The relay's hosts are IPv4 addresses, which the
+// rule refuses on its own.
+const directProvider = (url: URL) => url.hostname === 'tv.lumanest.tv';
+const refused = (url: URL) => ['tv.lumanest.tv', 'plain.provider.net'].includes(url.hostname) || url.hostname === 'lumanest.tv' || url.hostname.endsWith('.lumanest.tv');
+const HOST = 'https://img.posterhost.net';
+const LOGIN = ['runtime-user', 'runtime-password'];
+const LINE = 'line-mac';
+const tagged = (address: string, line = LINE) => posterTag(SECRET, line, address);
+
+test('catalogue image host: only a public https name on the default port that is not a provider, relay, own or TMDB host', () => {
+  const of = (value: string) => catalogueHostOf(new URL(value), refused, LOGIN);
+  assert.equal(of('https://img.posterhost.net/i/a.jpg'), HOST);
+  assert.equal(of('https://IMG.PosterHost.net:443/i/a.jpg?x=1'), HOST, 'port 443 is the default port; case is normalised');
+  assert.equal(of('https://xn--e1afmkfd.xn--p1ai/a.jpg'), 'https://xn--e1afmkfd.xn--p1ai', 'an international name');
+  for (const value of [
+    'http://img.posterhost.net/i/a.jpg', 'https://img.posterhost.net:8443/i/a.jpg', 'https://u:p@img.posterhost.net/a.jpg', 'https://image.tmdb.org/t/p/w600/a.jpg',
+    'https://tv.lumanest.tv/posters/a.jpg', 'https://10.0.0.5/a.jpg', 'https://127.0.0.1/a.jpg', 'https://169.254.169.254/a.jpg',
+    'https://192.168.1.2/a.jpg', 'https://172.20.0.1/a.jpg', 'https://100.64.0.1/a.jpg', 'https://2130706433/a.jpg', 'https://0x7f.1/a.jpg', 'https://[::1]/a.jpg', 'https://[2001:db8::1]/a.jpg',
+    'https://localhost/a.jpg', 'https://posters.local/a.jpg', 'https://img.internal/a.jpg', 'https://posters/a.jpg', 'https://img.example/a.jpg',
+    'https://img.posterhost.net/runtime-user/a.jpg', 'https://img.posterhost.net/a.jpg?p=runtime-password', 'https://img.posterhost.net/RUNTIME-USER.jpg',
+    // Any IP address, public or not: the relay's hosts (136.148.65.x) are reached over http and refused over https too.
+    'https://136.148.65.10/p/a.jpg', 'https://8.8.8.8/a.jpg',
+    // Names ending in a dot, which slip past the local-name checks.
+    'https://localhost./a.jpg', 'https://metadata.google.internal./a.jpg', 'https://img.posterhost.net./a.jpg', 'https://image.tmdb.org./t/p/a.jpg',
+    // Names that resolve to the address written in them.
+    'https://127.0.0.1.nip.io/a.jpg', 'https://10-0-0-1.sslip.io/a.jpg', 'https://app.localtest.me/a.jpg', 'https://x.lvh.me/a.jpg',
+    // A provider host approved for http only, asked for over https; this site's own hosts.
+    'https://plain.provider.net/a.jpg', 'https://lumanest.tv/a.jpg', 'https://streams.lumanest.tv/a.jpg', 'https://relay.lumanest.tv/a.jpg',
+  ]) assert.equal(of(value), '', value);
+});
+
+test('catalogue image host: the most-used eligible host with at least 20% of the posters and at least 50 of them', () => {
+  const run = (posters: string[]) => {
+    const counter = createPosterCounter(refused, LOGIN);
+    for (const poster of posters) counter.add(poster);
+    return counter;
+  };
+  const many = (count: number, make: (i: number) => string) => Array.from({length: count}, (_, i) => make(i));
+  const onHost = (i: number) => `${HOST}/i/${i}.jpg`;
+  const tmdb = (i: number) => `https://image.tmdb.org/t/p/w600/${i}.jpg`;
+  assert.deepEqual([CATALOGUE_HOST.share, CATALOGUE_HOST.min], [0.2, 50]);
+  // Below and at 20% of 1,000 posters.
+  assert.equal(run([...many(199, onHost), ...many(801, tmdb)]).elect(), null, '19.9%');
+  assert.equal(run([...many(200, onHost), ...many(800, tmdb)]).elect(), HOST, '20%');
+  assert.equal(run([...many(990, onHost), ...many(10, tmdb)]).elect(), HOST, '99%');
+  // Fewer than 50 posters on it, however large a share.
+  assert.equal(run(many(49, onHost)).elect(), null, '49 of 49');
+  assert.equal(run(many(50, onHost)).elect(), HOST, '50 of 50');
+  // Empty posters don't count; unreadable ones count in the total.
+  const counted = run([...many(60, onHost), ...many(500, () => ''), ...many(200, () => 'not a url')]);
+  assert.deepEqual([counted.total, counted.count(HOST), counted.elect()], [260, 60, HOST]);
+  assert.equal(run([...many(60, onHost), ...many(241, () => 'not a url')]).elect(), null, '60 of 301');
+  // An http host, another port, a relay or provider host, an IP address or an own host never qualifies, however many
+  // posters it has.
+  assert.equal(run(many(1000, i => `http://img.posterhost.net/i/${i}.jpg`)).elect(), null, 'http');
+  assert.equal(run(many(1000, i => `https://img.posterhost.net:8443/i/${i}.jpg`)).elect(), null, 'port');
+  assert.equal(run(many(1000, i => `https://136.148.65.10/i/${i}.jpg`)).elect(), null, 'relay host over https');
+  assert.equal(run(many(1000, i => `https://plain.provider.net/i/${i}.jpg`)).elect(), null, 'http-only provider host over https');
+  assert.equal(run(many(1000, i => `https://tv.lumanest.tv/i/${i}.jpg`)).elect(), null, 'provider host: proxied as one anyway');
+  assert.equal(run(many(1000, i => `https://cdn.lumanest.tv/i/${i}.jpg`)).elect(), null, 'own host');
+  assert.equal(run(many(1000, i => `https://10.1.2.3/i/${i}.jpg`)).elect(), null, 'private address');
+  assert.equal(run(many(1000, i => `https://img.posterhost.net./i/${i}.jpg`)).elect(), null, 'trailing dot');
+  // Posters carrying the login don't count for the host (they are never asked for).
+  assert.equal(run([...many(40, onHost), ...many(960, i => `${HOST}/i/${i}.jpg?u=runtime-user`)]).elect(), null);
+  // Two hosts over the line: the one with more posters (one host per line); equal counts pick the same one every time.
+  const two = run([...many(300, onHost), ...many(400, i => `https://cdn.second.net/${i}.jpg`)]);
+  assert.equal(two.elect(), 'https://cdn.second.net');
+  assert.equal(electCatalogueHost(new Map([['https://b.net', 60], ['https://a.net', 60]]), 120), 'https://a.net');
+  assert.equal(electCatalogueHost(new Map(), 0), null);
+});
+
+test('catalogue image host posters are proxied like provider posters, never with the login', () => {
+  assert.deepEqual(classifyPoster(`${HOST}/i/a.jpg`, directProvider, LOGIN, HOST), {kind: 'proxy', base: HOST + '/i/', file: 'a.jpg', host: true});
+  assert.deepEqual(classifyPoster(`${HOST}/img.php?id=5`, directProvider, LOGIN, HOST), {kind: 'proxy', base: HOST + '/img.php?id=5', file: '', host: true});
+  assert.deepEqual(classifyPoster(`${HOST}/i/a.jpg`, directProvider, LOGIN), {kind: 'none'}, 'without the host: a title card, as before');
+  assert.deepEqual(classifyPoster(`${HOST}/i/a.jpg`, directProvider, LOGIN, 'https://other.net'), {kind: 'none'}, 'another host');
+  for (const value of [`${HOST}/runtime-user/a.jpg`, `${HOST}/i/a.jpg?u=Runtime-User`, `${HOST}/i/runtime-password.jpg`, `${HOST}/i/a.jpg?p=runtime%2Dpassword`,
+    'http://img.posterhost.net/i/a.jpg', 'https://img.posterhost.net:8443/i/a.jpg']) {
+    assert.deepEqual(classifyPoster(value, directProvider, LOGIN, HOST), {kind: 'none'}, value);
+  }
+  // Provider and TMDB posters are unchanged.
+  assert.deepEqual(classifyPoster('https://tv.lumanest.tv/p/a.jpg', directProvider, LOGIN, HOST), {kind: 'proxy', base: 'https://tv.lumanest.tv/p/', file: 'a.jpg'});
+  assert.deepEqual(classifyPoster('https://image.tmdb.org/t/p/w600/a.jpg', directProvider, LOGIN, HOST), {kind: 'direct', url: 'https://image.tmdb.org/t/p/w600/a.jpg'});
+  // A poster book with no tag function can't list a host directory's posters.
+  assert.equal(createPosterBook(directProvider, LOGIN).add(`${HOST}/i/a.jpg`, HOST), undefined);
+  assert.equal(createPosterBook(directProvider, LOGIN, 500, tagged).add(`${HOST}/i/a.jpg`, HOST), '~0:a.jpg!' + tagged(HOST + '/i/a.jpg'));
+});
+
+/**
+ * Builds a catalogue's titles the way lib/player-vod.ts does: each title's JSON without its waiting poster, then
+ * finish. sections: how many of the posters are movies (the rest are series).
+ */
+function buildTitles(posters: (string | undefined)[], {room, maxBases, movies = posters.length}: {room?: number; maxBases?: number; movies?: number} = {}) {
+  const book = createCataloguePosters(directProvider, refused, LOGIN, {tag: tagged, ...(maxBases ? {maxBases} : {})});
+  const lists: string[][] = [[], []];
+  posters.forEach((poster, i) => {
+    const section = i < movies ? 0 : 1, items = lists[section];
+    const item: Record<string, unknown> = {id: String(i), name: 'T' + i};
+    let waiting: {origin: string; base: string; file: string} | null = null;
+    if (poster) {
+      const placed = book.place(poster);
+      if (typeof placed === 'string') item.poster = placed;
+      else if (placed) {
+        waiting = placed;
+        assert.deepEqual(Object.keys(placed).sort(), ['base', 'file', 'origin'], 'a waiting poster reserves no bytes');
+      }
+    }
+    const text = JSON.stringify(item);
+    if (waiting) book.wait(items, items.length, waiting, section);
+    items.push(text);
+  });
+  const titleBytes = lists.flat().reduce((n, text) => n + text.length, 0);
+  const result = book.finish(room === undefined ? {} : {room});
+  const parsed = lists.flat().map(text => JSON.parse(text) as {id: string; poster?: string});
+  return {book, items: parsed, movies: lists[0].map(text => JSON.parse(text) as {poster?: string}), series: lists[1].map(text => JSON.parse(text) as {poster?: string}),
+    result, titleBytes, bytes: lists.flat().reduce((n, text) => n + text.length, 0)};
+}
+
+test('a catalogue is built with its image host: posters wait for the end of the lists, then join their titles, tagged', async () => {
+  const posters = [
+    ...Array.from({length: 60}, (_, i) => `${HOST}/covers/${i}.jpg`),
+    `${HOST}/covers/x.jpg?u=runtime-user`, `${HOST}/runtime-password/y.jpg`, 'https://tv.lumanest.tv/p/a.jpg', 'https://image.tmdb.org/t/p/w600/b.jpg',
+    'https://cdn.other.net/c.jpg', 'http://img.posterhost.net/covers/d.jpg', undefined, `${HOST}/show.php?id=9`,
+  ];
+  const built = buildTitles(posters);
+  assert.deepEqual(built.result, {host: HOST, placed: 61, skipped: 0});
+  assert.equal(built.items[0].poster, '~1:0.jpg!' + tagged(HOST + '/covers/0.jpg'), 'after the provider poster, which was placed first');
+  assert.equal(built.items[59].poster, '~1:59.jpg!' + tagged(HOST + '/covers/59.jpg'), 'one sealed directory for all of them');
+  assert.match(tagged(HOST + '/covers/0.jpg'), /^[A-Za-z0-9_-]{8}$/);
+  assert.equal(built.items[60].poster, undefined, 'the login in the query: never asked for');
+  assert.equal(built.items[61].poster, undefined, 'the password in the path');
+  assert.equal(built.items[62].poster, '~0:a.jpg', 'provider posters are placed at once, untagged as before');
+  assert.equal(built.items[63].poster, 'https://image.tmdb.org/t/p/w600/b.jpg');
+  assert.equal(built.items[64].poster, undefined, 'another host');
+  assert.equal(built.items[65].poster, undefined, 'the host over http');
+  assert.equal(built.items[66].poster, undefined);
+  assert.equal(built.items[67].poster, '~2:', 'a whole address, sealed whole: no tag needed');
+  const line = await mac('runtime-user', SECRET, 'player-line');
+  const bases = await built.book.book.seal(line, SECRET, Date.UTC(2026, 9, 19));
+  assert.deepEqual(await open<ImageToken>(bases[1], SECRET, 'player-image'), {u: HOST + '/covers/', l: line, exp: Date.UTC(2026, 9, 27), dir: 1, h: 1});
+  assert.deepEqual(await open<ImageToken>(bases[0], SECRET, 'player-image'), {u: 'https://tv.lumanest.tv/p/', l: line, exp: Date.UTC(2026, 9, 27), dir: 1}, 'provider tokens carry no h');
+  assert.deepEqual(await open<ImageToken>(bases[2], SECRET, 'player-image'), {u: HOST + '/show.php?id=9', l: line, exp: Date.UTC(2026, 9, 27), h: 1});
+  assert.ok(validImageToken({u: HOST + '/covers/', l: line, exp: Date.UTC(2026, 9, 27), dir: 1, h: 1}, line, Date.UTC(2026, 9, 19)));
+  assert.ok(!validImageToken({u: HOST + '/covers/', l: line, exp: Date.UTC(2026, 9, 27), h: 2}, line, Date.UTC(2026, 9, 19)));
+
+  // Under the rule's threshold nothing waits in vain: the host's posters get title cards.
+  const few = buildTitles([...Array.from({length: 40}, (_, i) => `${HOST}/covers/${i}.jpg`), ...Array.from({length: 10}, () => 'https://tv.lumanest.tv/p/a.jpg')]);
+  assert.deepEqual(few.result, {host: null, placed: 0, skipped: 0});
+  assert.ok(few.items.slice(0, 40).every(item => item.poster === undefined));
+  assert.ok(few.items.slice(40).every(item => item.poster === '~0:a.jpg'));
+});
+
+test('catalogue image host posters only use the room the titles leave, shared between movies and series', () => {
+  const posters = [...Array.from({length: 90}, (_, i) => `${HOST}/covers/m${i}.jpg`), ...Array.from({length: 30}, (_, i) => `${HOST}/shows/s${i}.jpg`)];
+  // Room for everything: every poster joins its title, and the bytes added are what was allowed.
+  const all = buildTitles(posters, {movies: 90});
+  assert.deepEqual(all.result, {host: HOST, placed: 120, skipped: 0});
+  const perPoster = (all.bytes - all.titleBytes) / 120;
+  assert.ok(perPoster > 20 && perPoster < 40, String(perPoster));
+  // Room for about a third: no title is lost; the bytes added never pass the room; movies and series share it in
+  // proportion to what their posters need (3 to 1 here).
+  for (const room of [0, 1, 500, 1200, 2500, all.bytes - all.titleBytes - 1]) {
+    const some = buildTitles(posters, {movies: 90, room});
+    assert.equal(some.items.length, 120, 'every title is kept');
+    assert.ok(some.bytes - some.titleBytes <= room, `room ${room}: added ${some.bytes - some.titleBytes}`);
+    assert.equal(some.result.placed + some.result.skipped, 120);
+    assert.equal(some.result.placed, some.items.filter(item => item.poster).length);
+    if (room === 1200) {
+      const movies = some.movies.filter(item => item.poster).length, series = some.series.filter(item => item.poster).length;
+      assert.ok(movies > 0 && series > 0, `${movies} movies, ${series} series`);
+      assert.ok(Math.abs(movies / series - 3) <= 1, `${movies} movies, ${series} series`);
+      // The posters placed are the first of each list.
+      assert.ok(some.movies.slice(0, movies).every(item => item.poster) && some.series.slice(0, series).every(item => item.poster));
+    }
+  }
+  assert.deepEqual(buildTitles(posters, {movies: 90, room: 0}).result, {host: HOST, placed: 0, skipped: 120});
+});
+
+test('a catalogue image host with more directories than free tokens: its busiest get their own, the rest share its root', async () => {
+  // Five tokens: one provider directory, then three for the host's busiest directories and one for its root.
+  const posters = [
+    'https://tv.lumanest.tv/p/a.jpg',
+    ...Array.from({length: 30}, (_, i) => `${HOST}/big/${i}.jpg`),
+    ...Array.from({length: 20}, (_, i) => `${HOST}/mid/${i}.jpg`),
+    ...Array.from({length: 10}, (_, i) => `${HOST}/small/${i}.jpg`),
+    ...Array.from({length: 40}, (_, i) => `${HOST}/one/${i}/poster.jpg`),
+    `${HOST}/odd/a%20b/c.jpg`, `${HOST}/x.jpg?id=1`,
+  ];
+  const built = buildTitles(posters, {maxBases: 5});
+  assert.equal(built.result.host, HOST);
+  assert.equal(built.items[1].poster, '~1:0.jpg!' + tagged(HOST + '/big/0.jpg'));
+  assert.equal(built.items[31].poster, '~2:0.jpg!' + tagged(HOST + '/mid/0.jpg'));
+  assert.equal(built.items[51].poster, '~3:0.jpg!' + tagged(HOST + '/small/0.jpg'));
+  assert.equal(built.items[61].poster, '~4:one/0/poster.jpg!' + tagged(HOST + '/one/0/poster.jpg'), 'through the root, with its path');
+  assert.equal(built.items[100].poster, '~4:one/39/poster.jpg!' + tagged(HOST + '/one/39/poster.jpg'));
+  assert.equal(built.items[101].poster, undefined, 'a directory name that is not a plain segment: a title card');
+  assert.equal(built.items[102].poster, undefined, 'a whole address finds no free token');
+  assert.deepEqual([built.result.placed, built.result.skipped], [100, 2]);
+  const line = await mac('runtime-user', SECRET, 'player-line');
+  const bases = await built.book.book.seal(line, SECRET, Date.UTC(2026, 9, 19));
+  assert.equal(bases.length, 5);
+  assert.deepEqual(await open<ImageToken>(bases[4], SECRET, 'player-image'), {u: HOST + '/', l: line, exp: Date.UTC(2026, 9, 27), dir: 1, h: 1});
+  // With enough tokens, every directory gets its own.
+  const roomy = buildTitles(posters);
+  assert.equal(roomy.items[61].poster, '~4:poster.jpg!' + tagged(HOST + '/one/0/poster.jpg'));
+  assert.equal(roomy.items[101].poster, '~44:c.jpg!' + tagged(HOST + '/odd/a%20b/c.jpg'), 'any directory can be sealed; only paths from the root must be plain');
+  assert.equal(roomy.items[102].poster, '~45:');
+});
+
+test('an image request for the catalogue image host may only fetch that host, as the rule still allows it', () => {
+  assert.equal(catalogueHostAddress(`${HOST}/covers/1.jpg`, HOST, refused, LOGIN)?.href, `${HOST}/covers/1.jpg`);
+  for (const [address, host] of [
+    ['https://cdn.other.net/covers/1.jpg', HOST], [`${HOST}/covers/1.jpg`, 'https://cdn.other.net'], [`${HOST}/covers/1.jpg`, ''],
+    ['http://img.posterhost.net/covers/1.jpg', HOST], ['https://img.posterhost.net:8443/covers/1.jpg', HOST], [`${HOST}/covers/runtime-user.jpg`, HOST],
+    [`${HOST}/covers/1.jpg?p=runtime-password`, HOST], ['https://relay.lumanest.tv/1.jpg', 'https://relay.lumanest.tv'], ['https://10.0.0.1/1.jpg', 'https://10.0.0.1'],
+    ['https://136.148.65.10/1.jpg', 'https://136.148.65.10'], ['https://plain.provider.net/1.jpg', 'https://plain.provider.net'],
+    ['https://tv.lumanest.tv/p/1.jpg', 'https://tv.lumanest.tv'], [`${HOST}/covers/1.jpg#x`, HOST], ['not a url', HOST], ['https://img.posterhost.net./covers/1.jpg', 'https://img.posterhost.net.'],
+  ]) assert.equal(catalogueHostAddress(address, host, refused, LOGIN), null, address + ' on ' + host);
+});
+
+test('a catalogue image host poster is asked for by its listed path and tag only', () => {
+  const token = (u: string, dir = true): ImageToken => ({u, l: LINE, exp: Date.now() + 60000, h: 1, ...(dir ? {dir: 1} : {})});
+  const sign = (address: string) => tagged(address);
+  const dir = token(HOST + '/covers/'), root = token(HOST + '/');
+  assert.equal(catalogueImageAddress(dir, '1.jpg!' + tagged(HOST + '/covers/1.jpg'), sign), HOST + '/covers/1.jpg');
+  assert.equal(catalogueImageAddress(root, 'one/7/poster.jpg!' + tagged(HOST + '/one/7/poster.jpg'), sign), HOST + '/one/7/poster.jpg');
+  // A name the catalogue didn't list (no tag, another file's tag, another line's or secret's tag) is refused.
+  for (const f of ['1.jpg', '1.jpg!', '2.jpg!' + tagged(HOST + '/covers/1.jpg'), '1.jpg!' + tagged(HOST + '/covers/1.jpg', 'other-line'),
+    '1.jpg!' + posterTag('b'.repeat(64), LINE, HOST + '/covers/1.jpg'), '1.jpg!' + tagged(HOST + '/covers/1.jpg').toLowerCase().replace(/^./, 'Z'),
+    '!' + tagged(HOST + '/covers/'), '1.jpg!' + tagged(HOST + '/covers/1.jpg') + 'x']) {
+    assert.equal(catalogueImageAddress(dir, f, sign), null, f);
+  }
+  // Only plain path segments ending in an image name, whatever the tag.
+  for (const path of ['../x.jpg', 'a/../x.jpg', './x.jpg', 'a//x.jpg', '/x.jpg', '.x.jpg', 'x.svg', 'x.jpg?a=1', 'x%2F.jpg', 'a b.jpg', 'a\\b.jpg', '1/2/3/4/5/6/7/8/9.jpg', 'x'.repeat(301) + '.jpg']) {
+    assert.equal(catalogueImageAddress(root, path + '!' + tagged(HOST + '/' + path), sign), null, path);
+    assert.equal(isPosterPath(path), false, path);
+  }
+  assert.ok(isPosterPath('t/p/w600_and_h900_bestv2/abc.jpg'));
+  // A whole sealed address needs no file name, and accepts none.
+  assert.equal(catalogueImageAddress(token(HOST + '/x.php?id=1', false), '', sign), HOST + '/x.php?id=1');
+  assert.equal(catalogueImageAddress(token(HOST + '/x.php?id=1', false), 'a.jpg!' + tagged(HOST + '/x.php?id=1a.jpg'), sign), null);
+  // A directory token must name a directory.
+  assert.equal(catalogueImageAddress(token(HOST + '/covers'), '1.jpg!' + tagged(HOST + '/covers1.jpg'), sign), null);
+  // Tags: fixed length, stable, bound to the secret, the line and the whole address.
+  assert.equal(tagged(HOST + '/covers/1.jpg'), tagged(HOST + '/covers/1.jpg'));
+  assert.equal(new Set([tagged(HOST + '/covers/1.jpg'), tagged(HOST + '/covers/2.jpg'), tagged(HOST + '/covers/1.jpg', 'other'), posterTag('b'.repeat(64), LINE, HOST + '/covers/1.jpg')]).size, 4);
+  assert.equal(POSTER_TAG_LENGTH, 8);
+  assert.throws(() => posterTag('not hex', LINE, HOST + '/1.jpg'));
 });
 
 test('image types by their first bytes; SVG and HTML are refused', () => {

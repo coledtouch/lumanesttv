@@ -5,6 +5,7 @@ import {
   type CompactCategory, type CompactTitle, type RowsPayload,
 } from '../../lib/browse';
 import {groupPlaylistSeries, type LocalSeries, type PlaylistEntry} from './local-series';
+import {NO_POSTERS, tmdbPosters, type PosterSources} from './poster-choice';
 import {registerLocalSeries} from './title-details';
 
 // The line's movies and series for browsing: GET /api/player/vod (the line's catalogue, or "none") and the public
@@ -23,7 +24,8 @@ export type CatalogueState = {
   catalog: Catalog | null;
   /** Where the titles came from: the line's Xtream catalogue, its M3U playlist, or nowhere. */
   source: 'xtream' | 'm3u' | 'none';
-  posterBases: string[];
+  /** The catalogue's sealed poster bases and the rows' TMDB posters (poster-choice.ts). */
+  posters: PosterSources;
   /** TMDB lists are in use (Popular and Featured, and the TMDB notice). */
   withTmdb: boolean;
   /** A problem loading the line's catalogue, shown with Try again. */
@@ -33,7 +35,7 @@ export type CatalogueState = {
 };
 
 const ROWS_KEY = 'lumanest_catalog_rows_v1';
-const EMPTY: CatalogueState = {user: '', status: 'idle', catalog: null, source: 'none', posterBases: [], withTmdb: false, error: '', truncated: false, count: 0};
+const EMPTY: CatalogueState = {user: '', status: 'idle', catalog: null, source: 'none', posters: NO_POSTERS, withTmdb: false, error: '', truncated: false, count: 0};
 
 /**
  * The rows endpoint's answer, or, when it fails, the last good copy this browser kept, however old (docs/browse.md:
@@ -165,7 +167,7 @@ export function useCatalogue({username, channels, channelBases, onSignedOut}: {u
         try {performance.measure('lumanest-catalogue-build', {start: started, detail: {titles: count}});} catch {}
         registerLocalSeries(local);
         setState({
-          user: username, status: 'ready', catalog: {movies: movieSection, series: seriesSection}, source: count ? (xtream ? 'xtream' : 'm3u') : 'none', posterBases: bases,
+          user: username, status: 'ready', catalog: {movies: movieSection, series: seriesSection}, source: count ? (xtream ? 'xtream' : 'm3u') : 'none', posters: {bases, tmdb: tmdbPosters(rows)},
           withTmdb: rows.valid && rows.source === 'tmdb', error: vod.error, truncated: Boolean(vod.data?.movies?.truncated || vod.data?.series?.truncated), count,
         });
       } catch {
@@ -173,7 +175,7 @@ export function useCatalogue({username, channels, channelBases, onSignedOut}: {u
         if (cancelled) return;
         const empty = () => buildTitleSection([], [], emptyRowsSection(), []);
         setState({
-          user: username, status: 'ready', catalog: {movies: empty(), series: empty()}, source: 'none', posterBases: [], withTmdb: false,
+          user: username, status: 'ready', catalog: {movies: empty(), series: empty()}, source: 'none', posters: NO_POSTERS, withTmdb: false,
           error: 'Movies and series could not be prepared in this browser. Please try again.', truncated: false, count: 0,
         });
       }

@@ -5,10 +5,11 @@ import {cardsFor} from './browse-cards';
 import {CatalogueError} from './home';
 import {PosterRow, type OpenTitle} from './poster';
 import type {Channel} from './use-catalogue';
+import type {PosterSources} from './poster-choice';
 
 /** Search: movies and series (names starting with the text first) and live channels, from 2 letters, ignoring accents. */
-export default function Search({query, catalog, library, bases, opts, channels, error, onRetry, onQuery, onOpen, onChannel}: {
-  query: string; catalog: Catalog | null; library: Library; bases: string[]; opts: PickOptions; channels: Channel[]; error: string; onRetry: () => void;
+export default function Search({query, catalog, library, posters, opts, channels, error, onRetry, onQuery, onOpen, onChannel}: {
+  query: string; catalog: Catalog | null; library: Library; posters: PosterSources; opts: PickOptions; channels: Channel[]; error: string; onRetry: () => void;
   onQuery: (value: string) => void; onOpen: OpenTitle; onChannel: (channel: Channel) => void;
 }) {
   const [text, setText] = useState(query);
@@ -28,8 +29,8 @@ export default function Search({query, catalog, library, bases, opts, channels, 
     return () => clearTimeout(timer);
   }, [text]);
   const needle = foldText(search.trim());
-  const movies = useMemo(() => catalog && needle.length >= 2 ? cardsFor(searchTitles(catalog.movies.items, needle, opts, 60).map(idx => ({type: 'movies' as const, idx})), catalog, library, bases) : [], [catalog, needle, opts, library, bases]);
-  const series = useMemo(() => catalog && needle.length >= 2 ? cardsFor(searchTitles(catalog.series.items, needle, opts, 60).map(idx => ({type: 'series' as const, idx})), catalog, library, bases) : [], [catalog, needle, opts, library, bases]);
+  const movies = useMemo(() => catalog && needle.length >= 2 ? cardsFor(searchTitles(catalog.movies.items, needle, opts, 60).map(idx => ({type: 'movies' as const, idx})), catalog, library, posters) : [], [catalog, needle, opts, library, posters]);
+  const series = useMemo(() => catalog && needle.length >= 2 ? cardsFor(searchTitles(catalog.series.items, needle, opts, 60).map(idx => ({type: 'series' as const, idx})), catalog, library, posters) : [], [catalog, needle, opts, library, posters]);
   const live = useMemo(() => needle.length >= 2 ? channels.filter(channel => foldText(channel.name + ' ' + channel.group).includes(needle)).slice(0, 30) : [], [channels, needle]);
   const nothing = needle.length >= 2 && !movies.length && !series.length && !live.length;
   return <div className="watch-browse watch-search">

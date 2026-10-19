@@ -6,6 +6,7 @@ import {createPosterBook, entryExt, entryKind} from './player-vod-data';
 import {sampleDiagnosticContainer} from './player-diagnostic-container';
 import {fetchPlayerRelay, providerRelaySource, relayConfigured} from './player-relay';
 import {db} from './paypal';
+import {SITE_URL} from '../app/site';
 
 export const PLAYER_COOKIE = 'lumanest_player';
 export const PLAYER_EXPIRED_COOKIE = PLAYER_COOKIE + '=; Path=/api/player; HttpOnly; Secure; SameSite=Lax; Max-Age=0';
@@ -23,6 +24,36 @@ export const providerURL = streamURL;
 /** True for an address on an approved provider host, including hosts reached only through the stream relay. */
 export function isProviderAddress(url: URL) {
   try {streamURL(url.href); return true;} catch {return false;}
+}
+/**
+ * True when the host of this address is a provider or relay host by any of the stream rules, whatever the address's
+ * own scheme or port: an https host in PLAYER_ALLOWED_HOSTS, an http host in PLAYER_ALLOWED_HTTP_HOSTS, or a
+ * STREAM_RELAY_ALLOWED_HOSTS address (relay entries count even while the relay is off). isProviderAddress alone checks
+ * an https address only against PLAYER_ALLOWED_HOSTS, so it misses https addresses on the other two.
+ */
+export function isProviderHost(url: URL) {
+  for (const protocol of ['https:', 'http:']) {
+    const copy = new URL(url.href);
+    copy.protocol = protocol;
+    copy.port = '';
+    copy.username = copy.password = '';
+    if (isProviderAddress(copy)) return true;
+  }
+  return Boolean(providerRelaySource('http://' + url.hostname + '/', settings().STREAM_RELAY_ALLOWED_HOSTS));
+}
+/**
+ * This site's own host names: the request's host, the site's (SITE_URL), the customer portal's and its zone (the
+ * portal host without a leading "tv."), and the stream relay's. Nothing under them is ever a catalogue image host.
+ */
+export function ownHostNames(requestOrigin: string) {
+  const names = new Set<string>();
+  const add = (value: string | undefined) => {
+    try {if (value) names.add(new URL(value).hostname.toLowerCase().replace(/\.$/, ''));} catch {}
+  };
+  add(requestOrigin); add(SITE_URL); add(portal()); add(settings().PLAYER_STREAM_RELAY_URL);
+  try {names.add(new URL(portal()).hostname.toLowerCase().replace(/^tv\./, ''));} catch {}
+  names.delete('');
+  return [...names];
 }
 /**
  * True for an address on an approved provider host that this Worker fetches itself. The stream relay passes only
