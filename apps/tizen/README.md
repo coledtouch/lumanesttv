@@ -19,7 +19,7 @@ npm test
 npm run build
 ```
 
-The build copies only `config.xml`, `index.html`, `css/app.css`, the four runtime JavaScript files, and `assets/icon.png`. Tools, tests, node_modules, provider exports, preferences and certificates are excluded. Outputs go to the repository's ignored `output/tizen` directory (`../../output/tizen` from here). Every build creates clean staging, validates ES5 syntax, application identifiers, privileges, CSP and ZIP checksums, and produces `Tuner-1.5.0-tizen-UNSIGNED.wgt`. Pass an output folder to `node tools/build.js <output-folder>` or use the PowerShell packager's `-OutputDirectory` option to choose another location.
+The build copies only `config.xml`, `index.html`, `css/app.css`, the four runtime JavaScript files, and `assets/icon.png`. Tools, tests, node_modules, provider exports, preferences and certificates are excluded. Outputs go to the repository's ignored `output/tizen` directory (`../../output/tizen` from here). Every build creates clean staging, validates ES5 syntax, application identifiers, privileges, CSP and ZIP checksums, and produces `Tuner-1.5.1-tizen-UNSIGNED.wgt`. Pass an output folder to `node tools/build.js <output-folder>` or use the PowerShell packager's `-OutputDirectory` option to choose another location.
 
 **The unsigned widget is a staging artifact. It cannot be installed on a physical Samsung TV.** It needs a Samsung author/distributor certificate profile containing the target TV's DUID.
 
@@ -71,7 +71,7 @@ After that one-time profile setup:
 
 ```powershell
 .\tools\Package-Tizen.ps1 -CertificateProfile TunerTV
-.\tools\Install-Tizen.ps1 -TvAddress <TV-IP> -Widget ..\..\output\tizen\Tuner-1.5.0-tizen.wgt -Launch
+.\tools\Install-Tizen.ps1 -TvAddress <TV-IP> -Widget ..\..\output\tizen\Tuner-1.5.1-tizen.wgt -Launch
 ```
 
 The package script builds fresh staging, invokes the official signer and checks that both widget signature files exist. Their presence does not prove validity: the Samsung CLI and the target TV perform certificate validation. The installer rejects unsigned widgets, checks the developer port, uses an explicit device serial, and only launches Tuner when `-Launch` is supplied. It does not uninstall other applications or reset TV settings.
