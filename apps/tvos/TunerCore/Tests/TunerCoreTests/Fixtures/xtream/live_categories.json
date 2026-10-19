@@ -1,0 +1,9 @@
+[{"category_id":"1","category_name":"USA | News","parent_id":0},
+{"category_id":"2","category_name":"USA | Sports","parent_id":0},
+{"category_id":"3","category_name":"UK | Entertainment","parent_id":0},
+{"category_id":"4","category_name":"XXX | Adult","parent_id":0},
+{"category_id":"5","category_name":"USA | Adult Swim","parent_id":0},
+{"category_id":"6","category_name":"Late Night","parent_id":0,"is_adult":"1"},
+{"category_id":"7","category_name":"+18 Movies","parent_id":0},
+{"category_id":8,"category_name":null,"parent_id":0},
+{"category_id":"1","category_name":"USA | News (duplicate row)","parent_id":0}]

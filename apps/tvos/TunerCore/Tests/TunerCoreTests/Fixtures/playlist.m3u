@@ -1,0 +1,29 @@
+#EXTM3U url-tvg="http://epg.example.com/guide.xml.gz,http://epg.example.com/backup.xml" x-tvg-url="http://ignored.example.com/x.xml"
+#EXTINF:-1 tvg-id="CNN.us" tvg-name="CNN" tvg-logo="http://logos.example.com/cnn.png" tvg-chno="7" tvg-country="US" tvg-language="en-US" group-title="USA | News",US: CNN HD
+http://line.example.com/live/demo/s3cret/1.ts
+#EXTINF:-1 tvg-id="" tvg-name="BBC One" tvg-logo="http://logos.example.com/bbc.png" tvg-chno="8" group-title="UK, Entertainment",BBC One HD
+http://line.example.com/live/demo/s3cret/2.ts
+#EXTINF:-1 tvg-chno="9",Sky News, Live
+#EXTGRP:News Extra
+#EXTVLCOPT:http-user-agent=foo
+http://line.example.com/live/demo/s3cret/3.m3u8
+#EXTINF:-1 tvg-logo='http://logos.example.com/hot.png' group-title="XXX Adults",Late
+http://line.example.com/live/demo/s3cret/4.ts
+#EXTINF:-1 group-title="Movies 2024" tvg-logo="http://posters.example.com/dune.jpg",Dune Part Two (2024)
+http://line.example.com/movie/demo/s3cret/55.mkv
+#EXTINF:-1 group-title="Movies 2024",Inside Out 2 (2024)
+http://line.example.com/movie/demo/s3cret/56.mp4?token=1
+#EXTINF:-1 group-title="Movies 2024",Inside Out 2 (2024)
+http://line.example.com/movie/demo/s3cret/56.mp4?token=1
+#EXTINF:-1 group-title="Series | Drama" tvg-logo="http://posters.example.com/tlou.jpg",The Last of Us S01E02 - Infected
+http://line.example.com/series/demo/s3cret/5011.mp4
+#EXTINF:-1 group-title="Series | Drama",The Last of Us S01E01
+http://line.example.com/series/demo/s3cret/5010.mp4
+#EXTINF:-1 series-name="Severance" season="2" episode="1" group-title="Series | Apple",Hello, Ms. Cobel
+http://line.example.com/series/demo/s3cret/7001.mkv
+#EXTINF:-1,
+http://line.example.com/live/demo/s3cret/5.ts
+#EXTINF:-1 tvg-name="Fallback Name",
+https://line.example.com/live/demo/s3cret/6.ts
+
+not-a-url

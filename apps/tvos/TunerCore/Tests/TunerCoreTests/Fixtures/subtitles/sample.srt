@@ -1,0 +1,16 @@
+﻿1
+00:00:01,000 --> 00:00:02,500
+<i>Hello</i> there
+second line
+
+2
+00:00:03,000 --> 00:00:04,000
+{\an8}Top &amp; tagged
+
+3
+00:00:02,000 --> 00:00:03,500
+Overlap starts later in the file
+
+4
+00:00:05,000 --> 00:00:04,000
+Ends before it starts

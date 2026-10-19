@@ -1,0 +1,11 @@
+WEBVTT
+Kind: captions
+
+NOTE a comment block --> with an arrow should be skipped? no, it has no timing line
+
+intro
+00:01.000 --> 00:02.000 align:start position:10%
+<v Roger>Hi <b>there</b>
+
+01:00:00.250 --> 01:00:01.750
+An hour in

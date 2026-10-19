@@ -1,0 +1,3 @@
+// Shared settings for the Tuner app target. Signing: the owner's team id goes in Signing.local.xcconfig next to this
+// file (gitignored), for example:  DEVELOPMENT_TEAM = ABCDE12345
+#include? "Signing.local.xcconfig"

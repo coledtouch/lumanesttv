@@ -81,8 +81,8 @@
         </ul>
 
         <h2 id="who">Who we are</h2>
-        <p>Tuner by LumaNest TV (&ldquo;Tuner&rdquo;) is published by <strong>LumaNest TV</strong>, which also runs <a href="https://lumanest.tv">lumanest.tv</a> and sells LumaNest TV subscriptions. In this policy, &ldquo;we&rdquo; and &ldquo;us&rdquo; mean LumaNest TV. For any privacy question or request, email <a href="mailto:support@tunertv.app">support@tunertv.app</a>.</p>
-        <p>This policy covers the Tuner apps for Android TV, Google TV and Fire TV; Samsung TVs; LG TVs; and Roku, and this website, tunertv.app. The Apple TV version isn&rsquo;t released yet; if it handles data differently from the apps described here, we&rsquo;ll update this policy before it&rsquo;s released.</p>
+        <p>Tuner by LumaNest TV (&ldquo;Tuner&rdquo;) is published by <strong>LumaNest TV</strong>, which also runs lumanest.tv and sells LumaNest TV subscriptions. In this policy, &ldquo;we&rdquo; and &ldquo;us&rdquo; mean LumaNest TV. For any privacy question or request, email <a href="mailto:support@tunertv.app">support@tunertv.app</a>.</p>
+        <p>This policy covers the Tuner apps for Android TV, Google TV and Fire TV; Samsung TVs; LG TVs; Roku; and Apple TV, and this website, tunertv.app.</p>
         <p>Buying or renewing a subscription, your customer hub and the lumanest.tv web player are covered by the <a href="https://lumanest.tv/privacy">LumaNest TV privacy policy</a>.</p>
 
         <h2 id="on-tv">What Tuner stores on your TV</h2>
@@ -90,8 +90,8 @@
         <ul class="data-list">
           <li>
             <h3>Your line login</h3>
-            <p>The server address, username and password of your LumaNest TV line, or a playlist address that contains them. Tuner needs it to connect to your subscription. You get it by pairing with your phone, or by typing it in Settings.</p>
-            <p class="where">All apps. On Android TV, Google TV and Fire TV, a password saved with a server address is encrypted with a key held in the Android Keystore (on a TV where the Keystore doesn&rsquo;t work, it&rsquo;s saved unencrypted). Playlist links and saved stream addresses (for Continue Watching and in saved catalogues) are kept unencrypted in Tuner&rsquo;s private storage; for LumaNest TV, these include your username and password. On Samsung, LG and Roku, your login is kept in the app&rsquo;s private storage on the TV.</p>
+            <p>The server address, username and password of your LumaNest TV line, or a playlist address that contains them. Tuner needs it to connect to your subscription. You get it by pairing with your phone, or by typing it in Tuner.</p>
+            <p class="where">All apps. On Android TV, Google TV and Fire TV, a password saved with a server address is encrypted with a key held in the Android Keystore (on a TV where the Keystore doesn&rsquo;t work, it&rsquo;s saved unencrypted). Playlist links and saved stream addresses (for Continue Watching and in saved catalogues) are kept unencrypted in Tuner&rsquo;s private storage; for LumaNest TV, these include your username and password. On Samsung, LG and Roku, your login is kept in the app&rsquo;s private storage on the TV. On Apple TV, the password is kept in the Apple TV&rsquo;s Keychain; the server address, username and any playlist link from pairing are kept in Tuner&rsquo;s private storage, and saved catalogues, whose stream addresses include your username and password, in its cache folder.</p>
           </li>
           <li>
             <h3>Your settings</h3>
@@ -100,13 +100,13 @@
           </li>
           <li>
             <h3>Favorites and viewing history</h3>
-            <p>Your favorite channels, movies and episodes you started (with where you stopped, so you can continue watching), and how often you opened each live channel, which powers Most Watched. Tuner also remembers the last channel you watched, and the Android app hides channels that failed to play for three days.</p>
-            <p class="where">Android TV, Google TV and Fire TV; Samsung; LG. Kept separately for each playlist. The Roku app doesn&rsquo;t keep favorites or history.</p>
+            <p>Your favorite channels, movies and episodes you started (with where you stopped, so you can continue watching), and how often you opened each live channel, which powers Most Watched. Tuner also remembers the last channel you watched, and the Android and Apple TV apps hide channels that failed to play for three days.</p>
+            <p class="where">Android TV, Google TV and Fire TV; Samsung; LG; Apple TV. Kept separately for each playlist or login. The Roku app doesn&rsquo;t keep favorites or history.</p>
           </li>
           <li>
             <h3>Saved catalogue, guide and images</h3>
             <p>Copies of your channel list, movies, series, TV guide listings and artwork, so Tuner starts quickly and uses less data. They refresh automatically.</p>
-            <p class="where">Android TV, Google TV and Fire TV (files in the app&rsquo;s storage, including an image cache); Samsung and LG (the app&rsquo;s own storage). The Roku app keeps them in memory only while it&rsquo;s open.</p>
+            <p class="where">Android TV, Google TV and Fire TV (files in the app&rsquo;s storage, including an image cache); Samsung and LG (the app&rsquo;s own storage); Apple TV (the app&rsquo;s cache folder, which tvOS may empty when it needs space, including an image cache). The Roku app keeps them in memory only while it&rsquo;s open.</p>
           </li>
           <li>
             <h3>Content lock passcode</h3>
@@ -118,19 +118,24 @@
         <h2 id="sent">What Tuner sends, and to whom</h2>
 
         <h3>Pairing with your phone, through lumanest.tv</h3>
-        <p>When you open pairing, Tuner asks <code>lumanest.tv</code> for a code over HTTPS. The request says which kind of TV app is asking (Android, Samsung, LG or Roku). Tuner then checks every few seconds whether you&rsquo;ve approved the code. You approve it on your phone at lumanest.tv/pair after signing in with your line login, and lumanest.tv hands your line login to the TV once.</p>
+        <p>When you open pairing, Tuner asks <code>lumanest.tv</code> for a code over HTTPS. The request says which kind of TV app is asking (Android, Samsung, LG, Roku or Apple TV). Tuner then checks every few seconds whether you&rsquo;ve approved the code. You approve it on your phone at lumanest.tv/pair after signing in with your line login, and lumanest.tv hands your line login to the TV once.</p>
         <p>For each pairing, lumanest.tv stores the short code, a one-way hash of the TV&rsquo;s secret device code, the kind of TV app, a hashed (pseudonymised) form of your network&rsquo;s IP address (used only to limit how many codes one network can request), the status and times, and, after you approve, your line login encrypted with a server key until the TV collects it. Like any website, lumanest.tv also sees your TV&rsquo;s IP address when it connects.</p>
 
         <h3>Your channels, guide, movies, series and playback</h3>
         <p>To show your lineup, guide, movies and series, and to play them, Tuner connects directly to the servers named in your line login and playlist: for example, the playlist link on LumaNest TV&rsquo;s customer portal, and the stream and guide servers that playlist lists. These servers are run for LumaNest TV by its streaming service provider. Requests to them include your line login, because the service uses it to check your subscription, and the servers see your TV&rsquo;s IP address, your line username and what you ask to watch, as with any streaming service.</p>
 
-        <h3>Logos, posters and artwork</h3>
-        <p>Channel logos, posters and artwork come from web addresses listed in your catalogue and guide, or in the iptv-org logo list (Android). Tuner loads each image directly from wherever it&rsquo;s hosted, which can be a third-party image server. That server sees your TV&rsquo;s IP address and which image was requested. Tuner doesn&rsquo;t add your login to these requests.</p>
+        <p>On Apple TV, Tuner turns live channels into a format the Apple TV&rsquo;s player accepts on the Apple TV itself, and hands them to the player through a small web server that only the Apple TV can reach (it listens on 127.0.0.1). Your video doesn&rsquo;t pass through our servers.</p>
 
-        <h3>Extra guide and logo sources (Android TV, Google TV and Fire TV)</h3>
+        <h3>Home and Discover lists, through lumanest.tv</h3>
+        <p>Tuner apps with Home and Discover screens download the lists they show there, such as popular and top-rated movies and series, from <code>lumanest.tv</code> over HTTPS. lumanest.tv builds these lists with data from TMDB (The Movie Database), and Tuner matches them against your own catalogue on the TV. The request contains no login or other information about you; like any website, lumanest.tv sees your TV&rsquo;s IP address and which app is asking.</p>
+
+        <h3>Logos, posters and artwork</h3>
+        <p>Channel logos, posters and artwork come from web addresses listed in your catalogue and guide, or in the iptv-org logo list (Android and Apple TV). Tuner loads each image directly from wherever it&rsquo;s hosted, which can be a third-party image server. That server sees your TV&rsquo;s IP address and which image was requested. Tuner doesn&rsquo;t add your login to these requests.</p>
+
+        <h3>Extra guide and logo sources</h3>
         <ul>
-          <li><strong>Free guide fallback.</strong> When your service&rsquo;s guide has no listings for some channels, the Android app can download free regional guide files from <code>epgshare01.online</code>. In the version downloaded from lumanest.tv it&rsquo;s on by default, with the United States national and sports guides; in the Google Play and Amazon Appstore version it&rsquo;s off until you choose a guide. You can change it in Tuner&rsquo;s Settings under <strong>Free guide fallback</strong>; unticking every guide turns it off.</li>
-          <li><strong>Channel logo list.</strong> To fill in missing channel logos, the Android app downloads the open logo list published by the iptv-org project at <code>iptv-org.github.io</code>, at most about once a week.</li>
+          <li><strong>Free guide fallback (Android TV, Google TV and Fire TV).</strong> When your service&rsquo;s guide has no listings for some channels, the Android app can download free regional guide files from <code>epgshare01.online</code>. In the version downloaded from lumanest.tv it&rsquo;s on by default, with the United States national and sports guides; in the Google Play and Amazon Appstore version it&rsquo;s off until you choose a guide. You can change it in Tuner&rsquo;s Settings under <strong>Free guide fallback</strong>; unticking every guide turns it off.</li>
+          <li><strong>Channel logo list (Android TV, Google TV, Fire TV and Apple TV).</strong> To fill in missing channel logos, the Android and Apple TV apps download the open logo list published by the iptv-org project at <code>iptv-org.github.io</code>, at most about once a week. The Apple TV app has no free guide fallback.</li>
         </ul>
         <p>These downloads don&rsquo;t include your login or anything about you beyond what any web request reveals, such as your TV&rsquo;s IP address.</p>
 
@@ -141,14 +146,14 @@
         <p>Tuner connects to that playlist&rsquo;s servers instead, which handle your requests under their operator&rsquo;s own policies. We don&rsquo;t receive that playlist or its login.</p>
 
         <h3>Diagnostics</h3>
-        <p>Tuner contains no analytics, advertising or crash-reporting software, and it doesn&rsquo;t send us diagnostics. The Android app writes playback timing notes (for example, how long a channel took to start, with the stream&rsquo;s ID number) to the TV&rsquo;s own system log, which stays on the TV. These notes don&rsquo;t include your login.</p>
+        <p>Tuner contains no analytics, advertising or crash-reporting software, and it doesn&rsquo;t send us diagnostics. The Android app writes playback timing notes (for example, how long a channel took to start, with the stream&rsquo;s ID number) to the TV&rsquo;s own system log, which stays on the TV. These notes don&rsquo;t include your login. The Apple TV app writes a short note to the Apple TV&rsquo;s own system log when a title or channel fails to play, which also stays on the device.</p>
         <p>The app stores and TV makers (such as Google, Amazon, Samsung, LG, Roku and Apple) may collect information about app installs, usage or crashes under their own privacy policies. We don&rsquo;t control that collection.</p>
 
         <h2 id="not-collected">What Tuner doesn&rsquo;t do</h2>
         <ul>
           <li>No ads, advertising IDs, analytics or tracking across apps and websites.</li>
           <li>No location. The local stations setting is a market you choose, not your device&rsquo;s location.</li>
-          <li>No access to contacts, photos, files, camera or microphone. On Android, Tuner asks only for internet and network-status access.</li>
+          <li>No access to contacts, photos, files, camera or microphone. On Android, Tuner asks only for internet and network-status access. On Apple TV, it asks for no permissions.</li>
           <li>No in-app purchases and no payment details. Subscriptions are bought on lumanest.tv.</li>
           <li>No selling or renting of your information, and no sharing for advertising.</li>
         </ul>
@@ -173,7 +178,7 @@
 
         <h2 id="retention">How long it&rsquo;s kept</h2>
         <ul>
-          <li><strong>On your TV:</strong> until you clear Tuner&rsquo;s data in your TV&rsquo;s settings or uninstall Tuner. Saved catalogues and guide listings are replaced as they refresh. Deleting a playlist in Tuner removes the playlist from Tuner; on Android TV, Google TV and Fire TV, the favorites, history and Continue Watching kept for it stay until you clear Tuner&rsquo;s data (see <a href="/delete">Delete your data</a>).</li>
+          <li><strong>On your TV:</strong> until you clear Tuner&rsquo;s data in your TV&rsquo;s settings or uninstall Tuner. Saved catalogues and guide listings are replaced as they refresh. Deleting a playlist in Tuner removes the playlist from Tuner; on Android TV, Google TV and Fire TV, the favorites, history and Continue Watching kept for it stay until you clear Tuner&rsquo;s data (see <a href="/delete">Delete your data</a>). On Apple TV, removing a login in Tuner&rsquo;s Settings also deletes its password from the Keychain and its favorites, history and resume points.</li>
           <li><strong>Pairing records on lumanest.tv:</strong> deleted as soon as your TV collects its login. Codes expire after 10 minutes. An expired record, including an approved login the TV never collected (which stays encrypted), is deleted the next time any TV starts pairing.</li>
           <li><strong>Pairing rate limits on lumanest.tv:</strong> counters keyed by a hashed (pseudonymised) form of your network&rsquo;s IP address. They expire after 30 minutes and are then removed by routine clean-up.</li>
           <li><strong>Streaming requests:</strong> the streaming servers receive your IP address, line username and what you watch, as described above. Our streaming service provider keeps this only as long as needed to run the service and prevent abuse. Email us to ask for deletion.</li>
@@ -193,6 +198,7 @@
         <ul>
           <li>Pairing with lumanest.tv uses HTTPS. lumanest.tv stores only a hash of the TV&rsquo;s secret device code, keeps your line login encrypted until the TV collects it, and hands it out only once.</li>
           <li>On Android TV, Google TV and Fire TV, a separately saved password is encrypted with an Android Keystore key, but playlist links and saved stream addresses, which contain your login, are kept unencrypted in Tuner&rsquo;s private storage. Tuner&rsquo;s data isn&rsquo;t included in Android cloud backups. Its settings, including saved logins, playlist links and Continue Watching, are left out of device-to-device transfers to a new device; saved catalogue files, which contain stream addresses, can be copied in such a transfer. The app doesn&rsquo;t trust user-installed security certificates.</li>
+          <li>On Apple TV, the password is kept in the Keychain; the playlist link from pairing and saved catalogues, which contain your login, are kept in Tuner&rsquo;s private storage outside the Keychain. Tuner&rsquo;s small playback server listens only on the Apple TV itself and can&rsquo;t be reached from other devices.</li>
           <li>On every platform, Tuner&rsquo;s data is kept in the app&rsquo;s own storage, which other apps can&rsquo;t read.</li>
           <li>LumaNest TV&rsquo;s video streams use plain HTTP rather than HTTPS, which is common for TV streaming, and each stream address contains your line login. Those requests, including the login, aren&rsquo;t encrypted on the way. Other playlists&rsquo; servers may also use plain HTTP. The Android setup page for typing a playlist on your phone is also plain HTTP on your home network. Use Tuner on a network you trust.</li>
           <li>Keep your line login private, and only approve a pairing code that&rsquo;s on your own TV screen.</li>
@@ -235,7 +241,6 @@
         <div>
           <h2>LumaNest TV</h2>
           <ul>
-            <li><a href="https://lumanest.tv">Plans</a></li>
             <li><a href="https://lumanest.tv/apps">TV setup guides</a></li>
             <li><a href="https://lumanest.tv/pair">Pair a TV</a></li>
           </ul>

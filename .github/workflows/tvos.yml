@@ -1,0 +1,108 @@
+name: Apple TV
+
+on:
+  push:
+    branches: [main]
+    paths: ['apps/tvos/**', '.github/workflows/tvos.yml']
+  pull_request:
+    paths: ['apps/tvos/**', '.github/workflows/tvos.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tvos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # TunerCore is Foundation-only: build and test it on Linux with the Swift of Xcode 26.6 (6.3.3) and Xcode 27 (6.4.1).
+  core-linux:
+    name: TunerCore on Linux (Swift ${{ matrix.swift }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - swift: '6.3.3'
+            image: swift:6.3.3-noble@sha256:c2f3ac2eb806ce43f68859c3d52bd3bb1cfc88672fb3a948b76e136d98e39278
+          - swift: '6.4.1'
+            image: swift:6.4.1-noble@sha256:19cbe56bdaec1918f7cf5fdeba42b9bd55bdd8a6149c9990d0e0e3a89a127d63
+    container:
+      image: ${{ matrix.image }}
+    defaults:
+      run:
+        working-directory: apps/tvos/TunerCore
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Build and test
+        run: swift test --parallel
+
+  # The app: generate the project with a pinned XcodeGen, test on the tvOS Simulator, and build Release for devices.
+  # Nothing is signed here; the owner signs and uploads from Xcode (apps/tvos/README.md).
+  app-macos:
+    name: Tuner app (Xcode 26.6, tvOS 26.5 Simulator)
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      XCODEGEN_VERSION: '2.46.0'
+      XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
+      DESTINATION: platform=tvOS Simulator,name=Apple TV 4K (3rd generation),OS=26.5
+    defaults:
+      run:
+        working-directory: apps/tvos
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Show toolchain
+        run: xcodebuild -version && swift --version
+      - name: Install XcodeGen ${{ env.XCODEGEN_VERSION }}
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" "https://github.com/yonaskolb/XcodeGen/releases/download/$XCODEGEN_VERSION/xcodegen.zip"
+          echo "$XCODEGEN_SHA256  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Generate Tuner.xcodeproj
+        run: xcodegen generate --spec project.yml
+      - name: Check the App Store settings in the generated Info.plist
+        run: |
+          plutil -lint Tuner/Info.plist Tuner/Resources/PrivacyInfo.xcprivacy
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSAppTransportSecurity:NSAllowsArbitraryLoads' Tuner/Info.plist)" = "true"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :ITSAppUsesNonExemptEncryption' Tuner/Info.plist)" = "false"
+          if /usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' Tuner/Info.plist >/dev/null 2>&1; then
+            echo "Tuner/Info.plist must not declare UIBackgroundModes"; exit 1
+          fi
+      - name: Unit tests on the tvOS Simulator
+        run: |
+          set -o pipefail
+          xcodebuild test -project Tuner.xcodeproj -scheme Tuner -destination "$DESTINATION" \
+            -derivedDataPath "$RUNNER_TEMP/dd" -resultBundlePath "$RUNNER_TEMP/TunerTests.xcresult" \
+            CODE_SIGNING_ALLOWED=NO | tee "$RUNNER_TEMP/test.log"
+      # Runs even when the Simulator tests failed, so a test failure never hides a device compile error.
+      - name: Release build for Apple TV devices (unsigned)
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          xcodebuild build -project Tuner.xcodeproj -scheme Tuner -configuration Release -destination 'generic/platform=tvOS' \
+            -derivedDataPath "$RUNNER_TEMP/dd-release" CODE_SIGNING_ALLOWED=NO | tee "$RUNNER_TEMP/release.log"
+      # After the app steps, so a TunerCore failure that only shows on Apple platforms doesn't hide app compile errors.
+      - name: TunerCore tests on macOS
+        if: ${{ !cancelled() }}
+        working-directory: apps/tvos/TunerCore
+        run: swift test --parallel
+      - name: Save logs and test results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: tvos-test-results
+          path: |
+            ${{ runner.temp }}/TunerTests.xcresult
+            ${{ runner.temp }}/test.log
+            ${{ runner.temp }}/release.log
+          if-no-files-found: ignore
+          retention-days: 7

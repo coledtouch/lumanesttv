@@ -1,0 +1,4 @@
+[{"num":1,"name":"The Last of Us (2023)","series_id":331,"cover":"https://image.tmdb.org/t/p/w600/tlou.jpg","plot":"Joel and Ellie.","cast":"Pedro Pascal","director":"","genre":"Drama / Action & Adventure","releaseDate":"2023-01-15","last_modified":"1710000000","rating":"8.7","rating_5based":4.3,"backdrop_path":["https://image.tmdb.org/t/p/w1280/tlou-back.jpg"],"youtube_trailer":"","episode_run_time":"55","category_id":"31","category_ids":[31,30],"tmdb":"100088"},
+{"num":2,"name":"La Casa de Papel","series_id":"332","cover":"","plot":null,"genre":"Crime","release_date":"2017","last_modified":"1600000000","rating":"0","category_id":"32","category_ids":[32]},
+{"num":3,"name":"After Dark","series_id":333,"last_modified":"1500000000","category_id":"30","is_adult":"1"},
+{"num":1,"name":"The Last of Us (2023)","series_id":331,"category_id":"30","category_ids":[30,18]}]

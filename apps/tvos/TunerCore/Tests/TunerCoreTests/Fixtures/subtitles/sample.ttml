@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling" ttp:tickRate="10000000" ttp:frameRate="25" xmlns:ttp="http://www.w3.org/ns/ttml#parameter">
+  <body><div>
+    <p begin="00:00:01.000" end="00:00:02.500">Hello<br/>world</p>
+    <p begin="30000000t" dur="10000000t"><span tts:color="white">Ticks &amp; &#233;</span></p>
+    <tt:p begin="5s" end="6.5s">Prefixed</tt:p>
+    <p begin="00:00:07:12" end="00:00:08:00">Frames</p>
+    <p end="9s">No begin</p>
+  </div></body>
+</tt>
