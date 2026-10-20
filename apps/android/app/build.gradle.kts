@@ -46,8 +46,8 @@ android {
         applicationId = if (storeBuild) "app.tunertv" else "tv.lumanest.tuner"
         minSdk = 23
         targetSdk = 35
-        versionCode = 20
-        versionName = "1.7.1"
+        versionCode = 21
+        versionName = "1.8.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("boolean", "STORE_BUILD", storeBuild.toString())
         // Store edition: Android TV only on Google Play, and no picture-in-picture (Play's TV rules allow it only for

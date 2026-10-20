@@ -1,6 +1,6 @@
 {
   "name": "tuner-samsung-tv",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "private": true,
   "description": "Tuner Samsung Tizen TV widget and local packaging tools",
   "scripts": {
