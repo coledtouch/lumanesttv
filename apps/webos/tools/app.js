@@ -9,6 +9,8 @@ const FILES = Object.freeze([
     "js/data.js", "js/player.js", "js/webos-platform.js", "js/pairing.js", "js/app.js"
 ]);
 const SCRIPTS = Object.freeze(["js/data.js", "js/player.js", "js/webos-platform.js", "js/pairing.js", "js/app.js"]);
+// The trailer player (docs/extras.md): the app may frame lumanest.tv's player page and nothing else.
+const FRAME_SOURCE = "https://lumanest.tv";
 
 function validateSource(root = ROOT) {
     FILES.forEach(name => {
@@ -42,6 +44,11 @@ function validateSource(root = ROOT) {
     if (/\son[a-z]+\s*=/i.test(html) || /javascript:/i.test(html)) throw new Error("Inline script handlers are forbidden");
     const policy = html.match(/<meta\b[^>]*http-equiv="Content-Security-Policy"[^>]*content="([^"]+)"[^>]*>/i)?.[1];
     if (!policy || policy.split(";").find(part => part.trim().startsWith("script-src "))?.trim() !== "script-src 'self'" || /unsafe-eval/.test(policy)) throw new Error("Packaged local-script CSP is required");
+    const directives = policy.split(";").map(part => part.trim().replace(/\s+/g, " ")).filter(Boolean);
+    ["frame-src", "child-src"].forEach(name => {
+        const found = directives.filter(part => part.split(" ")[0] === name);
+        if (found.length !== 1 || found[0] !== name + " " + FRAME_SOURCE) throw new Error("Only lumanest.tv's trailer player may be framed (" + name + ")");
+    });
     const icon = fs.readFileSync(path.join(root, "assets/icon.png"));
     if (icon.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") throw new Error("The app icon must be PNG");
     return manifest;
@@ -65,4 +72,4 @@ function stageSource(output, root = ROOT) {
     return build;
 }
 
-module.exports = {ROOT, FILES, SCRIPTS, validateSource, stageSource};
+module.exports = {ROOT, FILES, SCRIPTS, FRAME_SOURCE, validateSource, stageSource};

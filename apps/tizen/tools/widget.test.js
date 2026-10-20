@@ -66,3 +66,28 @@ test("the trailer's YouTube launch (docs/extras.md) needs the application.launch
     assert.throws(() => widget.validateManifest(xml.replace(line, "")), /privileges/);
     assert.throws(() => widget.validateManifest(xml.replace("application.launch", "application.launch\" />\n    <tizen:privilege name=\"http://tizen.org/privilege/appmanager.kill")), /privileges/);
 });
+
+test("the trailer player (docs/extras.md): CSP frames lumanest.tv only, and navigation is allowed to it and YouTube's frames only", () => {
+    const xml = manifest.toString("utf8");
+    assert.match(xml, /frame-src https:\/\/lumanest\.tv; child-src https:\/\/lumanest\.tv;/);
+    assert.match(xml, /<tizen:allow-navigation>lumanest\.tv www\.youtube-nocookie\.com www\.youtube\.com<\/tizen:allow-navigation>/);
+    for (const changed of [
+        xml.replace("frame-src https://lumanest.tv;", "frame-src 'none';"),
+        xml.replace("frame-src https://lumanest.tv;", "frame-src https:;"),
+        xml.replace("frame-src https://lumanest.tv;", "frame-src https://lumanest.tv https://example.test;"),
+        xml.replace("frame-src https://lumanest.tv;", ""),
+        xml.replace("child-src https://lumanest.tv;", "child-src *;"),
+        xml.replace("child-src https://lumanest.tv;", ""),
+        xml.replace("child-src https://lumanest.tv;", "child-src https://lumanest.tv; frame-src *;")
+    ]) assert.throws(() => widget.validateManifest(changed), /framed/, changed.match(/<tizen:content-security-policy>.*/)[0]);
+    for (const changed of [
+        xml.replace(/\s*<tizen:allow-navigation>[^<]*<\/tizen:allow-navigation>/, ""),
+        xml.replace("lumanest.tv www.youtube", "* lumanest.tv www.youtube"),
+        xml.replace(" www.youtube.com<", " www.youtube.com *.google.com<"),
+        xml.replace(" www.youtube.com<", " www.youtube.com *.doubleclick.net<"),
+        xml.replace("www.youtube-nocookie.com", "*.youtube-nocookie.com"),
+        xml.replace(" www.youtube.com<", " *.youtube.com<"),
+        xml.replace("<tizen:allow-navigation>", "<tizen:allow-navigation>*</tizen:allow-navigation>\n    <tizen:allow-navigation>"),
+        xml.replace("<tizen:allow-navigation>", "<tizen:allow-navigation >")
+    ]) assert.throws(() => widget.validateManifest(changed), /Navigation must be allowed/);
+});

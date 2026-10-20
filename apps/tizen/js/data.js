@@ -1594,7 +1594,63 @@
         };
     }
 
+    // ---------------------------------------------------------------- the trailer player
+    // docs/extras.md, The trailer player (Samsung and LG): the YouTube player runs in a page on lumanest.tv that the app
+    // shows full screen in an iframe (YouTube refuses embeds from file:// and app pages). Both sides talk in JSON strings
+    // with postMessage: { tuner: 'trailer', v: 1, type, ... }. Here: the frame's URL, the frame's messages read and
+    // checked, the app's commands to it, and what each remote key or message does. app.js keeps the overlay.
+    var FRAME_ORIGIN = 'https://lumanest.tv', FRAME_URL = FRAME_ORIGIN + '/embed/trailer?v=1&k=', FRAME_MESSAGE_MAX = 256,
+        FRAME_STATES = ['unstarted', 'playing', 'paused', 'buffering', 'ended', 'cued'],
+        // The keys the frame forwards (by name) and the remote's keys (by keyCode), as what they do: close, toggle,
+        // play, pause, stop, rewind (10 s back), forward (10 s on); '' does nothing. Back is Samsung 10009, LG 461,
+        // Escape and Backspace on a PC; OK is 13; MediaPlayPause 10252 (179 on a PC keyboard), MediaPlay 415,
+        // MediaPause 19, MediaStop 413; Left 37 and MediaRewind 412, Right 39 and MediaFastForward 417.
+        FRAME_KEYS = { back: 'close', enter: 'toggle', playpause: 'toggle', play: 'play', pause: 'pause', stop: 'stop', left: 'rewind', right: 'forward', up: '', down: '' },
+        REMOTE_KEYS = { 10009: 'close', 461: 'close', 27: 'close', 8: 'close', 13: 'toggle', 10252: 'toggle', 179: 'toggle', 415: 'play', 19: 'pause', 413: 'stop', 37: 'rewind', 39: 'forward', 412: 'rewind', 417: 'forward' },
+        FRAME_COMMANDS = ['toggle', 'play', 'pause', 'stop'];
+    function own(table, name) { return Object.prototype.hasOwnProperty.call(table, name); }
+    // The frame's address for a YouTube key, or '' when the key is not one (nothing else ever reaches the URL).
+    function trailerFrameUrl(key) {
+        return typeof key === 'string' && YOUTUBE_KEY.test(key) ? FRAME_URL + key : '';
+    }
+    // A message from the frame (event.data) as { type: 'ready' } | { type: 'state', state } | { type: 'error', code } |
+    // { type: 'key', key }, or null for anything else. The caller has already checked event.origin and event.source.
+    function parseFrameMessage(data) {
+        var m;
+        if (typeof data !== 'string' || data.length > FRAME_MESSAGE_MAX) return null;
+        try { m = JSON.parse(data); } catch (_) { return null; }
+        if (!m || typeof m !== 'object' || Array.isArray(m) || m.tuner !== 'trailer' || m.v !== 1) return null;
+        if (m.type === 'ready') return { type: 'ready' };
+        if (m.type === 'state') return FRAME_STATES.indexOf(m.state) >= 0 ? { type: 'state', state: m.state } : null;
+        if (m.type === 'error') return typeof m.code === 'number' && Math.floor(m.code) === m.code && m.code >= 0 && m.code <= 999999 ? { type: 'error', code: m.code } : null;
+        if (m.type === 'key') return typeof m.key === 'string' && own(FRAME_KEYS, m.key) ? { type: 'key', key: m.key } : null;
+        return null;
+    }
+    // What a remote key (keyCode) does while the trailer is open; '' for every other key.
+    function trailerKeyAction(code) { return typeof code === 'number' && own(REMOTE_KEYS, code) ? REMOTE_KEYS[code] : ''; }
+    // What a frame message (parseFrameMessage's) asks of the app: 'ready'; 'close' when the trailer ended; 'fallback'
+    // for any player error (YouTube's 2, 5, 100, 101, 150, 152, 153 and any other code: the YouTube app, then the QR
+    // dialog, never a black screen); a forwarded key's action as trailerKeyAction gives it; else the state's name
+    // (unstarted, playing, paused, buffering, cued), or '' for nothing.
+    function trailerMessageAction(message) {
+        if (!message) return '';
+        if (message.type === 'ready') return 'ready';
+        if (message.type === 'error') return 'fallback';
+        if (message.type === 'key') return FRAME_KEYS[message.key];
+        return message.state === 'ended' ? 'close' : message.state;
+    }
+    // The command (a JSON string, for postMessage to FRAME_ORIGIN) for an action: toggle, play, pause, stop, or a seek of
+    // 10 s back (rewind) or on (forward); '' for anything else.
+    function trailerCommand(action) {
+        var command = { tuner: 'trailer', v: 1, type: action };
+        if (action === 'rewind' || action === 'forward') { command.type = 'seek'; command.by = action === 'rewind' ? -10 : 10; }
+        else if (FRAME_COMMANDS.indexOf(action) < 0) return '';
+        return JSON.stringify(command);
+    }
+
     D.extras = { BASE: BASE, CREDIT: CREDIT, isHiddenLiveCategory: D.isHiddenLiveCategory, parseVtt: parseVtt, vttTextAt: vttTextAt,
-        subtitlesQuery: subtitlesQuery, trailerQuery: trailerQuery, parseSubtitles: parseSubtitles, parseTrailer: parseTrailer, createClient: createClient };
+        subtitlesQuery: subtitlesQuery, trailerQuery: trailerQuery, parseSubtitles: parseSubtitles, parseTrailer: parseTrailer, createClient: createClient,
+        FRAME_ORIGIN: FRAME_ORIGIN, trailerFrameUrl: trailerFrameUrl, parseFrameMessage: parseFrameMessage, trailerKeyAction: trailerKeyAction,
+        trailerMessageAction: trailerMessageAction, trailerCommand: trailerCommand };
     D.parseVtt = parseVtt; D.vttTextAt = vttTextAt;
 }(typeof window !== 'undefined' ? window : this));

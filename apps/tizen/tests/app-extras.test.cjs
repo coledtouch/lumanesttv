@@ -1,7 +1,8 @@
 'use strict';
 // docs/extras.md in the Samsung app: runs the real app.js with the real data.js (TunerData.extras) against a small DOM,
-// a recording player, a fake lumanest.tv and a recording tizen.application. The Trailer button and its YouTube launch
-// with the QR dialog; OpenSubtitles tracks looked up when a movie or episode starts, listed in the subtitle chooser
+// a recording player, a fake lumanest.tv and a recording tizen.application. The Trailer button, the trailer player (an
+// overlay with lumanest.tv's player page in an iframe; a recording frame window stands in for the page) and its
+// fallbacks, the YouTube launch and the QR dialog; OpenSubtitles tracks looked up when a movie or episode starts, listed in the subtitle chooser
 // with the credit, fetched only when shown and drawn as plain text at the player's position.
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -33,6 +34,11 @@ function harness(options = {}) {
             this.value = ''; this.disabled = false; this.scrollLeft = 0; this.scrollTop = 0; this._text = '';
         }
         appendChild(child) { child.parentNode = this; this.children.push(child); return child; }
+        removeChild(child) {
+            assert.ok(this.children.includes(child), 'removeChild of a child');
+            if (child.contains(document.activeElement)) document.activeElement = document.body;
+            this.children = this.children.filter(node => node !== child); child.parentNode = null; return child;
+        }
         insertBefore(child, before) {
             const at = this.children.indexOf(before);
             if (at < 0) return this.appendChild(child);
@@ -207,7 +213,27 @@ function harness(options = {}) {
         get pending() { return requests.filter(r => !r.done && r.url.startsWith(API)).map(r => r.url); },
         // Repeating timers of 200 ms: the OpenSubtitles cue reader (the clock and guide timers repeat every 15 and 60 s).
         get intervals() { return [...timers.values()].filter(timer => timer.every === 200).length; },
-        key(code) { emit('keydown', code); emit('keyup', code); },
+        // Returns whether the keydown's default was prevented.
+        key(code, repeat) {
+            const make = () => ({ keyCode: code, target: document.activeElement, repeat: !!repeat, prevented: false, preventDefault() { this.prevented = true; } });
+            const down = make();
+            (documentEvents.keydown || []).forEach(fn => fn(down));
+            const up = make();
+            (documentEvents.keyup || []).forEach(fn => fn(up));
+            return down.prevented;
+        },
+        // The trailer player: its layer and frame (null when closed), a frame window that records what the app posts,
+        // a message as the browser delivers it, and window or document events.
+        get layerShown() { return document.getElementById('trailer-layer'); },
+        get frame() { return document.getElementById('trailer-frame'); },
+        frameWindow() { const win = { posted: [], postMessage(data, origin) { win.posted.push([data, origin]); } }; node('trailer-frame').contentWindow = win; return win; },
+        message(data, from = {}) {
+            const event = { data: typeof data === 'string' ? data : JSON.stringify({ tuner: 'trailer', v: 1, ...data }), origin: 'origin' in from ? from.origin : 'https://lumanest.tv',
+                source: 'source' in from ? from.source : document.getElementById('trailer-frame').contentWindow };
+            (windowEvents.message || []).forEach(fn => fn(event));
+        },
+        windowEvent(type) { (windowEvents[type] || []).forEach(fn => fn({ type })); },
+        documentEvent(type) { (documentEvents[type] || []).forEach(fn => fn({ type })); },
         text(id) { return node(id).textContent; },
         ids(parent) { return node(parent).children.filter(child => child.id).map(child => child.id); },
         // Search, then OK on the first result: the movie or series page, or live playback.
@@ -257,11 +283,230 @@ test('Trailer: one lookup per page, added after Add to Library in place without 
     assert.equal(h.focused, 'episode-0');
 });
 
-test('Trailer opens YouTube by application control, the second app id after the first fails; then the QR dialog', () => {
-    const h = harness();
+const FRAME = 'https://lumanest.tv/embed/trailer?v=1&k=' + KEY;
+const OK_ANSWER = { v: 1, status: 'ok', tmdb: 603, trailer: { key: KEY, name: 'Official Trailer', qr: QR } };
+const command = (type, by) => [JSON.stringify(by === undefined ? { tuner: 'trailer', v: 1, type } : { tuner: 'trailer', v: 1, type, by }), 'https://lumanest.tv'];
+// The Matrix's page with Trailer focused and its answer in.
+function trailerPage(options) {
+    const h = harness(options);
     h.open('matrix');
-    h.answer(API + 'trailer', 200, { v: 1, status: 'ok', tmdb: 603, trailer: { key: KEY, qr: QR } });
-    h.node('detail-trailer').focus(); h.key(13);
+    h.answer(API + 'trailer', 200, OK_ANSWER);
+    h.node('detail-trailer').focus();
+    return h;
+}
+
+test('Trailer plays in Tuner: a full-screen overlay with lumanest.tv\'s player page; Back closes it and focus returns to Trailer', () => {
+    const h = trailerPage();
+    h.key(13);
+    const layer = h.layerShown, frame = h.frame;
+    assert.ok(layer, 'the overlay is open');
+    assert.equal(layer.parentNode, h.document.body, 'over everything, outside the scaled stage');
+    assert.equal(layer.className, 'trailer-layer');
+    assert.equal(frame.parentNode.parentNode, layer);
+    assert.equal(frame.tagName, 'IFRAME');
+    assert.equal(frame.src, FRAME);
+    // Sandboxed: scripts and its own origin (lumanest.tv, which the app checks), but no popups and no top navigation.
+    assert.deepEqual({ ...frame.attributes }, { tabindex: '-1', allow: 'autoplay; encrypted-media', sandbox: 'allow-scripts allow-same-origin allow-presentation', title: 'Trailer' });
+    assert.equal(h.document.activeElement, layer, 'focus stays in the app document, on the overlay');
+    // The app's lines are in a bar above the frame, never in front of the player.
+    assert.deepEqual(layer.children.map(child => [child.className, child.children.map(line => [line.className, line.textContent])]), [
+        ['trailer-bar', [['trailer-status', 'Loading Official Trailer\u2026'], ['trailer-hint', 'OK pause/play \u00b7 Left/Right 10 s \u00b7 Back close']]],
+        ['trailer-stage', [['trailer-frame', '']]]]);
+    assert.equal(h.launches.length, 0, 'not the YouTube app');
+    assert.equal(h.dialogOpen, false);
+    h.frameWindow();
+    h.message({ type: 'ready' });
+    assert.equal(h.text('trailer-layer').includes('Loading'), false, 'the loading line goes at "ready"');
+    assert.equal(h.key(10009), true);
+    assert.equal(h.layerShown, null, 'Back closes it');
+    assert.equal(frame.parentNode, null, 'the frame is removed');
+    assert.equal(frame.src, 'about:blank', 'and emptied first, so its sound stops at once');
+    assert.equal(h.focused, 'detail-trailer');
+    assert.ok(h.node('detail-play'), 'still on the details page');
+    // Escape, Backspace and LG's Back (461) close it as well; a held Back's repeats do not.
+    for (const code of [27, 8, 461]) {
+        h.key(13); assert.ok(h.layerShown);
+        h.key(code, true); assert.ok(h.layerShown, code + ' repeat');
+        h.key(code); assert.equal(h.layerShown, null, String(code)); assert.equal(h.focused, 'detail-trailer');
+    }
+    assert.equal(h.launches.length, 0);
+    // Opened again: a new frame; the old one's timer is gone with it.
+    h.key(13);
+    const again = h.frame;
+    assert.notEqual(again, frame);
+    // Trailer pressed under an open player (only a pointer could): one player, the new one.
+    h.node('detail-trailer').click();
+    assert.equal(again.parentNode, null); assert.equal(again.src, 'about:blank');
+    assert.equal(h.document.body.querySelectorAll('.trailer-layer').length, 1);
+    h.advance(11999); assert.ok(h.layerShown);
+});
+
+test('the trailer player\'s keys: OK, media keys and Left/Right go to the frame once it is ready; nothing reaches the page', () => {
+    const h = trailerPage();
+    h.key(13);
+    const win = h.frameWindow();
+    h.key(13); h.key(39);
+    assert.deepEqual(win.posted, [], 'nothing is sent before "ready"');
+    h.message({ type: 'ready' });
+    // Until the trailer has played, OK and Play/Pause send "play" (a toggle would pause one that is still loading).
+    assert.equal(h.key(13), true);
+    h.key(10252);
+    assert.deepEqual(win.posted.splice(0), [command('play'), command('play')]);
+    h.message({ type: 'state', state: 'playing' });
+    assert.equal(h.key(13), true);
+    assert.equal(h.key(37), true);
+    h.key(39); h.key(39, true); h.key(10252); h.key(179); h.key(415); h.key(19);
+    // Rewind and FastForward step 10 s as Left and Right do.
+    assert.equal(h.key(412), true); assert.equal(h.key(417), true);
+    assert.deepEqual(win.posted, [command('toggle'), command('seek', -10), command('seek', 10), command('seek', 10), command('toggle'), command('toggle'), command('play'), command('pause'),
+        command('seek', -10), command('seek', 10)]);
+    h.key(13, true);
+    assert.equal(win.posted.length, 10, 'a held OK toggles once');
+    // Other keys do nothing while it is open: no favourite, no tab, no guide, no subtitles dialog, no page focus move.
+    for (const code of [38, 40, 48, 53, 458, 405, 10221, 427, 428, 65]) assert.equal(h.key(code), false, String(code));
+    // A PC keyboard's Tab: its default (focus to the page behind the overlay) is prevented, and nothing is sent.
+    assert.equal(h.key(9), true, 'Tab moves no focus behind the overlay');
+    assert.deepEqual(win.posted.length, 10);
+    assert.ok(h.layerShown); assert.equal(h.document.activeElement, h.layerShown);
+    assert.equal(h.dialogOpen, false);
+    assert.equal(h.calls.filter(call => call[0] === 'play').length, 0, 'the movie never started');
+    // OK's release does not press Trailer under the overlay (that would open a second player).
+    const frame = h.frame;
+    h.key(13); assert.equal(h.frame, frame);
+    // MediaStop stops it and closes.
+    h.key(413);
+    assert.deepEqual(win.posted.at(-1), command('stop'));
+    assert.equal(h.layerShown, null); assert.equal(h.focused, 'detail-trailer');
+    // Closed: keys are the page's again (OK on Trailer opens it).
+    h.key(13); assert.ok(h.layerShown);
+});
+
+test('frame messages: only lumanest.tv\'s, only from this frame, only the documented shape; ended closes; a key forwarded from the frame acts as the remote', () => {
+    const h = trailerPage();
+    h.key(13);
+    const win = h.frameWindow(), other = { postMessage() {} };
+    // Not from the frame or not from lumanest.tv: ignored, so "ready" never arrives.
+    h.message({ type: 'ready' }, { origin: 'https://example.invalid' });
+    h.message({ type: 'ready' }, { origin: 'null' });
+    h.message({ type: 'ready' }, { origin: 'https://lumanest.tv.example.invalid' });
+    h.message({ type: 'ready' }, { source: other });
+    h.message({ type: 'ready' }, { source: null });
+    h.message({ type: 'key', key: 'back' }, { source: other });
+    h.message({ type: 'state', state: 'ended' }, { origin: 'http://lumanest.tv' });
+    h.message('{"tuner":"trailer","v":2,"type":"ready"}');
+    h.message('{"type":"ready"}');
+    h.message('ready');
+    h.message({ type: 'error', code: '150' });
+    assert.ok(h.layerShown, 'still open');
+    assert.match(h.text('trailer-layer'), /Loading/);
+    h.key(13); assert.deepEqual(win.posted, [], 'still not ready');
+    // A frame without a window yet: a message with no source is not its.
+    h.frame.contentWindow = null;
+    h.message({ type: 'ready' }, { source: null });
+    h.frame.contentWindow = win;
+    assert.match(h.text('trailer-layer'), /Loading/);
+    h.message({ type: 'ready' });
+    assert.doesNotMatch(h.text('trailer-layer'), /Loading/);
+    // Keys forwarded by the frame: as the remote's (once it has played: OK before that is "play", as on the remote).
+    h.message({ type: 'key', key: 'enter' });
+    assert.deepEqual(win.posted.splice(0), [command('play')]);
+    h.message({ type: 'state', state: 'playing' });
+    h.message({ type: 'key', key: 'enter' }); h.message({ type: 'key', key: 'right' }); h.message({ type: 'key', key: 'left' });
+    h.message({ type: 'key', key: 'playpause' }); h.message({ type: 'key', key: 'play' }); h.message({ type: 'key', key: 'pause' });
+    h.message({ type: 'key', key: 'up' }); h.message({ type: 'key', key: 'down' });
+    assert.deepEqual(win.posted, [command('toggle'), command('seek', 10), command('seek', -10), command('toggle'), command('play'), command('pause')]);
+    h.message({ type: 'key', key: 'back' });
+    assert.equal(h.layerShown, null); assert.equal(h.focused, 'detail-trailer');
+    // A closed player ignores its old frame's messages, and "ended" closes an open one.
+    h.message({ type: 'key', key: 'enter' }, { source: win });
+    h.key(13);
+    const second = h.frameWindow();
+    h.message({ type: 'ready' }, { source: win });
+    assert.match(h.text('trailer-layer'), /Loading/, 'the old frame cannot speak for the new one');
+    h.message({ type: 'ready' }); h.message({ type: 'state', state: 'playing' });
+    h.message({ type: 'state', state: 'ended' });
+    assert.equal(h.layerShown, null); assert.equal(h.focused, 'detail-trailer');
+    assert.equal(h.launches.length, 0); assert.equal(h.dialogOpen, false);
+    assert.deepEqual(second.posted, []);
+    h.message({ type: 'key', key: 'stop' }, { source: second });
+    h.key(13);
+    h.frameWindow(); h.message({ type: 'ready' });
+    h.message({ type: 'key', key: 'stop' });
+    assert.equal(h.layerShown, null, 'a forwarded Stop closes too');
+});
+
+test('the trailer player\'s lines: "Press OK to play" when the trailer has not started 3 s after "ready"; the key hint stays', () => {
+    const h = trailerPage();
+    h.key(13);
+    const win = h.frameWindow();
+    const status = () => h.node('trailer-layer').children[0].children[0], hint = () => h.node('trailer-layer').children[0].children[1];
+    assert.equal(status().className, 'trailer-status');
+    h.message({ type: 'state', state: 'unstarted' });
+    assert.equal(status().textContent, 'Loading Official Trailer\u2026', 'a state before "ready" leaves the loading line');
+    h.message({ type: 'ready' });
+    assert.equal(status().className, 'trailer-status hidden');
+    h.message({ type: 'state', state: 'buffering' });
+    assert.equal(status().className, 'trailer-status hidden', 'buffering is not a refusal');
+    h.advance(2999); assert.equal(status().className, 'trailer-status hidden');
+    h.advance(1);
+    assert.equal(status().className, 'trailer-status'); assert.equal(status().textContent, 'Press OK to play');
+    h.message({ type: 'state', state: 'buffering' });
+    assert.equal(status().textContent, 'Press OK to play');
+    // OK as the prompt says: "play", never a toggle that would pause a trailer still loading (a slow TV network).
+    h.key(13); h.key(13);
+    assert.deepEqual(win.posted, [command('play'), command('play')]);
+    h.message({ type: 'state', state: 'playing' });
+    assert.equal(status().className, 'trailer-status hidden');
+    h.key(13);
+    assert.deepEqual(win.posted.at(-1), command('toggle'), 'once it has played, OK pauses and plays');
+    h.advance(60000);
+    assert.equal(hint().className, 'trailer-hint', 'the hint stays (it is beside the player, not over it)');
+    assert.equal(hint().textContent, 'OK pause/play \u00b7 Left/Right 10 s \u00b7 Back close');
+    for (const state of ['paused', 'cued', 'unstarted', 'buffering']) {
+        h.message({ type: 'state', state });
+        assert.equal(status().className, 'trailer-status hidden', state + ' after it started is not "Press OK to play"');
+    }
+    h.message({ type: 'ready' });
+    h.advance(3000);
+    assert.equal(status().className, 'trailer-status hidden', 'a second "ready" after it started asks for nothing');
+    // "Unstarted" after "ready" is how a trailer that will autoplay begins too (it buffers next): no prompt until the
+    // timer, so a viewer on a slow network never sees "Press OK to play" before the trailer starts by itself.
+    h.key(10009); h.key(13);
+    h.frameWindow(); h.message({ type: 'ready' });
+    h.message({ type: 'state', state: 'unstarted' });
+    assert.equal(status().className, 'trailer-status hidden', 'unstarted alone is not a refusal');
+    h.message({ type: 'state', state: 'buffering' });
+    h.advance(2999); assert.equal(status().className, 'trailer-status hidden');
+    h.advance(1);
+    assert.equal(status().textContent, 'Press OK to play'); assert.equal(status().className, 'trailer-status');
+    h.message({ type: 'state', state: 'playing' });
+    assert.equal(status().className, 'trailer-status hidden');
+    // Autoplay refused at once (paused or cued before it ever played): the prompt shows without waiting.
+    for (const state of ['paused', 'cued']) {
+        h.key(10009); h.key(13);
+        h.frameWindow(); h.message({ type: 'ready' });
+        h.message({ type: 'state', state });
+        assert.equal(status().textContent, 'Press OK to play', state); assert.equal(status().className, 'trailer-status', state);
+    }
+    h.message({ type: 'state', state: 'playing' });
+    assert.equal(status().className, 'trailer-status hidden');
+    h.advance(5000); assert.equal(status().className, 'trailer-status hidden', 'no prompt once it started');
+    // A second "ready" before it started: one prompt, 3 s after the last.
+    h.key(10009); h.key(13);
+    h.frameWindow(); h.message({ type: 'ready' }); h.advance(2000); h.message({ type: 'ready' });
+    h.advance(2999); assert.equal(status().className, 'trailer-status hidden');
+    h.advance(1); assert.equal(status().textContent, 'Press OK to play');
+    // A closed player's timers change nothing.
+    h.key(10009); h.advance(20000); assert.equal(h.layerShown, null);
+});
+
+test('in-app playback fails (player error, no "ready" in 12 s, the frame cannot load): the YouTube app by application control, then the QR dialog', () => {
+    const h = trailerPage();
+    // A player error (150: embedding not allowed).
+    h.key(13); h.frameWindow(); h.message({ type: 'ready' });
+    h.message({ type: 'error', code: 150 });
+    assert.equal(h.layerShown, null, 'never a black screen');
+    assert.equal(h.focused, 'detail-trailer');
     assert.equal(h.launches.length, 1);
     const first = h.launches[0];
     assert.equal(first.id, '111299001912');
@@ -273,9 +518,19 @@ test('Trailer opens YouTube by application control, the second app id after the 
     first.fail(new Error('late'));
     assert.equal(h.launches.length, 2, 'a late error does not launch again');
     assert.equal(h.dialogOpen, false, 'YouTube opened: no dialog');
-    // Both fail: the QR dialog; Close returns to Trailer.
-    h.key(13);
-    h.launches[2].fail(new Error('x')); h.launches[3].fail(new Error('x'));
+    // Every error the contract names falls back the same way, as does an unknown one.
+    for (const code of [2, 5, 100, 101, 152, 153, 999]) {
+        h.key(13); h.frameWindow(); h.message({ type: 'error', code });
+        assert.equal(h.layerShown, null, String(code));
+        h.launches.at(-1).ok();
+    }
+    assert.equal(h.launches.length, 9);
+    // No "ready" within 12 seconds: the YouTube app; both ids fail: the QR dialog, and Close returns to Trailer.
+    h.key(13); h.frameWindow();
+    h.advance(11999); assert.ok(h.layerShown); assert.equal(h.launches.length, 9);
+    h.advance(1);
+    assert.equal(h.layerShown, null);
+    h.launches[9].fail(new Error('x')); h.launches[10].fail(new Error('x'));
     assert.equal(h.dialogOpen, true);
     assert.match(h.text('dialog-layer'), /^Watch the trailer on your phone/);
     assert.match(h.text('dialog-layer'), new RegExp('youtu\\.be/' + KEY + "Scan the code with your phone's camera\\."));
@@ -283,18 +538,51 @@ test('Trailer opens YouTube by application control, the second app id after the 
     assert.equal(h.focused, 'dialog-close');
     h.key(13);
     assert.equal(h.dialogOpen, false); assert.equal(h.focused, 'detail-trailer');
+    // "ready" in time: no timeout later.
+    h.key(13); h.frameWindow(); h.advance(11000); h.message({ type: 'ready' });
+    h.advance(60000); assert.ok(h.layerShown); assert.equal(h.launches.length, 11);
+    h.key(10009);
+    // The frame cannot load (its error event): at once.
+    h.key(13); h.frame.onerror();
+    assert.equal(h.layerShown, null); assert.equal(h.launches.length, 12);
 });
 
-test('Trailer without the YouTube app control (or when it throws) shows the QR dialog at once', () => {
+test('without the YouTube app control (or when it throws), a failed trailer player shows the QR dialog at once', () => {
     for (const options of [{ noTizen: true }, { launchThrows: true }]) {
-        const h = harness(options);
-        h.open('matrix');
-        h.answer(API + 'trailer', 200, { v: 1, status: 'ok', tmdb: 603, trailer: { key: KEY, qr: QR } });
+        const h = trailerPage(options);
         h.node('detail-trailer').click();
+        assert.ok(h.layerShown, 'the trailer player first');
+        h.frameWindow(); h.message({ type: 'error', code: 153 });
         assert.equal(h.launches.length, options.launchThrows ? 2 : 0);
         assert.equal(h.dialogOpen, true, JSON.stringify(options));
         assert.match(h.text('dialog-layer'), /youtu\.be\/vKQi3bBA1y8/);
     }
+});
+
+test('the frame taking focus gives it back to the app; leaving the app ends the trailer', () => {
+    const h = trailerPage();
+    h.key(13);
+    const layer = h.layerShown;
+    h.frame.focus();
+    h.windowEvent('blur');
+    assert.equal(h.document.activeElement, h.frame, 'not before the blur has finished');
+    h.advance(0);
+    assert.equal(h.document.activeElement, layer, 'focus is back in the app document');
+    h.windowEvent('blur'); h.advance(0);
+    assert.equal(h.document.activeElement, layer);
+    // Home or Source: the app is hidden, the trailer stops there and then.
+    h.document.hidden = true; h.documentEvent('visibilitychange');
+    assert.equal(h.layerShown, null);
+    h.document.hidden = false; h.documentEvent('visibilitychange');
+    assert.equal(h.focused, 'detail-trailer');
+    assert.equal(h.launches.length, 0, 'not a failure: no fallback');
+    // A blur with the player closed changes nothing.
+    h.windowEvent('blur'); h.advance(0);
+    assert.equal(h.focused, 'detail-trailer');
+    // The app closing (beforeunload) removes the frame too.
+    h.key(13); const frame = h.frame;
+    h.windowEvent('beforeunload');
+    assert.equal(h.layerShown, null); assert.equal(frame.src, 'about:blank');
 });
 
 test('Subtitles: a movie or an episode looks up its OpenSubtitles tracks when it starts; live channels never do', () => {
@@ -414,4 +702,12 @@ test('Settings > About shows the OpenSubtitles credit', () => {
     const h = harness();
     h.node('tab-4').click(); h.node('about-tuner').click();
     assert.match(h.text('dialog-layer'), /Subtitles provided by OpenSubtitles\.com/);
+});
+
+test('Settings > About shows the privacy policy and the YouTube Terms of Service addresses (YouTube API Services III.A)', () => {
+    const h = harness();
+    h.node('tab-4').click(); h.node('about-tuner').click();
+    const text = h.text('dialog-layer');
+    assert.match(text, /Privacy policy: tunertv\.app\/privacy/);
+    assert.match(text, /Trailers play in YouTube's embedded player \(YouTube API Services\)\. By using Tuner, you agree to the YouTube Terms of Service: www\.youtube\.com\/t\/terms/);
 });
