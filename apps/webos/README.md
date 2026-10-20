@@ -1,6 +1,6 @@
 # Tuner for LG webOS TV
 
-This directory contains the LG webOS application source for Tuner 1.2.0, application ID `tv.lumanest.tuner`. It is separate from the Android app and Samsung Tizen widget. Provider accounts are entered on the device and are stored locally. Do not put provider exports, saved preferences, TV connection details, or private keys in this directory.
+This directory contains the LG webOS application source for Tuner 1.2.1, application ID `tv.lumanest.tuner`. It is separate from the Android app and Samsung Tizen widget. Provider accounts are entered on the device and are stored locally. Do not put provider exports, saved preferences, TV connection details, or private keys in this directory.
 
 The app uses packaged ES5 JavaScript, HTML, CSS and the TV's HTML video player. `js/webos-platform.js` selects that player instead of Samsung AVPlay and disables the Samsung dual-player entry point. Native Android Picture-in-Picture and the Android torrent engine are not included. Supported streams and codecs depend on the TV model and webOS version; desktop checks do not establish physical-TV playback compatibility.
 
@@ -14,7 +14,7 @@ Subtitles work for live channels, movies and episodes. While watching, the yello
 
 Movies and episodes also get English subtitles from OpenSubtitles.com through lumanest.tv, exactly as in the Samsung app (see **Playback and port limits** in `../tizen/README.md` and [`docs/extras.md`](../../docs/extras.md)): the chooser lists them after the stream's tracks with the line "Subtitles provided by OpenSubtitles.com", and with Subtitles On the first one is shown when the stream has no English track. Tuner draws their cues itself as plain text at the video's `currentTime`, with every text track of the stream `disabled` meanwhile; it does not add a `<track>` element, which would need `crossorigin` on provider streams. A stream with neither shows "No subtitles in this stream".
 
-**Trailer** on movie and series pages opens the YouTube app on the video through `luna://com.webos.applicationManager/launch` (`youtube.leanback.v4` with `contentTarget` `https://www.youtube.com/tv?v=<key>`), called with `PalmServiceBridge` in `js/webos-platform.js`; `tools/sync-from-tizen.js` routes the Samsung launcher there. When YouTube is not installed (`errorCode` -101), the call is refused or no reply comes within 5 seconds, the TV shows the trailer's QR code for a phone instead. No `appinfo.json` permission is added. The provider's live category "Most watched now" is hidden by name, as on Samsung.
+**Trailer** on movie and series pages plays the trailer inside Tuner (since 1.2.1), as on Samsung: a full-screen overlay with lumanest.tv's trailer player page (`https://lumanest.tv/embed/trailer?v=1&k=<key>`) in an iframe; LG Back (461) closes it and focus returns to **Trailer** (see **Movies and series** in `../tizen/README.md`). `index.html`'s CSP adds `frame-src https://lumanest.tv; child-src https://lumanest.tv`, and `tools/app.js` accepts exactly that. When in-app playback fails (a player error, no "ready" within 12 seconds), Trailer opens the YouTube app on the video through `luna://com.webos.applicationManager/launch` (`youtube.leanback.v4` with `contentTarget` `https://www.youtube.com/tv?v=<key>`), called with `PalmServiceBridge` in `js/webos-platform.js`; `tools/sync-from-tizen.js` routes the Samsung launcher there. When YouTube is not installed (`errorCode` -101), the call is refused or no reply comes within 5 seconds, the TV shows the trailer's QR code for a phone instead. No `appinfo.json` permission is added. The provider's live category "Most watched now" is hidden by name, as on Samsung.
 
 Adult categories are hidden by default across Live TV, Home, Discover, Library, the guide, Search, Favorites, Most Watched and Continue watching. A category is adult when the provider marks it or its streams `is_adult`, or its name contains a standalone XXX, Adult(s), 18+ or Porn (Adult Swim is not adult). Settings → **Adult content: Locked/Unlocked** unlocks them with a 4-digit passcode, created on first use by entering it twice; locking needs no passcode, and the lock returns when Tuner restarts. **Change passcode** asks for the current one. Five wrong entries impose a 60-second wait. Enter digits with the remote's number keys or the on-screen pad with the arrows and OK. Only a random salt and an iterated, salted SHA-256 digest are stored. A forgotten passcode is reset by reinstalling the app or clearing its data.
 
@@ -42,12 +42,12 @@ $build = Get-Content ../../output/webos/build.json -Raw | ConvertFrom-Json
 ares-package --no-minify -o ../../output/webos $build.staging
 ```
 
-The expected package name is `tv.lumanest.tuner_1.2.0_all.ipk`. Package the clean staging folder, rather than this development directory, so private files and tooling stay excluded. `--no-minify` preserves the validated runtime files for development and debugging. LG's packager generates the package metadata from `appinfo.json`; no Samsung author/distributor certificate is used by this webOS workflow.
+The expected package name is `tv.lumanest.tuner_1.2.1_all.ipk`. Package the clean staging folder, rather than this development directory, so private files and tooling stay excluded. `--no-minify` preserves the validated runtime files for development and debugging. LG's packager generates the package metadata from `appinfo.json`; no Samsung author/distributor certificate is used by this webOS workflow.
 
 This is a development IPK, not a store-approved or production-signed release. To test on your own TV, follow LG's [Developer Mode setup](https://webostv.developer.lge.com/develop/getting-started/developer-mode-app). Register the TV through the CLI, keep its Developer Mode session active, and use the chosen device name in the official installation and launch commands:
 
 ```powershell
-ares-install --device myTV ../../output/webos/tv.lumanest.tuner_1.2.0_all.ipk
+ares-install --device myTV ../../output/webos/tv.lumanest.tuner_1.2.1_all.ipk
 ares-launch --device myTV tv.lumanest.tuner
 ```
 

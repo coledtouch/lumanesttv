@@ -1,7 +1,8 @@
 "use strict";
 // docs/extras.md on LG: the shipped data.js, player.js, webos-platform.js, pairing.js and app.js, in index.html's order,
 // against a small DOM, the TV's HTML video element (a stub), a fake lumanest.tv and a stub PalmServiceBridge. Only the
-// provider catalogue is a fixture. Trailer opens the YouTube app through the application manager, or the QR dialog;
+// provider catalogue is a fixture. Trailer plays in Tuner in lumanest.tv's player page (an iframe overlay; a recording
+// frame window stands in for the page); when that fails, the YouTube app through the application manager, or the QR dialog;
 // with Subtitles On, a movie with no English stream track shows its first OpenSubtitles track, drawn as plain text at
 // the video's currentTime, with the stream's own text tracks disabled.
 const test = require("node:test");
@@ -161,9 +162,20 @@ function harness(options = {}) {
         get dialogOpen() { return !node("dialog-layer").className.split(/\s+/).includes("hidden"); },
         get focused() { return document.activeElement.id; },
         get pending() { return requests.filter(r => !r.done && r.url.startsWith(API)).map(r => r.url); },
+        // Returns whether the keydown's default was prevented.
         key(code) {
-            const event = {keyCode: code, which: code, target: document.activeElement, repeat: false, preventDefault() {}};
-            (documentEvents.keydown || []).forEach(fn => fn(event)); (documentEvents.keyup || []).forEach(fn => fn(event));
+            const event = {keyCode: code, which: code, target: document.activeElement, repeat: false, prevented: false, preventDefault() { this.prevented = true; }};
+            (documentEvents.keydown || []).forEach(fn => fn(event));
+            const prevented = event.prevented;
+            (documentEvents.keyup || []).forEach(fn => fn(event));
+            return prevented;
+        },
+        // The trailer player's frame, a frame window that records what the app posts, and a frame message.
+        get frame() { return node("trailer-frame"); },
+        frameWindow() { const win = {posted: [], postMessage(data, origin) { win.posted.push([data, origin]); }}; node("trailer-frame").contentWindow = win; return win; },
+        message(value, from = {}) {
+            const event = {data: JSON.stringify({tuner: "trailer", v: 1, ...value}), origin: from.origin || "https://lumanest.tv", source: from.source || node("trailer-frame").contentWindow};
+            (windowEvents.message || []).forEach(fn => fn(event));
         },
         openMovie() {
             node("tab-3").click();
@@ -174,19 +186,66 @@ function harness(options = {}) {
     };
 }
 
-test("LG Trailer: the YouTube app through the application manager; when it is missing, the QR dialog", () => {
+test("LG Trailer plays in Tuner: lumanest.tv's player page full screen; LG Back (461) closes it and focus returns to Trailer", () => {
     const h = harness();
     h.openMovie();
     assert.deepEqual(h.pending, [API + "trailer?v=1&type=movie&tmdb=603"]);
     h.answer(API + "trailer", 200, {v: 1, status: "ok", tmdb: 603, trailer: {key: KEY, name: "Official Trailer", short: "youtu.be/" + KEY, qr: QR}});
     assert.equal(h.focused, "detail-play", "the button appears without taking focus");
     h.node("detail-trailer").focus(); h.key(13);
+    const frame = h.frame;
+    assert.equal(frame.src, "https://lumanest.tv/embed/trailer?v=1&k=" + KEY);
+    assert.equal(frame.getAttribute("allow"), "autoplay; encrypted-media");
+    assert.equal(frame.getAttribute("sandbox"), "allow-scripts allow-same-origin allow-presentation", "no popups, no top navigation");
+    const layer = h.node("trailer-layer");
+    assert.equal(frame.parentNode.parentNode, layer);
+    assert.equal(layer.parentNode, h.document.body);
+    assert.equal(h.document.activeElement, layer, "focus stays in the app document");
+    assert.match(layer.textContent, /^Loading Official Trailer\u2026OK pause\/play \u00b7 Left\/Right 10 s \u00b7 Back close$/);
+    assert.equal(h.bridges.length, 0, "not the YouTube app");
+    const win = h.frameWindow();
+    h.message({type: "ready"});
+    // OK before the trailer has played is "play" (a toggle would pause one still loading), then a toggle.
+    h.key(13); h.message({type: "state", state: "playing"});
+    h.key(13); h.key(37); h.key(39); h.key(412); h.key(417); h.key(415); h.key(19);
+    assert.deepEqual(win.posted.map(([data, origin]) => origin + " " + data), [
+        '{"tuner":"trailer","v":1,"type":"play"}',
+        '{"tuner":"trailer","v":1,"type":"toggle"}', '{"tuner":"trailer","v":1,"type":"seek","by":-10}', '{"tuner":"trailer","v":1,"type":"seek","by":10}',
+        '{"tuner":"trailer","v":1,"type":"seek","by":-10}', '{"tuner":"trailer","v":1,"type":"seek","by":10}',
+        '{"tuner":"trailer","v":1,"type":"play"}', '{"tuner":"trailer","v":1,"type":"pause"}'].map(data => "https://lumanest.tv " + data));
+    h.message({type: "key", key: "back"}, {origin: "https://example.invalid"});
+    assert.equal(h.node("trailer-layer") !== null, true, "another origin is ignored");
+    // A PC keyboard's Tab (the LG emulator): no focus move behind the overlay, nothing sent.
+    assert.equal(h.key(9), true);
+    assert.equal(h.document.activeElement, layer); assert.equal(win.posted.length, 8);
+    h.key(461);
+    assert.equal(h.node("trailer-layer"), null);
+    assert.equal(frame.parentNode, null); assert.equal(frame.src, "about:blank");
+    assert.equal(h.focused, "detail-trailer");
+    // Back forwarded by the frame (a key that reached it) and "ended" close it too.
+    h.key(13); h.frameWindow(); h.message({type: "key", key: "back"});
+    assert.equal(h.node("trailer-layer"), null); assert.equal(h.focused, "detail-trailer");
+    h.key(13); h.frameWindow(); h.message({type: "ready"}); h.message({type: "state", state: "ended"});
+    assert.equal(h.node("trailer-layer"), null); assert.equal(h.bridges.length, 0);
+});
+
+test("LG Trailer when in-app playback fails: the YouTube app through the application manager; when it is missing, the QR dialog", () => {
+    const h = harness();
+    h.openMovie();
+    h.answer(API + "trailer", 200, {v: 1, status: "ok", tmdb: 603, trailer: {key: KEY, name: "Official Trailer", short: "youtu.be/" + KEY, qr: QR}});
+    h.node("detail-trailer").focus(); h.key(13);
+    h.frameWindow(); h.message({type: "error", code: 152});
+    assert.equal(h.node("trailer-layer"), null, "never a black screen");
     assert.equal(h.bridges.length, 1);
     assert.deepEqual(JSON.parse(JSON.stringify(h.bridges[0].calls)), [["luna://com.webos.applicationManager/launch",
         {id: "youtube.leanback.v4", params: {contentTarget: "https://www.youtube.com/tv?v=" + KEY}}]]);
     h.bridges[0].onservicecallback(JSON.stringify({returnValue: true}));
     assert.equal(h.dialogOpen, false);
-    h.key(13);
+    // No "ready" within 12 seconds: the YouTube app, missing here (-101): the QR dialog.
+    h.key(13); h.advance(11999);
+    assert.ok(h.node("trailer-layer")); assert.equal(h.bridges.length, 1);
+    h.advance(1);
+    assert.equal(h.node("trailer-layer"), null);
     h.bridges[1].onservicecallback(JSON.stringify({returnValue: false, errorCode: -101, errorText: "not installed"}));
     assert.equal(h.dialogOpen, true);
     assert.match(h.node("dialog-layer").textContent, /^Watch the trailer on your phoneyoutu\.be\/vKQi3bBA1y8Scan the code with your phone's camera\./);
@@ -194,8 +253,8 @@ test("LG Trailer: the YouTube app through the application manager; when it is mi
     assert.equal(canvas.fills.filter(fill => fill[0] === "#141224").length, QR.join("").split("1").length - 1, "every dark module drawn by pairing.js");
     h.key(461);
     assert.equal(h.dialogOpen, false); assert.equal(h.focused, "detail-trailer");
-    // No reply within 5 seconds: the QR dialog too.
-    h.key(13); h.advance(5000);
+    // A player error, then no reply from the application manager within 5 seconds: the QR dialog too.
+    h.key(13); h.frameWindow(); h.message({type: "error", code: 150}); h.advance(5000);
     assert.equal(h.dialogOpen, true);
 });
 
@@ -221,4 +280,13 @@ test("LG subtitles: with Subtitles On the first OpenSubtitles track is shown at 
     // The chooser lists the stream's track, then the OpenSubtitles one (chosen) and the credit.
     h.key(405);
     assert.match(h.node("dialog-layer").textContent, /OffFrancais\u2713 English \(OpenSubtitles\)Subtitles provided by OpenSubtitles\.comClose$/);
+});
+
+test("LG Settings > About shows the privacy policy and the YouTube Terms of Service addresses (YouTube API Services III.A)", () => {
+    const h = harness();
+    h.node("tab-4").click(); h.node("about-tuner").click();
+    const text = h.node("dialog-layer").textContent;
+    assert.match(text, /^Tuner for LG webOS TV/);
+    assert.match(text, /Privacy policy: tunertv\.app\/privacy/);
+    assert.match(text, /Trailers play in YouTube's embedded player \(YouTube API Services\)\. By using Tuner, you agree to the YouTube Terms of Service: www\.youtube\.com\/t\/terms/);
 });

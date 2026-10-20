@@ -227,3 +227,69 @@ test('the client: answers kept are capped at 200, oldest first; no XMLHttpReques
         assert.equal(answer, null);
     }
 });
+
+// docs/extras.md, The trailer player: the frame's address, its messages, the app's commands and the keys.
+const FRAME_KEY = 'vKQi3bBA1y8';
+const frameMessage = value => JSON.stringify({ tuner: 'trailer', v: 1, ...value });
+
+test('trailer player: the frame URL only for an 11-character YouTube key; the origin is lumanest.tv', () => {
+    const x = load().data.extras;
+    assert.equal(x.FRAME_ORIGIN, 'https://lumanest.tv');
+    assert.equal(x.trailerFrameUrl(FRAME_KEY), 'https://lumanest.tv/embed/trailer?v=1&k=vKQi3bBA1y8');
+    assert.equal(x.trailerFrameUrl('a-b_C0123zZ'), 'https://lumanest.tv/embed/trailer?v=1&k=a-b_C0123zZ');
+    for (const bad of ['', 'vKQi3bBA1y', 'vKQi3bBA1y8x', 'vKQi3bBA1y!', 'vKQi3bBA1y8&x=1', ' vKQi3bBA1y8', 'vKQi3bBA1y8\n', 'vKQi3b%2F1y8', 'vKQi3bBA1y\u00e9', null, undefined, 12345678901, ['vKQi3bBA1y8'], { toString: () => FRAME_KEY }]) {
+        assert.equal(x.trailerFrameUrl(bad), '', JSON.stringify(bad));
+    }
+});
+
+test('trailer player: frame messages are read only in the documented shape', () => {
+    const x = load().data.extras, read = data => plain(x.parseFrameMessage(data));
+    assert.deepEqual(read(frameMessage({ type: 'ready' })), { type: 'ready' });
+    for (const state of ['unstarted', 'playing', 'paused', 'buffering', 'ended', 'cued']) assert.deepEqual(read(frameMessage({ type: 'state', state })), { type: 'state', state });
+    for (const code of [0, 2, 5, 100, 101, 150, 152, 153, 999999]) assert.deepEqual(read(frameMessage({ type: 'error', code })), { type: 'error', code });
+    for (const key of ['back', 'enter', 'playpause', 'play', 'pause', 'stop', 'left', 'right', 'up', 'down']) assert.deepEqual(read(frameMessage({ type: 'key', key })), { type: 'key', key });
+    // Only what the app reads is kept: an extra field never reaches it.
+    assert.deepEqual(read(frameMessage({ type: 'state', state: 'paused', url: 'https://example.invalid' })), { type: 'state', state: 'paused' });
+    for (const bad of [
+        { type: 'ready' }, // an object, not a JSON string
+        JSON.stringify({ v: 1, type: 'ready' }), JSON.stringify({ tuner: 'trailers', v: 1, type: 'ready' }), JSON.stringify({ tuner: 'trailer', type: 'ready' }),
+        JSON.stringify({ tuner: 'trailer', v: '1', type: 'ready' }), JSON.stringify({ tuner: 'trailer', v: 2, type: 'ready' }),
+        frameMessage({ type: 'Ready' }), frameMessage({ type: 'toggle' }), frameMessage({}), frameMessage({ type: 'constructor' }),
+        frameMessage({ type: 'state' }), frameMessage({ type: 'state', state: 'stopped' }), frameMessage({ type: 'state', state: 1 }), frameMessage({ type: 'state', state: 'toString' }),
+        frameMessage({ type: 'error' }), frameMessage({ type: 'error', code: '150' }), frameMessage({ type: 'error', code: 1.5 }), frameMessage({ type: 'error', code: -1 }), frameMessage({ type: 'error', code: 1000000 }), frameMessage({ type: 'error', code: Infinity }),
+        frameMessage({ type: 'key' }), frameMessage({ type: 'key', key: 'home' }), frameMessage({ type: 'key', key: 'constructor' }), frameMessage({ type: 'key', key: '__proto__' }), frameMessage({ type: 'key', key: 13 }),
+        '[1]', JSON.stringify([frameMessage({ type: 'ready' })]), 'null', '"ready"', '{', '', null, undefined, 42,
+        frameMessage({ type: 'state', state: 'paused', pad: 'x'.repeat(256) })
+    ]) assert.equal(x.parseFrameMessage(bad), null, String(bad).slice(0, 120));
+    // The size limit is 256 characters.
+    const fill = n => frameMessage({ type: 'ready', pad: 'x'.repeat(n) });
+    const at = 256 - fill(0).length;
+    assert.equal(fill(at).length, 256);
+    assert.deepEqual(read(fill(at)), { type: 'ready' });
+    assert.equal(x.parseFrameMessage(fill(at + 1)), null);
+});
+
+test('trailer player: remote keys and forwarded keys, and what each frame message asks of the app', () => {
+    const x = load().data.extras;
+    // Rewind 412 and FastForward 417 (registered by the app, sent by Samsung and LG remotes) step as Left and Right do.
+    const keys = { 10009: 'close', 461: 'close', 27: 'close', 8: 'close', 13: 'toggle', 10252: 'toggle', 179: 'toggle', 415: 'play', 19: 'pause', 413: 'stop', 37: 'rewind', 39: 'forward', 412: 'rewind', 417: 'forward' };
+    for (const [code, action] of Object.entries(keys)) assert.equal(x.trailerKeyAction(Number(code)), action, code);
+    for (const code of [38, 40, 32, 0, 48, 427, 428, 458, 405, 10221, 65376, NaN, '13', '10009', undefined, null, 'constructor', 'toString']) assert.equal(x.trailerKeyAction(code), '', String(code));
+    const act = value => x.trailerMessageAction(x.parseFrameMessage(frameMessage(value)));
+    assert.equal(act({ type: 'ready' }), 'ready');
+    assert.equal(act({ type: 'state', state: 'ended' }), 'close');
+    for (const state of ['unstarted', 'playing', 'paused', 'buffering', 'cued']) assert.equal(act({ type: 'state', state }), state);
+    for (const code of [2, 5, 100, 101, 150, 152, 153, 0, 7]) assert.equal(act({ type: 'error', code }), 'fallback', String(code));
+    const forwarded = { back: 'close', enter: 'toggle', playpause: 'toggle', play: 'play', pause: 'pause', stop: 'stop', left: 'rewind', right: 'forward', up: '', down: '' };
+    for (const [key, action] of Object.entries(forwarded)) assert.equal(act({ type: 'key', key }), action, key);
+    assert.equal(x.trailerMessageAction(null), '');
+    assert.equal(x.trailerMessageAction(x.parseFrameMessage('nonsense')), '');
+});
+
+test('trailer player: the commands to the frame are the documented JSON strings, and nothing else', () => {
+    const x = load().data.extras;
+    for (const type of ['toggle', 'play', 'pause', 'stop']) assert.equal(x.trailerCommand(type), '{"tuner":"trailer","v":1,"type":"' + type + '"}');
+    assert.equal(x.trailerCommand('rewind'), '{"tuner":"trailer","v":1,"type":"seek","by":-10}');
+    assert.equal(x.trailerCommand('forward'), '{"tuner":"trailer","v":1,"type":"seek","by":10}');
+    for (const other of ['close', 'fallback', 'ready', 'seek', 'playing', 'ended', '', 'constructor', undefined, null]) assert.equal(x.trailerCommand(other), '', String(other));
+});

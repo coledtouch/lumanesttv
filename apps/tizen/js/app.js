@@ -130,6 +130,11 @@
         ? D.extras.createClient({ XMLHttpRequest: window.XMLHttpRequest })
         : null,
     SUBTITLES_CREDIT = "Subtitles provided by OpenSubtitles.com",
+    // Settings > About Tuner shows these at all times (YouTube API Services Developer Policies III.A: the privacy
+    // policy easily accessible, and a link to the YouTube Terms of Service while trailers play in YouTube's player).
+    PRIVACY_NOTICE = "Privacy policy: tunertv.app/privacy",
+    YOUTUBE_TERMS_NOTICE =
+      "Trailers play in YouTube's embedded player (YouTube API Services). By using Tuner, you agree to the YouTube Terms of Service: www.youtube.com/t/terms",
     CHECK = "\u2713 ";
 
   function el(tag, cls, text) {
@@ -2704,11 +2709,162 @@
   }
   function trailerButton(trailer) {
     return button("\u25b6 Trailer", "detail-trailer", function () {
-      openYouTube(trailer.key, function () {
-        // The YouTube app did not open: the QR code, unless the viewer has moved on meanwhile.
-        if (S.detail && S.detail.trailer === trailer && !S.fullscreen && !S.dialog) trailerDialog(trailer);
-      });
+      playTrailer(trailer);
     });
+  }
+  // The YouTube app, then the QR code when it does not open, unless the viewer has moved on meanwhile.
+  function trailerElsewhere(trailer) {
+    openYouTube(trailer.key, function () {
+      if (S.detail && S.detail.trailer === trailer && !S.fullscreen && !S.dialog) trailerDialog(trailer);
+    });
+  }
+  // The trailer player (docs/extras.md, The trailer player): the trailer plays in Tuner, full screen over the details
+  // page, in lumanest.tv's player page (an iframe; js/data.js, TunerData.extras, has its address, messages and keys).
+  // Back closes it and focus returns to Trailer. A player error, no "ready" within 12 seconds or a frame that cannot
+  // load closes it and opens the YouTube app instead, then the QR dialog. The keys stay in this document (the frame
+  // never keeps focus); a key that reaches the frame anyway comes back as a message. The app's own lines (loading,
+  // "Press OK to play", the key hint) sit in a bar above the frame, never over the player (YouTube's Required Minimum
+  // Functionality forbids anything in front of an embedded player). TRAILER_IN_APP false: Trailer goes straight to
+  // the YouTube app, as before 1.6.1.
+  var TRAILER_IN_APP = true,
+    TRAILER_READY_WAIT = 12000,
+    // After "ready", a trailer that has not started within this time waits for OK (autoplay refused).
+    TRAILER_PROMPT_WAIT = 3000,
+    TRAILER_HINT = "OK pause/play \u00b7 Left/Right 10 s \u00b7 Back close",
+    trailerPlay = null;
+  function playTrailer(trailer) {
+    var X = D.extras,
+      url = TRAILER_IN_APP && X && X.trailerFrameUrl ? X.trailerFrameUrl(trailer.key) : "",
+      t,
+      layer,
+      bar,
+      stage,
+      frame;
+    if (!url) return trailerElsewhere(trailer);
+    closeTrailer(false);
+    layer = el("div", "trailer-layer");
+    layer.id = "trailer-layer";
+    layer.setAttribute("tabindex", "-1");
+    frame = el("iframe", "trailer-frame");
+    frame.id = "trailer-frame";
+    frame.setAttribute("tabindex", "-1");
+    frame.setAttribute("allow", "autoplay; encrypted-media");
+    // No popups and no top-level navigation from the frame or the YouTube player inside it (its "Watch on YouTube"
+    // and end-screen links): Tizen's runtime would stack such a window over Tuner, with none of Tuner's keys.
+    frame.setAttribute("sandbox", "allow-scripts allow-same-origin allow-presentation");
+    frame.setAttribute("title", "Trailer");
+    t = trailerPlay = {
+      trailer: trailer,
+      layer: layer,
+      frame: frame,
+      status: el("p", "trailer-status", "Loading " + trailer.name + "\u2026"),
+      ready: false,
+      started: false,
+      timer: null,
+      promptTimer: null,
+    };
+    frame.onerror = function () {
+      if (trailerPlay === t) trailerFailed();
+    };
+    bar = el("div", "trailer-bar");
+    bar.appendChild(t.status);
+    bar.appendChild(el("p", "trailer-hint", TRAILER_HINT));
+    stage = el("div", "trailer-stage");
+    stage.appendChild(frame);
+    layer.appendChild(bar);
+    layer.appendChild(stage);
+    frame.src = url;
+    document.body.appendChild(layer);
+    layer.focus();
+    t.timer = setTimeout(function () {
+      if (trailerPlay === t) trailerFailed();
+    }, TRAILER_READY_WAIT);
+  }
+  // Closes the trailer at once (the frame goes, so its sound stops); restore false leaves focus where it is.
+  function closeTrailer(restore) {
+    var t = trailerPlay;
+    if (!t) return false;
+    trailerPlay = null;
+    clearTimeout(t.timer);
+    clearTimeout(t.promptTimer);
+    t.frame.onerror = null;
+    try {
+      t.frame.src = "about:blank";
+    } catch (e) {}
+    if (t.frame.parentNode) t.frame.parentNode.removeChild(t.frame);
+    if (t.layer.parentNode) t.layer.parentNode.removeChild(t.layer);
+    if (restore !== false && !focus("detail-trailer")) ensureFocus();
+    return true;
+  }
+  // In-app playback failed: the YouTube app instead, then the QR dialog.
+  function trailerFailed() {
+    var t = trailerPlay;
+    if (!t) return;
+    closeTrailer(true);
+    trailerElsewhere(t.trailer);
+  }
+  function trailerSend(action) {
+    var t = trailerPlay,
+      command = D.extras.trailerCommand(action),
+      target = t && t.frame.contentWindow;
+    if (!command || !target || !t.ready) return;
+    try {
+      target.postMessage(command, D.extras.FRAME_ORIGIN);
+    } catch (e) {}
+  }
+  // The status line: text, or hidden when empty.
+  function trailerStatus(text) {
+    var t = trailerPlay;
+    if (!t) return;
+    t.status.textContent = text;
+    t.status.className = "trailer-status" + (text ? "" : " hidden");
+  }
+  // An action of the remote or the frame (TunerData.extras.trailerKeyAction / trailerMessageAction). repeat: a held
+  // key's repeats, which never close.
+  function trailerAction(action, repeat) {
+    var t = trailerPlay;
+    if (!t || !action) return;
+    if (action === "close") {
+      if (!repeat) closeTrailer(true);
+    } else if (action === "fallback") trailerFailed();
+    else if (action === "stop") {
+      trailerSend("stop");
+      closeTrailer(true);
+    } else if (action === "ready") {
+      t.ready = true;
+      clearTimeout(t.timer);
+      clearTimeout(t.promptTimer);
+      trailerStatus("");
+      t.promptTimer = setTimeout(function () {
+        if (trailerPlay === t && !t.started) trailerStatus("Press OK to play");
+      }, TRAILER_PROMPT_WAIT);
+    } else if (/^(toggle|play|pause|rewind|forward)$/.test(action)) {
+      // Until the trailer has played, OK and Play/Pause send "play": a toggle would pause a trailer that is still
+      // loading ("Press OK to play" can show while it is), and it would never start.
+      if (!(repeat && action === "toggle")) trailerSend(action === "toggle" && !t.started ? "play" : action);
+    } else if (action === "playing") {
+      t.started = true;
+      trailerStatus("");
+    } else if (t.ready && !t.started && action !== "buffering" && action !== "unstarted") {
+      // Paused or cued before the trailer ever played: autoplay was refused, so it waits for OK. "Unstarted" is also
+      // how a trailer that will autoplay begins (buffering follows), so a refusal that only says that is left to the
+      // prompt timer set on "ready".
+      trailerStatus("Press OK to play");
+    }
+  }
+  // Frame messages: only from lumanest.tv, only from this overlay's frame, only in the documented shape.
+  function trailerMessage(event) {
+    var t = trailerPlay,
+      X = D.extras;
+    if (!t || !event || event.origin !== X.FRAME_ORIGIN || !event.source || event.source !== t.frame.contentWindow)
+      return;
+    trailerAction(X.trailerMessageAction(X.parseFrameMessage(event.data)), false);
+  }
+  window.addEventListener("message", trailerMessage);
+  // The frame took focus (a click, its own player): focus comes back here, so the remote's keys reach this document.
+  function trailerRefocus() {
+    var t = trailerPlay;
+    if (t && document.activeElement !== t.layer) t.layer.focus();
   }
   // Samsung: the YouTube app opened on the video by an application control (docs/extras.md, Trailer, Samsung), each
   // known YouTube app id in turn; onFail (the QR dialog) when none opens or the TV lacks the API. Samsung does not
@@ -3773,9 +3929,16 @@
       button("About Tuner", "about-tuner", function () {
         showDialog(
           "Tuner for Samsung TV",
-          "Version 1.6.0 · Samsung TV\nLive TV, guide, movies, series and Favorites. Two-channel PiP works on supported TVs and playlists. Embedded torrent playback is not available on Samsung.",
+          "Version 1.6.1 · Samsung TV\nLive TV, guide, movies, series and Favorites. Two-channel PiP works on supported TVs and playlists. Embedded torrent playback is not available on Samsung.",
           [],
-          { note: (withTmdb() ? TMDB_NOTICE + "\n" : "") + SUBTITLES_CREDIT }
+          {
+            note:
+              (withTmdb() ? TMDB_NOTICE + "\n" : "") +
+              SUBTITLES_CREDIT +
+              "\n" +
+              PRIVACY_NOTICE +
+              (TRAILER_IN_APP ? "\n" + YOUTUBE_TERMS_NOTICE : ""),
+          }
         );
       })
     );
@@ -4676,6 +4839,14 @@
     var code = e.keyCode || e.which,
       tag = e.target && e.target.tagName,
       i;
+    // The trailer player takes every key while it is open (and ignores those it has no use for). A PC keyboard's Tab
+    // (9) does nothing either: it would move focus to the page behind the overlay.
+    if (trailerPlay) {
+      var action = D.extras.trailerKeyAction(code);
+      if (action || code === 9) e.preventDefault();
+      trailerAction(action, !!e.repeat);
+      return;
+    }
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
       var field = e.target,
         editing = !field.readOnly;
@@ -4852,6 +5023,7 @@
     ensureFocus();
   });
   document.addEventListener("keyup", function (e) {
+    // OK's keydown set enterDown; while the trailer player is open it takes OK's keydown, so its release does nothing.
     if ((e.keyCode || e.which) !== 13 || !enterDown) return;
     var alreadyHandled = enterHeld;
     var held = enterHeld || Date.now() - enterDown >= 650;
@@ -4916,9 +5088,12 @@
   window.addEventListener("blur", function () {
     enterDown = 0;
     enterHeld = false;
+    if (trailerPlay) setTimeout(trailerRefocus, 0);
   });
   document.addEventListener("visibilitychange", function () {
     if (document.hidden) {
+      // Leaving the app (Home, Source) ends the trailer; it does not play on behind another app.
+      closeTrailer(true);
       saveRecent();
       clearTimeout(dualControlsTimer);
       if (dualActive && dual) dual.suspend();
@@ -4935,6 +5110,7 @@
     }
   });
   window.addEventListener("beforeunload", function () {
+    closeTrailer(false);
     saveRecent();
     stopDual();
     player.stop();

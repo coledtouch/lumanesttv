@@ -41,3 +41,16 @@ test("the shipped LG catalogue reader drops the hidden live category before the 
     ], [{id: "1", name: "EN: Most Watched Now"}, {id: "2", name: "Sports"}]);
     assert.deepEqual(plain(shown), {items: [{id: "b", categoryId: "2", categoryIds: ["2"]}, {id: "c", categoryId: "2", categoryIds: ["2"]}], categories: [{id: "2", name: "Sports"}]});
 });
+
+test("the shipped LG trailer player rules: the frame URL, the frame's messages, LG's keys and the commands", () => {
+    const X = load().extras;
+    assert.equal(X.trailerFrameUrl("vKQi3bBA1y8"), "https://lumanest.tv/embed/trailer?v=1&k=vKQi3bBA1y8");
+    assert.equal(X.trailerFrameUrl("vKQi3bBA1y8&x"), "");
+    assert.deepEqual(plain(X.parseFrameMessage('{"tuner":"trailer","v":1,"type":"key","key":"back"}')), {type: "key", key: "back"});
+    assert.equal(X.parseFrameMessage('{"tuner":"trailer","v":1,"type":"key","key":"constructor"}'), null);
+    // LG Back (461), the LG media keys (Rewind 412 and FastForward 417 step as Left and Right) and the arrows.
+    assert.deepEqual([461, 13, 415, 19, 413, 37, 39, 412, 417, 38, 40, 33].map(X.trailerKeyAction), ["close", "toggle", "play", "pause", "stop", "rewind", "forward", "rewind", "forward", "", "", ""]);
+    assert.equal(X.trailerMessageAction(X.parseFrameMessage('{"tuner":"trailer","v":1,"type":"error","code":150}')), "fallback");
+    assert.equal(X.trailerMessageAction(X.parseFrameMessage('{"tuner":"trailer","v":1,"type":"state","state":"ended"}')), "close");
+    assert.equal(X.trailerCommand("rewind"), '{"tuner":"trailer","v":1,"type":"seek","by":-10}');
+});

@@ -10,6 +10,13 @@ const FILES = Object.freeze(["config.xml", "index.html", "css/app.css", "js/data
 const SIGNATURES = Object.freeze(["author-signature.xml", "signature1.xml"]);
 const APPLICATION_ID = "TunerTv001.Tuner";
 const PACKAGE_ID = "TunerTv001";
+// The trailer player (docs/extras.md): the app may frame lumanest.tv's player page and nothing else. Tizen's runtime
+// (security model with a CSP) blocks every http(s) navigation outside allow-navigation, frames included, and opens
+// the blocked URL in the browser instead: the player page and the YouTube player frame inside it (the hosts the
+// page's own frame-src allows) must be listed, exactly. Every host listed may also open a window over Tuner or
+// replace it, so nothing else is (no wildcards; the overlay iframe's sandbox blocks popups and top navigation too).
+const FRAME_SOURCE = "https://lumanest.tv";
+const ALLOW_NAVIGATION = "lumanest.tv www.youtube-nocookie.com www.youtube.com";
 
 function validateManifest(xml) {
     const requireMatch = (pattern, message) => { if (!pattern.test(xml)) throw new Error(message); };
@@ -28,6 +35,14 @@ function validateManifest(xml) {
     const scriptPolicy = policy[1].split(";").find(part => part.trim().startsWith("script-src "));
     if (!scriptPolicy || scriptPolicy.trim() !== "script-src 'self' file:") throw new Error("Only packaged scripts and the local Samsung SDK may execute");
     if (/unsafe-eval/.test(policy[1])) throw new Error("CSP must not permit eval");
+    const directives = policy[1].split(";").map(part => part.trim().replace(/\s+/g, " ")).filter(Boolean);
+    ["frame-src", "child-src"].forEach(name => {
+        const found = directives.filter(part => part.split(" ")[0] === name);
+        if (found.length !== 1 || found[0] !== name + " " + FRAME_SOURCE) throw new Error("Only lumanest.tv's trailer player may be framed (" + name + ")");
+    });
+    const navigation = [...xml.matchAll(/<tizen:allow-navigation\b[^>]*>([^<]*)<\/tizen:allow-navigation>/g)];
+    if ((xml.match(/<tizen:allow-navigation\b/g) || []).length !== 1 || navigation.length !== 1 || navigation[0][0] !== "<tizen:allow-navigation>" + ALLOW_NAVIGATION + "</tizen:allow-navigation>")
+        throw new Error("Navigation must be allowed to the trailer player and YouTube's frames only");
     const version = xml.match(/<widget\b[^>]*\bversion="([0-9]+\.[0-9]+\.[0-9]+)"/);
     if (!version) throw new Error("Widget version is missing");
     return version[1];
@@ -122,4 +137,4 @@ function readZip(data) {
     return entries;
 }
 
-module.exports = { ROOT, FILES, SIGNATURES, APPLICATION_ID, PACKAGE_ID, validateManifest, validateSource, crc32, createZip, readZip };
+module.exports = { ROOT, FILES, SIGNATURES, APPLICATION_ID, PACKAGE_ID, FRAME_SOURCE, ALLOW_NAVIGATION, validateManifest, validateSource, crc32, createZip, readZip };

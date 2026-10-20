@@ -70,6 +70,24 @@ test("remote scripts, altered script order, inline handlers, and relaxed CSP are
     }
 }));
 
+test("the trailer player (docs/extras.md): the CSP frames lumanest.tv and nothing else", () => fixture(({source}) => {
+    const filename = path.join(source, "index.html");
+    const html = fs.readFileSync(filename, "utf8");
+    assert.match(html, /; frame-src https:\/\/lumanest\.tv; child-src https:\/\/lumanest\.tv"/);
+    assert.equal(app.validateSource(source).id, "tv.lumanest.tuner");
+    for (const changed of [
+        html.replace("; frame-src https://lumanest.tv", ""),
+        html.replace("; child-src https://lumanest.tv", ""),
+        html.replace("frame-src https://lumanest.tv", "frame-src *"),
+        html.replace("frame-src https://lumanest.tv", "frame-src https://lumanest.tv https://example.test"),
+        html.replace("child-src https://lumanest.tv", "child-src https:"),
+        html.replace("child-src https://lumanest.tv", "child-src https://lumanest.tv; frame-src 'self'")
+    ]) {
+        fs.writeFileSync(filename, changed);
+        assert.throws(() => app.validateSource(source), /framed/);
+    }
+}));
+
 test("build output cannot be the application source or a directory within it", () => fixture(({source}) => {
     assert.throws(() => app.stageSource(source, source), /outside/);
     assert.throws(() => app.stageSource(path.join(source, "output"), source), /outside/);

@@ -15,3 +15,12 @@
   Cache-Control: no-cache
 /cast/mpegts.js
   Cache-Control: public, max-age=31536000, immutable
+
+# The in-app trailer page's own files (app/embed/trailer/route.ts, lib/trailer-embed.ts). The page asks for them with
+# ?v=<hash of the file>, and keeps them for the same day the page itself is kept.
+/embed/trailer-frame.js
+  Cache-Control: public, max-age=86400
+  X-Content-Type-Options: nosniff
+/embed/trailer-frame.css
+  Cache-Control: public, max-age=86400
+  X-Content-Type-Options: nosniff
