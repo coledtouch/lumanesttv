@@ -7,9 +7,9 @@ Website, checkout, owner tools, web player, and TV applications for [LumaNest TV
 | [`site/`](site/) | React/Vinext website, server APIs, PayPal checkout and renewals, owner sign-in, web player, PWA assets, D1 schema and tests |
 | [`site/cloudflare/`](site/cloudflare/) | Portal PWA support and authenticated stream relay Workers |
 | [`apps/android/`](apps/android/) | Android TV and Google TV development source, Kotlin/Compose/Media3, including tests; approved download is 1.7.1 |
-| [`apps/tizen/`](apps/tizen/) | Tuner 1.5.1 for Samsung TVs, source, tests and packaging tools |
-| [`apps/webos/`](apps/webos/) | Tuner 1.1.1 for LG webOS TVs |
-| [`apps/roku/`](apps/roku/) | Tuner 1.0.4 for Roku (sideload for testing; Roku Channel Store submission pending) |
+| [`apps/tizen/`](apps/tizen/) | Tuner 1.6.0 for Samsung TVs, source, tests and packaging tools |
+| [`apps/webos/`](apps/webos/) | Tuner 1.2.0 for LG webOS TVs |
+| [`apps/roku/`](apps/roku/) | Tuner 1.1.0 for Roku (sideload for testing; Roku Channel Store submission pending) |
 | [`apps/tvos/`](apps/tvos/) | Tuner for Apple TV (tvOS 17+, SwiftUI + TunerCore), App Store submission pending |
 | [`releases/`](releases/) | Installer versions, checksums and release information |
 | [`.github/workflows/`](.github/workflows/) | Website and TV app build checks, nightly Android emulator tests and tag-driven draft releases |
