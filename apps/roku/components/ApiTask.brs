@@ -1,5 +1,6 @@
-' Network work for MainScene. request.mode is one of: pairStart, pairPoll, catalog, seriesInfo, vodInfo.
-' The response is {mode, ok, data, error, token}; token is copied from the request.
+' Network work for MainScene. request.mode is one of: pairStart, pairPoll, catalog, seriesInfo, vodInfo,
+' extrasSubtitles, extrasTrailer. The response is {mode, ok, data, error, token, url}; token and url are copied from
+' the request.
 
 sub init()
     m.top.functionName = "execute"
@@ -13,7 +14,7 @@ sub execute()
     req = m.top.request
     if req = invalid then return
     mode = req.mode
-    result = {mode: mode, ok: false, data: invalid, error: "", token: req.token}
+    result = {mode: mode, ok: false, data: invalid, error: "", token: req.token, url: req.url}
     if mode = "pairStart"
         r = http(pairApi() + "start", FormatJson({device: "roku"}))
         data = jsonOf(r)
@@ -53,13 +54,18 @@ sub execute()
     else if mode = "vodInfo"
         result.data = movieInfo(req.account, req.streamId)
         result.ok = result.data <> invalid
+    else if mode = "extrasSubtitles" or mode = "extrasTrailer"
+        ' A subtitles or trailer lookup at lumanest.tv (docs/extras.md). Anything but a readable 200 answer is "no
+        ' answer", which the screen treats as nothing to show, silently.
+        result.data = extrasLookup(mode, req.url)
+        result.ok = result.data <> invalid
     end if
     m.top.response = result
 end sub
 
 ' ------------------------------------------------------------------ HTTP
 
-function http(url as string, body as dynamic) as object
+function http(url as string, body as dynamic, timeout = 60000 as integer) as object
     transfer = CreateObject("roUrlTransfer")
     port = CreateObject("roMessagePort")
     transfer.SetMessagePort(port)
@@ -77,7 +83,7 @@ function http(url as string, body as dynamic) as object
         started = transfer.AsyncGetToString()
     end if
     if not started then return {code: -1, body: ""}
-    msg = wait(60000, port)
+    msg = wait(timeout, port)
     if type(msg) = "roUrlEvent" then return {code: msg.GetResponseCode(), body: msg.GetString()}
     transfer.AsyncCancel()
     return {code: -1, body: ""}
@@ -93,6 +99,20 @@ end function
 function errorOf(r as object, data as dynamic, fallback as string) as string
     if data <> invalid and data.error <> invalid and data.error.message <> invalid then return data.error.message
     return fallback
+end function
+
+' ------------------------------------------------------------------ lumanest.tv extras
+
+' One lookup at lumanest.tv (url is a subtitles or trailer lookup the screen built from extrasBase), read as
+' parseSubtitlesAnswer or parseTrailerAnswer reads it; invalid for any failure: a timeout (10 seconds), any status but
+' 200, or an answer that can't be read.
+function extrasLookup(mode as string, url as dynamic) as dynamic
+    if type(url) <> "roString" and type(url) <> "String" then return invalid
+    if Left(url, Len(extrasBase())) <> extrasBase() then return invalid
+    r = http(url, invalid, 10000)
+    if r.code <> 200 then return invalid
+    if mode = "extrasTrailer" then return parseTrailerAnswer(r.body)
+    return parseSubtitlesAnswer(r.body)
 end function
 
 ' ------------------------------------------------------------------ Xtream
@@ -125,6 +145,9 @@ end function
 
 function xtreamCatalog(account as object, rowsJob as object) as dynamic
     base = xtreamBase(account)
+    ' The provider's own "Most watched now" category is hidden (ExtrasLogic, docs/extras.md), so the categories come
+    ' first: a channel listed only there is dropped while the channels are read.
+    liveCats = hideLiveCategories(categoriesOf(xtreamGet(base, "get_live_categories")))
     liveRows = xtreamGet(base, "get_live_streams")
     if type(liveRows) <> "roArray" then return invalid
     live = []
@@ -132,8 +155,8 @@ function xtreamCatalog(account as object, rowsJob as object) as dynamic
         id = asText(s.stream_id)
         if id <> ""
             ' grouped (BrowseLogic) lists a channel without a category (cat "") under Other.
-            cat = asText(s.category_id)
-            live.Push({kind: "live", name: asText(s.name), icon: asText(s.stream_icon), cat: cat, adult: isFlagOn(s.is_adult), url: base.server + "/live/" + base.user + "/" + base.pass + "/" + id + ".m3u8"})
+            cat = liveChannelCategory(s, liveCats.hidden)
+            if cat <> invalid then live.Push({kind: "live", name: asText(s.name), icon: asText(s.stream_icon), cat: cat, adult: isFlagOn(s.is_adult), url: base.server + "/live/" + base.user + "/" + base.pass + "/" + id + ".m3u8"})
         end if
     end for
     liveRows = invalid
@@ -150,7 +173,7 @@ function xtreamCatalog(account as object, rowsJob as object) as dynamic
     end for
     rows = rowsFinish(rowsJob)
     return {
-        live: grouped(categoriesOf(xtreamGet(base, "get_live_categories")), live),
+        live: grouped(liveCats.categories, live),
         movies: buildTitleSection(movies, categoriesOf(xtreamGet(base, "get_vod_categories")), rows.movie, rows.genres.movie, rx),
         series: buildTitleSection(series, categoriesOf(xtreamGet(base, "get_series_categories")), rows.tv, rows.genres.tv, rx),
         moviePrefix: base.server + "/movie/" + base.user + "/" + base.pass + "/",
@@ -179,7 +202,9 @@ function seriesEpisodes(account as object, seriesId as string) as dynamic
             label = "S" + season.key + " E" + asText(e.episode_num)
             name = label
             if title <> "" then name = label + "  " + title
-            if id <> "" then episodes.Push({kind: "episode", id: id, label: label, name: name, url: base.server + "/series/" + base.user + "/" + base.pass + "/" + id + "." + ext})
+            ' season and episode are what the subtitle lookup sends: the season the episode is listed under and its
+            ' episode_num, -1 when either is not a number (no lookup then).
+            if id <> "" then episodes.Push({kind: "episode", id: id, label: label, name: name, season: extrasNumber(season.key, 0, 9999), episode: extrasNumber(e.episode_num, 1, 9999), url: base.server + "/series/" + base.user + "/" + base.pass + "/" + id + "." + ext})
         end for
     end for
     plot = ""
@@ -212,7 +237,8 @@ function m3uCatalog(account as object, rowsJob as object) as dynamic
     cats = parts.cats
     rows = rowsFinish(rowsJob)
     return {
-        live: grouped(cats.live, lists.live),
+        ' Without the hidden "Most watched now" group; grouped leaves out the channels of a category not listed.
+        live: grouped(hideLiveCategories(cats.live).categories, lists.live),
         movies: buildTitleSection(lists.movies, cats.movies, rows.movie, rows.genres.movie, rx),
         series: buildTitleSection(lists.series, cats.series, rows.tv, rows.genres.tv, rx),
         moviePrefix: "",

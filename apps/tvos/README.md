@@ -68,6 +68,12 @@ cd apps/tvos/TunerCore && swift test     # TunerCore, on the Mac (or Linux)
 
 and Product → Test (⌘U) in Xcode for the app's tests on the Simulator. The Keychain test is skipped on unsigned builds.
 
+TunerCore's tests also run the `live_category` and `vtt_cues` cases of [`docs/extras-cases.json`](../../docs/extras-cases.json) (the hidden live category and the WebVTT reader) from a copy in `TunerCore/Tests/TunerCoreTests/Fixtures/extras-cases.json`, checked against the repository's file the same way; after changing those cases:
+
+```sh
+cp docs/extras-cases.json apps/tvos/TunerCore/Tests/TunerCoreTests/Fixtures/extras-cases.json
+```
+
 TunerCore's tests run every case in [`docs/browse-cases.json`](../../docs/browse-cases.json), the Movies & Series cases all Tuner apps share (category filter, title normalization, USA only, the provider TMDB id, each `tmdb` row read by the catalogue's own JSON reader, and the name and group of every M3U playlist entry, each `m3u` playlist read by `M3UParser`), from a copy in `TunerCore/Tests/TunerCoreTests/Fixtures/browse-cases.json`. A test fails when the copy differs from the repository's file, or when a case has a kind `BrowseCasesTests` doesn't run, so after changing the cases, copy them again:
 
 ```sh
@@ -91,6 +97,9 @@ Before the first submission: deploy the site change that adds the `appletv` pair
 - **What plays:** H.264 video with AAC, AC-3, E-AC-3 or MP3 sound. Channels with MPEG Layer II or LATM sound play without sound after a first try, with a message. HEVC and MPEG-2 channels show "This channel uses a video format Apple TV can't play from your provider." (A later version can add an fMP4 writer for them.)
 - **Movies and episodes.** MP4, M4V and MOV files play through the same local server as a byte-range proxy (still one connection; a newer request or Back cancels an older one that is still waiting for the line). Titles the provider serves as HLS (`.m3u8`) go to AVPlayer directly. MKV, AVI, TS and similar uploads aren't offered on Apple TV: movies are left out, and episodes show "Not available on Apple TV".
 - **Captions and subtitles.** Closed captions (CEA-608, declared for every H.264 channel so they appear even when a channel is tuned during an ad without them) in live channels and subtitles inside a file follow Settings → Playback → Subtitles (Automatic follows the Apple TV's own setting). A title's separate subtitle files (SRT, WebVTT, SSA, TTML) are in the player's "Subtitle files" menu.
+- **English subtitles from OpenSubtitles** ([`docs/extras.md`](../../docs/extras.md)). When a movie or episode starts, Tuner asks lumanest.tv (`/api/extras/subtitles`, with the title's TMDB id, the series' id with the season and episode, or the name and year) which OpenSubtitles files exist, and lists up to three in "Subtitle files" after the provider's, with the line "Subtitles provided by OpenSubtitles.com" under them (also in Settings → About). A file is downloaded only when it is shown: picked in the menu, or picked by Subtitles On (or Automatic with the Apple TV's captions on) when the stream and the provider have no English subtitles. Tuner draws the cues itself, as plain text in a label over the video, following the player's position. Files are kept in Caches/Subtitles for 7 days (at most 20); lookups are kept in memory for the session. Without the lumanest.tv secrets the lookup finds nothing and the menu looks as before.
+- **Trailers.** Movie and series pages ask lumanest.tv (`/api/extras/trailer`) for the title's YouTube trailer and show **Trailer** after Add to Library only when there is one. It opens the YouTube app (`youtube://watch/<key>`); without the YouTube app, a QR code for a phone.
+- **"Most watched now".** The provider's rotating "Most watched now" live category is hidden by its name (`isHiddenLiveCategory`, docs/extras.md), with the channels listed only there; Tuner's own Most Watched stays.
 - **Storage.** Settings, Favorites, history and resume points are in UserDefaults (tvOS's small persistent store); line passwords are in the Keychain; catalogues, the guide and artwork are in Caches, which tvOS may clear at any time (Tuner downloads them again).
 
 ## Checks on a real Apple TV
@@ -106,6 +115,8 @@ The Simulator can't stand in for these:
 - Home button and back: live stops (the line is freed) and comes back; a movie resumes where it was.
 - An IPv6-only network (NAT64), which App Review uses: on the Mac, System Settings → General → Sharing, hold Option and open Internet Sharing's settings (ⓘ) to turn on "Create NAT64 Network", and join the Apple TV to that Wi-Fi.
 - Memory after an hour of live TV (Xcode → Debug Navigator).
+- Trailer: on an Apple TV with YouTube installed, the YouTube app opens on the video (the `youtube://watch/<key>` link comes from community code, not Apple or Google docs); without YouTube, the QR sheet appears and Close returns to Trailer.
+- OpenSubtitles (once the lumanest.tv secrets are set): the tracks and the dimmed credit line in "Subtitle files"; cues in step with the picture after seeking and while paused; choosing a subtitle track in the player's own menu turns the file off; Subtitles On picks the first OpenSubtitles track for a title with no English subtitles.
 
 ## Artwork
 

@@ -61,6 +61,17 @@
 .watch-shell .watch-subtitles-menu input{width:auto;margin:0;accent-color:#b394ff}
 .watch-shell .watch-subtitles-menu small{color:#a38bb8;font-size:10px;text-transform:uppercase}
 .watch-shell .watch-subtitles-menu p{margin:0;font-size:12px;color:#d8c8ef;line-height:1.6}
+.watch-shell .watch-subtitles-menu .watch-subtitles-credit{margin-top:8px;padding:8px 6px 0;border-top:1px solid #342a42;font-size:11px;color:#ad9cbe}
+.watch-shell .watch-subtitles-notice{margin:6px 0 0;max-width:min(320px,calc(100vw - 32px));font-size:12px;color:#ffd7a8}
+/* A movie's trailer: YouTube's player at 16:9, never smaller than 200 by 200 pixels, fitting the screen's height. */
+.watch-trailer{width:min(960px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;padding:22px}
+.watch-trailer .eyebrow{font-size:10px;letter-spacing:1.6px;color:#ba9fec;margin:0 0 6px}
+.watch-trailer h2{margin:0 0 14px;overflow-wrap:anywhere}
+.watch-trailer-frame{position:relative;width:100%;width:min(100%,max(356px,calc((100vh - 220px) * 16 / 9)));aspect-ratio:16/9;min-height:200px;margin:0 auto;background:#000;border-radius:10px;overflow:hidden}
+.watch-trailer-frame iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+.watch-trailer-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:16px}
+.watch-trailer-actions .small-button{display:inline-flex;align-items:center;min-height:44px;padding:10px 16px;text-decoration:none}
+.watch-trailer :is(a,button):focus-visible{outline:3px solid #c4b5fd;outline-offset:3px}
 .watch-shell video::cue{background:rgba(8,6,14,.82);color:#fff;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;line-height:1.35;text-shadow:0 1px 2px #000}
 /* Adult content lock. */
 .watch-shell .watch-adult-open{background:none;border:0;padding:0;font-size:11px;color:#c4b5fd;text-decoration:underline;text-underline-offset:3px}

@@ -15,11 +15,13 @@ final class AppModel {
     let library: UserLibrary
     /// Provider API, guide, artwork and subtitle requests (VLC User-Agent, like the other Tuner apps).
     let http: URLSessionHTTPClient
-    /// lumanest.tv requests: pairing and the catalog rows.
+    /// lumanest.tv requests: pairing, the catalog rows, subtitles and trailers.
     let lumanestHTTP: URLSessionHTTPClient
     let catalog: CatalogService
     let guide: GuideService
     let rowsService: CatalogRowsService
+    /// OpenSubtitles tracks and trailers through lumanest.tv (docs/extras.md).
+    let extras: ExtrasService
     let media: MediaServer
     let loopback: LoopbackServer
     let playback: PlaybackController
@@ -70,6 +72,7 @@ final class AppModel {
         catalog = CatalogService(cacheDirectory: caches.appendingPathComponent("Catalog", isDirectory: true), http: http)
         guide = GuideService(cacheDirectory: caches.appendingPathComponent("Guide", isDirectory: true), http: http)
         rowsService = CatalogRowsService(cacheDirectory: caches.appendingPathComponent("Rows", isDirectory: true), http: lumanestHTTP)
+        extras = ExtrasService(http: lumanestHTTP, cacheDirectory: caches.appendingPathComponent("Subtitles", isDirectory: true))
         let media = MediaServer(transport: URLSessionUpstreamTransport())
         self.media = media
         loopback = LoopbackServer(media: media)
@@ -200,6 +203,7 @@ final class AppModel {
         await catalog.clearCaches()
         await guide.clearCaches()
         await rowsService.clearCache()
+        await extras.clearCache()
         URLCache.shared.removeAllCachedResponses()
         logosTask = nil
         loadCatalog(force: true)
@@ -436,6 +440,32 @@ final class AppModel {
             group.cancelAll()
             return first
         }
+    }
+
+    // MARK: Subtitles and trailers (docs/extras.md)
+
+    /// The movie's provider TMDB id, else its TMDB match in the rows, else its name and year.
+    func subtitleQuery(for movie: Movie) -> SubtitleQuery? {
+        SubtitleQuery.movie(movie, match: browse.tmdbItem(forTitleID: movie.id))
+    }
+
+    /// The series' TMDB id (or name and year) with the episode's season and number.
+    func subtitleQuery(for episode: Episode, of series: Series) -> SubtitleQuery? {
+        SubtitleQuery.episode(episode, of: series, match: browse.tmdbItem(forTitleID: series.id))
+    }
+
+    func trailerQuery(for movie: Movie) -> TrailerQuery? {
+        TrailerQuery.movie(movie, match: browse.tmdbItem(forTitleID: movie.id))
+    }
+
+    func trailerQuery(for series: Series) -> TrailerQuery? {
+        TrailerQuery.series(series, match: browse.tmdbItem(forTitleID: series.id))
+    }
+
+    /// Nil without a query, on any failure and when the title has no trailer (the page then shows no Trailer button).
+    func trailer(_ query: TrailerQuery?) async -> Trailer? {
+        guard let query else { return nil }
+        return await extras.trailer(query)
     }
 
     // MARK: Settings

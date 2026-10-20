@@ -198,19 +198,36 @@
     function wantsSubtitles() {
       return typeof options.subtitles === 'function' ? !!options.subtitles() : !!options.subtitles;
     }
-    function preferredSubtitle() {
+    function englishSubtitle() {
       var list = trackCache.subtitles, i;
       for (i = 0; i < list.length; i += 1) {
         if (/^(en|eng|english)\b/i.test(list[i].language || '') || /\benglish\b/i.test(list[i].label || '')) { return list[i]; }
       }
-      return list[0] || null;
+      return null;
+    }
+    // The app's OpenSubtitles tracks for this stream (docs/extras.md): 'showing' (the app draws one), 'available',
+    // 'pending' (still looking) or '' (none, or the viewer chose another track).
+    function externalSubtitles() {
+      var value = typeof options.externalSubtitles === 'function' ? options.externalSubtitles() : '';
+      return value === 'showing' || value === 'available' || value === 'pending' ? value : '';
     }
     function autoSubtitles() {
-      // Each stream follows the Subtitles setting until the viewer chooses a track for it.
+      // Each stream follows the Subtitles setting until the viewer chooses a track for it. The order: an English
+      // track of the stream, else the first OpenSubtitles track (the app draws it; the stream's stay off), else the
+      // stream's first track. While the app is still looking, the stream's other tracks wait for its answer.
       if (subtitleChoice !== null || !state.request) { return; }
-      var track = wantsSubtitles() ? preferredSubtitle() : null;
+      var external = externalSubtitles(), track;
+      if (external === 'showing') { subtitleChoice = -1; chooseSubtitle(-1); return; }
+      if (!wantsSubtitles()) { chooseSubtitle(-1); return; }
+      track = englishSubtitle();
+      if (!track && external === 'pending') { return; }
+      if (!track && external === 'available') {
+        subtitleChoice = -1; chooseSubtitle(-1);
+        if (options.onExternalSubtitles) { options.onExternalSubtitles(); }
+        return;
+      }
+      track = track || trackCache.subtitles[0] || null;
       if (track) { subtitleChoice = track.index; chooseSubtitle(track.index); }
-      else if (!wantsSubtitles()) { chooseSubtitle(-1); }
     }
     function laterSubtitles() {
       // Live streams can announce text tracks after preparation. Look again a few times while playing.
@@ -715,6 +732,27 @@
       return { audio: trackCache.audio.slice(), subtitles: trackCache.subtitles.slice() };
     };
     api.subtitlesShowing = function () { return subtitleShowing; };
+    // The app's OpenSubtitles lookup answered: the automatic choice runs again if this stream has none yet.
+    api.refreshSubtitles = function () {
+      if (!state.request || subtitleChoice !== null || !prepared || suspended || operation) { return; }
+      if (av) { nativeTracks(); } else if (video) { htmlTrackInfo(); }
+      autoSubtitles();
+    };
+    // The media position in milliseconds, read from the player itself (cues drawn by the app follow it): AVPlay's
+    // getCurrentTime() or the video's currentTime; during a seek its target; while the player cannot be asked, the
+    // last position it reported.
+    api.currentTime = function () {
+      if (!state.request) { return 0; }
+      if (queuedSeek !== null) { return queuedSeek; }
+      if (activeSeek !== null) { return activeSeek; }
+      try {
+        if (av && prepared && !operation && !suspended && !nativeSuspended && ownership.owner === api) {
+          return Math.max(0, number(av.getCurrentTime(), state.position));
+        }
+        if (!av && video && prepared) { return Math.max(0, number(video.currentTime * 1000, state.position)); }
+      } catch (ignoreClock) {}
+      return state.position;
+    };
     api.setMuted = function (value, quiet) {
       var previousMuted = muted, previousPending = audioPending;
       if (av && state.request && options.mainAudioOnly && options.mainAudioOnly()) {

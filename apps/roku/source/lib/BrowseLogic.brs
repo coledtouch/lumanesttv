@@ -1042,6 +1042,9 @@ function buildTitleSection(titles as object, categories as object, section as ob
             title.g = entry.g
             matched = matched + 1
         end if
+        ' The provider's TMDB id stays for the subtitle and trailer lookups (docs/extras.md, Which ids an app sends)
+        ' when the rows don't list it, as when TMDB is off and there are no rows at all.
+        if title.hint <> "" and title.hint <> title.tmdb then title.ptmdb = title.hint
         ' Genres: TMDB's, else the provider's genre text, else a category named after a genre.
         if title.g = "" and title.genre <> "" then title.g = providerGenreKeys(title.genre, genres, rx)
         if title.g = "" then title.g = info.g

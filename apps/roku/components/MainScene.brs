@@ -61,6 +61,7 @@ sub init()
     m.subs = m.top.findNode("subs")
     m.subsNote = m.top.findNode("subsNote")
     m.subsList = m.top.findNode("subsList")
+    m.subsCredit = m.top.findNode("subsCredit")
     m.toast = m.top.findNode("toast")
     m.toastBg = m.top.findNode("toastBg")
 
@@ -93,6 +94,7 @@ sub init()
     initLive()
     initPlayer()
     initSettings()
+    initExtras()
 
     saved = m.reg.Read("account")
     m.account = invalid
@@ -149,6 +151,37 @@ end sub
 function nowSeconds() as integer
     return CreateObject("roDateTime").AsSeconds()
 end function
+
+' Draws a QR code from lumanest.tv (rows of "0" and "1", one per module, as /api/pair/start and /api/extras/trailer
+' send it) as dark squares in target, centred in a white box of boxSize pixels with a quiet zone. Used by pairing and by
+' the trailer dialog.
+sub drawQr(target as object, rows as object, boxSize as integer)
+    target.removeChildrenIndex(target.getChildCount(), 0)
+    size = rows.Count()
+    if size = 0 then return
+    cell = Int(boxSize / (size + 6))
+    offset = Int((boxSize - cell * size) / 2)
+    for r = 0 to size - 1
+        row = rows[r]
+        c = 0
+        while c < size
+            if Mid(row, c + 1, 1) = "1"
+                ' Join a horizontal run of dark modules into one rectangle to keep the node count low.
+                start = c
+                while c < size and Mid(row, c + 1, 1) = "1"
+                    c = c + 1
+                end while
+                block = target.createChild("Rectangle")
+                block.color = "0x141224FF"
+                block.translation = [offset + start * cell, offset + r * cell]
+                block.width = (c - start) * cell
+                block.height = cell
+            else
+                c = c + 1
+            end if
+        end while
+    end for
+end sub
 
 ' ------------------------------------------------------------------ the app after pairing
 
@@ -315,7 +348,7 @@ end sub
 ' ------------------------------------------------------------------ remote
 ' Back always goes up one level: details or a panel closes, a section returns to the menu, the menu
 ' returns to Home, and Back on Home's menu leaves the app. OK selects; * (Options) adds a title to the
-' Library, or picks subtitles while watching.
+' Library, or picks subtitles while watching. The trailer dialog closes with Back or OK.
 
 function onKeyEvent(key as string, press as boolean) as boolean
     if not press then return false
@@ -337,6 +370,7 @@ function onKeyEvent(key as string, press as boolean) as boolean
         return false
     end if
     if m.pairView.visible then return false
+    if m.trailerView.visible then return trailerKey(key)
     if m.picker.visible
         if key = "back" or key = "options"
             closePicker()

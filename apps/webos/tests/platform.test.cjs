@@ -130,3 +130,70 @@ test("live HLS captions on the HTML video element follow the Subtitles setting a
     video.listeners.filter(entry => entry[0] === "loadedmetadata").forEach(entry => entry[1]());
     assert.equal(player.tracks().subtitles.length, 0);
 });
+
+// docs/extras.md, Trailer, LG: the YouTube app through webOS's application manager, with a stub PalmServiceBridge.
+function bridgeWindow(behaviour = {}) {
+    const bridges = [], timers = new Map();
+    let timerId = 0;
+    function PalmServiceBridge() {
+        if (behaviour.construct) throw new Error("bridge unavailable");
+        this.calls = [];
+        bridges.push(this);
+    }
+    PalmServiceBridge.prototype.call = function (uri, payload) {
+        this.calls.push([uri, payload]);
+        if (behaviour.call) throw new Error("call refused");
+        if (behaviour.reply !== undefined) this.onservicecallback(behaviour.reply);
+    };
+    const extra = {
+        setTimeout(fn, ms) { const id = ++timerId; timers.set(id, {fn, ms}); return id; },
+        clearTimeout(id) { timers.delete(id); }
+    };
+    if (!behaviour.noBridge) extra.PalmServiceBridge = PalmServiceBridge;
+    const {window} = stubWindow(extra);
+    return {window, bridges, timers, fire() { const pending = [...timers.values()]; timers.clear(); pending.forEach(timer => timer.fn()); }};
+}
+
+test("openYouTube launches youtube.leanback.v4 on the video through the application manager", () => {
+    const h = bridgeWindow();
+    let failed = 0;
+    assert.equal(h.window.TunerWebOS.openYouTube("vKQi3bBA1y8", () => failed++), true);
+    assert.equal(h.bridges.length, 1);
+    assert.deepEqual(h.bridges[0].calls.map(([uri, payload]) => [uri, JSON.parse(payload)]), [["luna://com.webos.applicationManager/launch",
+        {id: "youtube.leanback.v4", params: {contentTarget: "https://www.youtube.com/tv?v=vKQi3bBA1y8"}}]]);
+    assert.deepEqual([...h.timers.values()].map(timer => timer.ms), [5000]);
+    h.bridges[0].onservicecallback(JSON.stringify({returnValue: true, processId: "1001"}));
+    assert.equal(failed, 0);
+    assert.equal(h.timers.size, 0, "the 5-second wait is cleared");
+    h.bridges[0].onservicecallback(JSON.stringify({returnValue: false}));
+    assert.equal(failed, 0, "a second reply changes nothing");
+});
+
+test("openYouTube calls onFail once: YouTube missing (-101), no reply in 5 s, an unreadable reply, no bridge, a bad key", () => {
+    // [stub behaviour, key, bridges made, the label]
+    const cases = [
+        [{reply: JSON.stringify({returnValue: false, errorCode: -101, errorText: "app not installed"})}, "vKQi3bBA1y8", 1, "not installed"],
+        [{reply: "not json"}, "vKQi3bBA1y8", 1, "unreadable reply"],
+        [{reply: JSON.stringify({returnValue: "true"})}, "vKQi3bBA1y8", 1, "returnValue not true"],
+        [{wait: true}, "vKQi3bBA1y8", 1, "no reply within 5 seconds"],
+        [{noBridge: true}, "vKQi3bBA1y8", 0, "no PalmServiceBridge"],
+        [{construct: true}, "vKQi3bBA1y8", 0, "the bridge cannot be made"],
+        [{call: true}, "vKQi3bBA1y8", 1, "the call throws"],
+        [{}, "vKQi3bBA1y", 0, "a key of 10 characters"],
+        [{}, "../../x?y=1", 0, "not a YouTube key"]
+    ];
+    for (const [behaviour, key, bridgesMade, label] of cases) {
+        const h = bridgeWindow(behaviour);
+        let failed = 0;
+        h.window.TunerWebOS.openYouTube(key, () => failed++);
+        if (behaviour.wait) {
+            assert.equal(failed, 0, "waiting for the reply");
+            h.fire();
+        }
+        assert.equal(failed, 1, label);
+        assert.equal(h.bridges.length, bridgesMade, label);
+        if (h.bridges[0] && h.bridges[0].onservicecallback) h.bridges[0].onservicecallback(JSON.stringify({returnValue: false}));
+        h.fire();
+        assert.equal(failed, 1, label + ": never twice");
+    }
+});

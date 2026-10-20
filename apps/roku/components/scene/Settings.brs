@@ -50,7 +50,7 @@ function settingText(id as string) as string
     if id = "lineup" then return "USA only keeps live categories labelled US, USA or United States, or named after a US sports league. All shows every category on the line, as chosen in the customer hub."
     if id = "order" then return "The order of live categories: Featured (Sports, Premium and News first), the customer hub's order, or A to Z."
     if id = "start" then return "The section Tuner opens on: Home, with movies and series, or Live TV."
-    if id = "subtitles" then return "When on, Tuner turns on captions and picks the subtitle language you chose last, then English. Press * while watching to choose a track."
+    if id = "subtitles" then return "When on, Tuner turns on captions and picks the subtitle language you chose last, then English. Movies and episodes without English subtitles of their own get them from OpenSubtitles.com. Press * while watching to choose a track."
     if id = "adult" then return "Adult categories stay hidden until you unlock them with your 4-digit passcode. Tuner locks them again each time it opens." + Chr(10) + Chr(10) + forgotText()
     if id = "changePin" then return "Asks for the current passcode, then a new one."
     if id = "refresh" then return "Loads your channels, movies and series again, with fresh Popular and streaming-service lists."
@@ -66,6 +66,8 @@ function aboutText() as string
     else
         text = text + "Movies & Series lists come from your line's own categories, dates and ratings."
     end if
+    ' Shown whatever the OpenSubtitles plan, so a plan change needs no app update (docs/extras.md).
+    text = text + Chr(10) + Chr(10) + extrasCredit()
     return text
 end function
 

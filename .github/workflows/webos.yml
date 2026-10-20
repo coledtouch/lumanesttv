@@ -3,9 +3,9 @@ name: LG webOS
 on:
   push:
     branches: [main]
-    paths: ['apps/webos/**', 'apps/tizen/js/**', 'apps/tizen/css/**', 'docs/browse-cases.json', '.github/workflows/webos.yml']
+    paths: ['apps/webos/**', 'apps/tizen/js/**', 'apps/tizen/css/**', 'docs/browse-cases.json', 'docs/extras-cases.json', '.github/workflows/webos.yml']
   pull_request:
-    paths: ['apps/webos/**', 'apps/tizen/js/**', 'apps/tizen/css/**', 'docs/browse-cases.json', '.github/workflows/webos.yml']
+    paths: ['apps/webos/**', 'apps/tizen/js/**', 'apps/tizen/css/**', 'docs/browse-cases.json', 'docs/extras-cases.json', '.github/workflows/webos.yml']
   workflow_dispatch:
 
 permissions:

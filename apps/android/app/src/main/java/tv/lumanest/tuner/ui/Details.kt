@@ -39,6 +39,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -57,6 +58,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import tv.lumanest.tuner.data.BrowseTitle
 import tv.lumanest.tuner.data.Episode
+import tv.lumanest.tuner.data.Extras
+import tv.lumanest.tuner.data.ExtrasTitle
 import tv.lumanest.tuner.data.Movie
 import tv.lumanest.tuner.data.MovieInfo
 import tv.lumanest.tuner.data.PlayRequest
@@ -64,6 +67,9 @@ import tv.lumanest.tuner.data.Recent
 import tv.lumanest.tuner.data.Repo
 import tv.lumanest.tuner.data.Series
 import tv.lumanest.tuner.data.SeriesInfo
+import tv.lumanest.tuner.data.SubtitleQuery
+import tv.lumanest.tuner.data.Trailer
+import tv.lumanest.tuner.data.TrailerQuery
 import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
 
@@ -104,10 +110,13 @@ fun MovieDetailScreen(movie: Movie, state: AppState) {
     val resume = recents.firstOrNull { (it.id == movie.id || it.id in movie.aliases) && (it.url == movie.url || it.url in movie.backups) && it.positionMs > 0 }
     val first = remember(movie.id) { FocusRequester() }
     LaunchedEffect(movie.id) { requestAttachedFocus(first) }
+    // Subtitles and the trailer are looked up by the film's TMDB id, else its name and year (docs/extras.md).
+    val extrasTitle = remember(movie.id) { ExtrasTitle.movie(movie, Repo.matchedTmdb(BrowseTitle.movieKey(movie.id))) }
+    val trailer by rememberTrailer(extrasTitle, tv = false)
 
     fun play(from: Long) = state.push(
         Screen.Player(PlayRequest.Vod(movie.id, movie.name, info?.year, info?.poster ?: movie.poster, movie.url, from, streamBackups = movie.backups,
-            subtitles = info?.subtitles.orEmpty(), titleKey = BrowseTitle.movieKey(movie.id))),
+            subtitles = info?.subtitles.orEmpty(), titleKey = BrowseTitle.movieKey(movie.id), extras = SubtitleQuery.movie(extrasTitle))),
     )
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -156,6 +165,7 @@ fun MovieDetailScreen(movie: Movie, state: AppState) {
                         )
                         if (resume != null) PillButton("Start over", { play(0) }, icon = { Icon(Icons.Rounded.Replay, null, tint = it, modifier = Modifier.size(20.dp)) })
                         LibraryButton(BrowseTitle.movieKey(movie.id), movie.name, aliases = movie.aliases.map(BrowseTitle::movieKey))
+                        TrailerButton(trailer)
                     }
                     resume?.let { recent ->
                         Text(
@@ -198,6 +208,9 @@ fun SeriesDetailScreen(series: Series, state: AppState) {
     val episodeList = rememberLazyListState()
     val scope = rememberCoroutineScope()
     var initialFocusApplied by remember(series.id) { mutableStateOf(false) }
+    // Episodes look their subtitles up by the series' TMDB id (else its name and year), with their own numbers.
+    val extrasTitle = remember(series.id) { ExtrasTitle.series(series, Repo.matchedTmdb(BrowseTitle.seriesKey(series.id))) }
+    val trailer by rememberTrailer(extrasTitle, tv = true)
 
     val seasons = info?.seasons.orEmpty()
     val seasonKeys = remember(seasons) { seasons.keys.sorted() }
@@ -245,9 +258,9 @@ fun SeriesDetailScreen(series: Series, state: AppState) {
 
     fun play(episode: Episode, from: Long) {
         val index = allEpisodes.indexOfFirst { it.id == episode.id }
-        val queue = allEpisodes.drop(index + 1).take(30).map { it.toRequest(series, 0) }
+        val queue = allEpisodes.drop(index + 1).take(30).map { it.toRequest(series, 0, extrasTitle) }
         state.lastEpisodeKey = episode.id
-        state.push(Screen.Player(episode.toRequest(series, from).copy(queue = queue)))
+        state.push(Screen.Player(episode.toRequest(series, from, extrasTitle).copy(queue = queue)))
     }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -279,7 +292,10 @@ fun SeriesDetailScreen(series: Series, state: AppState) {
                                     CircularProgressIndicator(color = Palette.accent, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
                                     Text("Loading episodes…", color = Palette.dim, fontSize = 13.sp)
                                 }
-                                LibraryButton(BrowseTitle.seriesKey(series.id), series.name, Modifier.padding(top = 12.dp))
+                                Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    LibraryButton(BrowseTitle.seriesKey(series.id), series.name)
+                                    TrailerButton(trailer)
+                                }
                             }
                             info == null -> {
                                 Text("Couldn't load episodes", color = Palette.text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
@@ -287,6 +303,7 @@ fun SeriesDetailScreen(series: Series, state: AppState) {
                                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                     PillButton("Try again", { loadAttempt++ }, Modifier.focusRequester(playFocus), primary = true)
                                     LibraryButton(BrowseTitle.seriesKey(series.id), series.name)
+                                    TrailerButton(trailer)
                                 }
                             }
                             allEpisodes.isEmpty() -> {
@@ -294,6 +311,7 @@ fun SeriesDetailScreen(series: Series, state: AppState) {
                                 Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                     PillButton("Back to Series", { state.pop() }, Modifier.focusRequester(playFocus))
                                     LibraryButton(BrowseTitle.seriesKey(series.id), series.name)
+                                    TrailerButton(trailer)
                                 }
                             }
                             lastWatched != null -> {
@@ -305,6 +323,7 @@ fun SeriesDetailScreen(series: Series, state: AppState) {
                                         icon = { Icon(Icons.Rounded.PlayArrow, null, tint = it, modifier = Modifier.size(20.dp)) }, primary = true,
                                     )
                                     LibraryButton(BrowseTitle.seriesKey(series.id), series.name)
+                                    TrailerButton(trailer)
                                 }
                                 Text((if (nextUp) "Up next" else "At ${fmtClock(lastWatched.second.positionMs)}") + " · ${lastWatched.first.title}", color = Palette.dim, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp))
                             }
@@ -314,6 +333,7 @@ fun SeriesDetailScreen(series: Series, state: AppState) {
                                     icon = { Icon(Icons.Rounded.PlayArrow, null, tint = it, modifier = Modifier.size(20.dp)) }, primary = true,
                                 )
                                 LibraryButton(BrowseTitle.seriesKey(series.id), series.name)
+                                TrailerButton(trailer)
                             }
                         }
                         val plot = info?.plot ?: series.plot
@@ -381,7 +401,7 @@ fun SeriesDetailScreen(series: Series, state: AppState) {
 
 private fun seasonName(number: Int) = if (number == 0) "Specials" else "Season $number"
 
-private fun Episode.toRequest(series: Series, from: Long) = PlayRequest.Vod(
+private fun Episode.toRequest(series: Series, from: Long, extrasTitle: ExtrasTitle?) = PlayRequest.Vod(
     resumeId = id,
     title = series.name,
     subtitle = "S$season E$number · $title",
@@ -390,7 +410,17 @@ private fun Episode.toRequest(series: Series, from: Long) = PlayRequest.Vod(
     startMs = from,
     subtitles = subtitles,
     titleKey = BrowseTitle.seriesKey(series.id),
+    extras = SubtitleQuery.episode(extrasTitle, season, number),
 )
+
+/**
+ * The title's trailer from lumanest.tv (docs/extras.md), looked up once when the page opens (answers are kept for the
+ * session); null while loading, on any failure and when there is none.
+ */
+@Composable
+private fun rememberTrailer(title: ExtrasTitle?, tv: Boolean) = produceState<Trailer?>(null, title, tv) {
+    value = title?.let { Extras.client.trailer(TrailerQuery(it, tv)) }
+}
 
 /**
  * Adds the movie or series to the Library (the check badge on its poster), or removes it. A film saved under an older

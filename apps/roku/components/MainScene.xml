@@ -9,7 +9,9 @@
   <script type="text/brightscript" uri="pkg:/components/scene/Live.brs" />
   <script type="text/brightscript" uri="pkg:/components/scene/Player.brs" />
   <script type="text/brightscript" uri="pkg:/components/scene/Settings.brs" />
+  <script type="text/brightscript" uri="pkg:/components/scene/Extras.brs" />
   <script type="text/brightscript" uri="pkg:/source/lib/BrowseLogic.brs" />
+  <script type="text/brightscript" uri="pkg:/source/lib/ExtrasLogic.brs" />
   <children>
     <Rectangle id="bg" width="1920" height="1080" color="0x0E0C1AFF" />
     <Rectangle id="glow" width="1920" height="6" color="0x7C3AEDFF" />
@@ -125,6 +127,21 @@
       <Label id="pickerHint" translation="[1300,1000]" width="560" text="OK chooses · Back closes" color="0x857D9EFF" font="font:SmallestSystemFont" />
     </Group>
 
+    <!-- Trailer from a details page. A Roku channel can't open the YouTube channel on a video, so the trailer's
+         QR code from lumanest.tv/api/extras/trailer opens it on a phone (docs/extras.md, The Trailer button). -->
+    <Group id="trailer" visible="false">
+      <Rectangle id="trailerShade" width="1920" height="1080" color="0x0E0C1AE6" />
+      <Rectangle id="trailerPanel" translation="[360,160]" width="1200" height="760" color="0x171428FF" />
+      <Rectangle id="trailerQrBox" translation="[440,240]" width="480" height="480" color="0xFFFFFFFF" />
+      <Group id="trailerQr" translation="[440,240]" />
+      <Label id="trailerShort" translation="[440,744]" width="480" horizAlign="center" color="0xF6F3FBFF" font="font:MediumBoldSystemFont" />
+      <Label id="trailerTitle" translation="[980,250]" width="520" wrap="true" text="Watch the trailer on your phone" color="0xF6F3FBFF" font="font:LargeBoldSystemFont" />
+      <Label id="trailerSteps" translation="[980,420]" width="520" wrap="true" text="Scan the code with your phone's camera." color="0xDDD3F2FF" font="font:MediumSystemFont" />
+      <LabelList id="trailerClose" translation="[980,600]" itemSize="[320,66]" numRows="1"
+        color="0xF6F3FBFF" focusedColor="0x141224FF" focusBitmapBlendColor="0xB79CFBFF" font="font:SmallBoldSystemFont" focusedFont="font:SmallBoldSystemFont" />
+      <Label id="trailerHint" translation="[980,840]" width="520" text="OK or Back closes" color="0x857D9EFF" font="font:SmallestSystemFont" />
+    </Group>
+
     <Video id="video" width="1920" height="1080" visible="false" />
 
     <!-- Subtitle chooser, opened with the Options (*) key during playback. -->
@@ -132,8 +149,10 @@
       <Rectangle id="subsPanel" translation="[1240,0]" width="680" height="1080" color="0x0E0C1AE6" />
       <Label id="subsTitle" translation="[1300,120]" width="560" text="Subtitles" color="0xF6F3FBFF" font="font:LargeBoldSystemFont" />
       <Label id="subsNote" translation="[1300,190]" width="560" wrap="true" color="0xC4B5FDFF" font="font:SmallSystemFont" />
-      <LabelList id="subsList" translation="[1300,300]" itemSize="[560,62]" itemSpacing="[0,6]" numRows="10" vertFocusAnimationStyle="floatingFocus"
+      <LabelList id="subsList" translation="[1300,300]" itemSize="[560,62]" itemSpacing="[0,6]" numRows="9" vertFocusAnimationStyle="floatingFocus"
         color="0xF6F3FBFF" focusedColor="0x141224FF" focusBitmapBlendColor="0xB79CFBFF" font="font:SmallSystemFont" focusedFont="font:SmallBoldSystemFont" />
+      <!-- Shown under OpenSubtitles tracks, as a note rather than a choice. -->
+      <Label id="subsCredit" translation="[1300,936]" width="560" wrap="true" color="0xA79FC0FF" font="font:SmallestSystemFont" />
       <Label id="subsHint" translation="[1300,1000]" width="560" text="OK chooses · Back closes" color="0x857D9EFF" font="font:SmallestSystemFont" />
     </Group>
 

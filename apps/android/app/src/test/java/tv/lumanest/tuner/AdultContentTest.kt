@@ -108,7 +108,11 @@ class AdultContentTest {
         assertNotEquals(salt, other)
         val hash = Passcode.hash("1234", salt)
         assertEquals(64, hash.length)
-        assertFalse(hash.contains("1234"))
+        // The digits never show in the hash. Checked with a fixed salt: a random hash holds "1234" about once in a
+        // thousand runs, which made this test fail by chance.
+        val fixed = Passcode.hash("1234", "00".repeat(16))
+        assertEquals("af88269895fea9e985d8e7587268ea2fd6d0a639cc0438c88a9b22d6ce96b3ba", fixed)
+        assertFalse(fixed.contains("1234"))
         assertNotEquals(hash, Passcode.hash("1234", other))
         assertTrue(Passcode.verify("1234", salt, hash))
         assertFalse(Passcode.verify("1235", salt, hash))

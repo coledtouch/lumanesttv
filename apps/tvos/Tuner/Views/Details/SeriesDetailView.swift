@@ -1,20 +1,26 @@
 import SwiftUI
 import TunerCore
 
-/// A series: Resume S E / Up next / Play, Add to Library, season chips and the season's episodes. Episodes Apple TV
-/// can't play (MKV, AVI and similar uploads) are shown greyed out but stay focusable, so the list scrolls past them.
+/// A series: Resume S E / Up next / Play, Add to Library, Trailer (when lumanest.tv found one), season chips and the
+/// season's episodes. Episodes Apple TV can't play (MKV, AVI and similar uploads) are shown greyed out but stay
+/// focusable, so the list scrolls past them.
 struct SeriesDetailView: View {
     @Environment(AppModel.self) private var model
     let seriesID: String
     @State private var info: SeriesInfo?
     @State private var season: Int?
     @State private var loadError: String?
+    @State private var trailer: Trailer?
 
     var body: some View {
         if let series = model.series(id: seriesID) {
+            let trailerQuery = model.trailerQuery(for: series)
             page(series)
                 .task(id: seriesID) {
                     await load(series)
+                }
+                .task(id: trailerQuery) {
+                    trailer = await model.trailer(trailerQuery)
                 }
         } else {
             EmptyStateView(title: "This series isn't available any more", systemImage: "tv")
@@ -57,6 +63,9 @@ struct SeriesDetailView: View {
                                     model.toggleLibrary(.series(series))
                                 } label: {
                                     Label(inLibrary ? "In Library" : "Add to Library", systemImage: inLibrary ? "checkmark" : "plus")
+                                }
+                                if let trailer {
+                                    TrailerButton(trailer: trailer)
                                 }
                             }
                             .focusSection()

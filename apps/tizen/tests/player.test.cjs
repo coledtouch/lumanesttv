@@ -873,3 +873,103 @@ test('the display rect is reapplied after preparation and resume, and the letter
   assert.deepEqual(last('setDisplayRect'), ['setDisplayRect', 1398, 145, 466, 263]);
   assert.deepEqual(methods(), [['setDisplayMethod', 'PLAYER_DISPLAY_MODE_LETTER_BOX']], 'the mode never changes during playback');
 });
+
+// docs/extras.md: the app's OpenSubtitles tracks take part in the automatic choice, and the app draws their cues at
+// the position currentTime() reads from the player.
+function externalHarness(native, subtitlesOn, external, video) {
+  const clock = timers(), av = native ? avplay() : null, shown = [];
+  video = video || htmlVideo();
+  const window = { setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout, performance: { now() { return clock.now; } } };
+  if (av) { window.webapis = { avplay: av }; }
+  vm.runInNewContext(source, { window }, { filename: 'player.js' });
+  const app = { external, on: subtitlesOn };
+  const player = window.TunerPlayer.create({ objectElement: { style: {}, setAttribute() {} }, videoElement: video,
+    subtitles() { return app.on; }, externalSubtitles() { return app.external; }, onExternalSubtitles() { shown.push(app.external); } });
+  return { player, av, video, clock, shown, app };
+}
+
+test('currentTime reads AVPlay, a seek target and the HTML video clock in milliseconds', () => {
+  const h = externalHarness(true, false, '');
+  assert.equal(h.player.currentTime(), 0, 'nothing playing');
+  h.player.play({ url: 'https://example.test/movie.mp4', live: false, startPosition: 5000 });
+  assert.equal(h.player.currentTime(), 5000, 'the start position before preparation');
+  h.av.completePrepare();
+  assert.equal(h.player.currentTime(), 5000, 'the resume seek is running');
+  h.av.completeSeek();
+  h.av.clock = 6000;
+  assert.equal(h.player.currentTime(), 6000, 'AVPlay getCurrentTime(), before any callback');
+  h.av.event('oncurrentplaytime', 7250);
+  assert.equal(h.player.currentTime(), 7250);
+  h.player.seek(10000);
+  assert.equal(h.player.currentTime(), 17250, 'during a seek: its target');
+  h.av.completeSeek();
+  assert.equal(h.player.currentTime(), 17250);
+  h.player.pause();
+  assert.equal(h.player.currentTime(), 17250, 'paused: the same position');
+  h.player.stop();
+  assert.equal(h.player.currentTime(), 0);
+  const web = externalHarness(false, false, '');
+  web.player.play({ url: 'https://example.test/movie.mp4', live: false });
+  web.video.duration = 60; web.video.dispatch('loadedmetadata');
+  web.video.currentTime = 12.5;
+  assert.equal(web.player.currentTime(), 12500, 'HTML video currentTime');
+});
+
+test('Subtitles On: no English stream track and an OpenSubtitles track: the app shows it and the stream stays silent', () => {
+  const h = externalHarness(true, true, 'available');
+  h.player.play({ url: 'https://example.test/movie.mp4', live: false });
+  h.av.completePrepare();
+  assert.deepEqual(h.shown, ['available'], 'the app is told to show its first track, once');
+  assert.equal(h.av.calls.some(x => x[0] === 'setSelectTrack' && x[1] === 'TEXT'), false, 'the French stream track is not chosen');
+  assert.deepEqual(h.av.calls.filter(x => x[0] === 'setSilentSubtitle').at(-1), ['setSilentSubtitle', true]);
+  h.app.external = 'showing';
+  h.player.refreshSubtitles();
+  assert.deepEqual(h.shown, ['available'], 'a choice is made: nothing more');
+});
+
+test('Subtitles On: while the app is still looking the stream waits; its answer decides between OpenSubtitles and the fallback', () => {
+  const none = externalHarness(true, true, 'pending');
+  none.player.play({ url: 'https://example.test/movie.mp4', live: false });
+  none.av.completePrepare();
+  assert.equal(none.av.calls.some(x => x[0] === 'setSelectTrack' && x[1] === 'TEXT'), false, 'waiting for the lookup');
+  none.app.external = '';
+  none.player.refreshSubtitles();
+  assert.deepEqual(none.av.calls.find(x => x[0] === 'setSelectTrack' && x[1] === 'TEXT'), ['setSelectTrack', 'TEXT', 11], 'no OpenSubtitles track: the stream fallback');
+  assert.deepEqual(none.shown, []);
+  const found = externalHarness(true, true, 'pending');
+  found.player.play({ url: 'https://example.test/movie.mp4', live: false });
+  found.av.completePrepare();
+  found.app.external = 'available';
+  found.player.refreshSubtitles();
+  assert.deepEqual(found.shown, ['available']);
+  assert.equal(found.av.calls.some(x => x[0] === 'setSelectTrack' && x[1] === 'TEXT'), false);
+  // The lookup can answer before the stream is ready: the choice waits for its tracks (HTML video: its metadata).
+  const early = externalHarness(false, true, 'available');
+  early.player.refreshSubtitles();
+  early.player.play({ url: 'https://example.test/movie.mp4', live: false });
+  early.player.refreshSubtitles();
+  assert.deepEqual(early.shown, [], 'nothing is chosen before the stream is prepared');
+  early.video.dispatch('loadedmetadata');
+  assert.deepEqual(early.shown, ['available']);
+});
+
+test('an English stream track beats OpenSubtitles; Off shows none; a shown OpenSubtitles track keeps the stream silent', () => {
+  const video = htmlVideo();
+  video.textTracks = [{ kind: 'subtitles', language: 'fra', mode: 'disabled' }, { kind: 'captions', language: 'en', mode: 'disabled' }];
+  const english = externalHarness(false, true, 'available', video);
+  english.player.play({ url: 'https://example.test/movie.mp4', live: false });
+  video.dispatch('loadedmetadata');
+  assert.deepEqual(video.textTracks.map(track => track.mode), ['disabled', 'showing']);
+  assert.deepEqual(english.shown, []);
+  const off = externalHarness(true, false, 'available');
+  off.player.play({ url: 'https://example.test/movie.mp4', live: false });
+  off.av.completePrepare();
+  assert.deepEqual(off.shown, []); assert.equal(off.player.subtitlesShowing(), false);
+  // The viewer picked an OpenSubtitles track with the setting Off: a reopened stream (a backup) stays silent.
+  const picked = externalHarness(false, false, 'showing', (() => { const v = htmlVideo(); v.textTracks = [{ kind: 'captions', language: 'en', mode: 'showing' }]; return v; })());
+  picked.player.play({ url: 'https://example.test/movie.mp4', live: false });
+  picked.video.dispatch('loadedmetadata');
+  assert.equal(picked.video.textTracks[0].mode, 'disabled');
+  picked.app.on = true; picked.player.refreshSubtitles();
+  assert.equal(picked.video.textTracks[0].mode, 'disabled', 'the choice stays made');
+});

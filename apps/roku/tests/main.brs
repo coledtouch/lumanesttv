@@ -2,6 +2,10 @@
 ' prints each failure to the debug console (telnet <roku-ip> 8085) and shows the totals on screen.
 sub Main()
     result = runBrowseLogicTests()
+    extras = runExtrasLogicTests()
+    result.passed = result.passed + extras.passed
+    result.failed = result.failed + extras.failed
+    result.failures.Append(extras.failures)
     summary = result.passed.ToStr() + " passed, " + result.failed.ToStr() + " failed"
     print "TUNER TESTS: " + summary
     for each failure in result.failures

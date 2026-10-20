@@ -31,3 +31,12 @@ test('paired accounts become playlist settings the app accepts', () => {
 test('Samsung and LG ship the same pairing script', () => {
     assert.equal(fs.readFileSync(path.join(__dirname, '../../webos/js/pairing.js'), 'utf8'), pairingText);
 });
+
+test('drawQr is shared: the trailer QR dialog draws the server rows the way the pairing code is drawn', () => {
+    const pairing = load(), fills = [];
+    const context = { fillStyle: '', fillRect(...box) { fills.push([this.fillStyle, ...box]); } };
+    pairing.drawQr({ width: 360, height: 360, getContext(kind) { assert.equal(kind, '2d'); return context; } }, ['101', '010', '101']);
+    // 3 modules and a quiet zone of 3 on each side: 40 px modules, the code centred 120 px in.
+    assert.deepEqual(fills, [['#ffffff', 0, 0, 360, 360], ['#141224', 120, 120, 40, 40], ['#141224', 200, 120, 40, 40],
+        ['#141224', 160, 160, 40, 40], ['#141224', 120, 200, 40, 40], ['#141224', 200, 200, 40, 40]]);
+});

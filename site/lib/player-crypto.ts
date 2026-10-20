@@ -1,4 +1,4 @@
-export type TokenPurpose='player-session'|'player-media'|'player-cast'|'player-image'|'device-pairing'|'renewal-session'|'renewal-quote';
+export type TokenPurpose='player-session'|'player-media'|'player-cast'|'player-image'|'device-pairing'|'renewal-session'|'renewal-quote'|'extras-opensubtitles';
 function base64url(value:Uint8Array){return btoa(String.fromCharCode(...value)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')}
 function bytes(value:string){return Uint8Array.from(atob(value.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0))}
 const text=(value:string)=>new TextEncoder().encode(value),label=(purpose:TokenPurpose)=>text('lumanest-token-v2:'+purpose);
@@ -9,8 +9,11 @@ export async function seal(value:unknown,secret:string,purpose:TokenPurpose,fixe
 export async function open<T>(value:string,secret:string,purpose:TokenPurpose):Promise<T>{const parts=value.split('.');if(parts.length!==2||value.length>6000)throw new Error('Invalid player session.');const derived=await key(secret,purpose);try{const plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:bytes(parts[0]),additionalData:label(purpose)},derived,bytes(parts[1]));return JSON.parse(new TextDecoder().decode(plain)) as T}catch{throw new Error('Your player session expired. Please sign in again.')}}
 export async function digest(value:string){return base64url(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value))))}
 // Deterministic keyed digests (HMAC-SHA256 under their own HKDF-derived key per purpose): 'player-line' binds poster
-// links to one line, 'player-cache' names a line's cached catalogue without putting its login in a cache key.
-export type MacPurpose='player-line'|'player-cache'|'player-iv';
+// links to one line, 'player-cache' names a line's cached catalogue without putting its login in a cache key,
+// 'extras-subtitle' signs the subtitle file tokens a lookup hands out, 'extras-client' names a client's network in the
+// daily download count and the limits without keeping its address, and 'extras-credential' marks OpenSubtitles login
+// secrets that were refused without keeping a crackable hash of them (docs/extras.md).
+export type MacPurpose='player-line'|'player-cache'|'player-iv'|'extras-subtitle'|'extras-client'|'extras-credential';
 const macKeys=new Map<string,Promise<CryptoKey>>();
 function macKey(value:string,purpose:MacPurpose){if(!/^[a-f0-9]{64}$/.test(value))throw new Error('The webplayer is being configured.');const id=purpose+':'+value;let derived=macKeys.get(id);if(!derived){if(macKeys.size>=8)macKeys.clear();derived=crypto.subtle.importKey('raw',Uint8Array.from(value.match(/../g)!,h=>parseInt(h,16)),'HKDF',false,['deriveKey']).then(base=>crypto.subtle.deriveKey({name:'HKDF',hash:'SHA-256',salt:text('lumanest-token-keys-v2'),info:text('lumanest-mac-v2:'+purpose)},base,{name:'HMAC',hash:'SHA-256',length:256},false,['sign']));macKeys.set(id,derived);derived.catch(()=>macKeys.delete(id))}return derived}
 export async function mac(value:string,secret:string,purpose:MacPurpose){return base64url(new Uint8Array(await crypto.subtle.sign('HMAC',await macKey(secret,purpose),text(value))))}

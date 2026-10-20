@@ -292,8 +292,8 @@ private fun LumaNestPairPanel(modifier: Modifier, onAccount: (Pairing.Account) -
     }
 }
 
-/** Draws the server's QR rows ("0"/"1" per module) with a quiet zone, one pixel per module. */
-private fun qrRowsBitmap(rows: List<String>): ImageBitmap {
+/** Draws QR rows ("0"/"1" per module, as lumanest.tv sends them) with a quiet zone, one pixel per module. */
+internal fun qrRowsBitmap(rows: List<String>): ImageBitmap {
     val quiet = 2; val size = rows.size + quiet * 2
     val bmp = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
     bmp.eraseColor(android.graphics.Color.WHITE)

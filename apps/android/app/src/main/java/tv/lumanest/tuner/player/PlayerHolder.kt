@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import androidx.annotation.OptIn
+import androidx.annotation.VisibleForTesting
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.Format
@@ -12,6 +13,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.TrackGroup
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.Tracks
@@ -27,10 +29,23 @@ import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
+import tv.lumanest.tuner.data.Extras
+import tv.lumanest.tuner.data.ExtrasApi
+import tv.lumanest.tuner.data.ExtrasTrack
 import tv.lumanest.tuner.data.ExternalSubtitle
 import tv.lumanest.tuner.data.Net
 import tv.lumanest.tuner.data.Repo
+import tv.lumanest.tuner.data.SubtitleQuery
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
 
 /**
  * One ExoPlayer for the whole app. The guide preview and the full-screen player share it,
@@ -92,7 +107,10 @@ object PlayerHolder {
     private val goodSource = HashMap<String, String>()
     private val source: String? get() = sources.getOrNull(sourceIndex)
 
-    fun init(context: Context) { appContext = context.applicationContext }
+    fun init(context: Context) {
+        appContext = context.applicationContext
+        Extras.init(appContext)
+    }
 
     val player: ExoPlayer
         get() {
@@ -117,7 +135,11 @@ object PlayerHolder {
             // On progressive live TS, LiveSlotDataSource replaces a provider connection that goes quiet or drops while
             // the buffer keeps playing (LiveRejoin + TsSplicer), so the extractor sees one continuous stream. Media3
             // can't resume such a stream itself: it would play the buffer out, then start over from a new connection.
-            val mediaSources = DefaultMediaSourceFactory(LiveSlotDataSource.Factory(http, deadlines, guard = { progressive }, live = { isLive }), extractors)
+            // PlayerDataSource hands every http(s) request to LiveSlotDataSource unchanged, reads the OpenSubtitles file
+            // kept on the device (a file: URI inside SubtitleFiles' folder) and refuses every other link (file:, content:,
+            // asset:, data:, udp:...), so a playlist or an altered manifest can't open local files.
+            val streams = LiveSlotDataSource.Factory(http, deadlines, guard = { progressive }, live = { isLive })
+            val mediaSources = DefaultMediaSourceFactory(PlayerDataSource.Factory(streams) { Extras.files?.dir }, extractors)
                 .setLoadErrorHandlingPolicy(RetryPolicy)
             // Start once half a second is buffered (IPTV servers burst the first few seconds), then keep
             // a deep buffer so short network hiccups don't stall the picture.
@@ -146,7 +168,7 @@ object PlayerHolder {
 
     private fun listener(p: ExoPlayer) = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) { pipStateChanges.value++ }
-        override fun onTracksChanged(tracks: Tracks) { subtitleFallback(p, tracks) }
+        override fun onTracksChanged(tracks: Tracks) { chooseText(p, tracks) }
         override fun onPlayerError(e: PlaybackException) {
             if (currentUrl == null) return
             val url = source ?: return
@@ -287,15 +309,25 @@ object PlayerHolder {
     private fun item(url: String, forceHls: Boolean): MediaItem {
         val b = MediaItem.Builder().setUri(url)
         if (forceHls || url.contains(".m3u8")) b.setMimeType(MimeTypes.APPLICATION_M3U8)
-        val sidecars = externalSubtitles.mapNotNull { sub ->
-            val mime = subtitleMimeType(sub.url) ?: return@mapNotNull null
+        val sidecars = externalSubtitles.mapIndexedNotNull { index, sub ->
+            val mime = subtitleMimeType(sub.url) ?: return@mapIndexedNotNull null
             MediaItem.SubtitleConfiguration.Builder(android.net.Uri.parse(sub.url))
                 .setMimeType(mime)
                 .setLanguage(sub.language)
                 .setLabel(sub.label)
+                .setId(PROVIDER_ID + index)
                 .build()
         }
-        if (sidecars.isNotEmpty()) b.setSubtitleConfigurations(sidecars)
+        // The one OpenSubtitles file being shown, from the device's copy (docs/extras.md: attached only when shown).
+        val extra = attachedExtra?.let { attached ->
+            MediaItem.SubtitleConfiguration.Builder(android.net.Uri.fromFile(attached.file))
+                .setMimeType(MimeTypes.TEXT_VTT)
+                .setLanguage("en")
+                .setLabel(attached.track.label)
+                .setId(OPENSUBTITLES_ID + attached.track.id)
+                .build()
+        }
+        if (sidecars.isNotEmpty() || extra != null) b.setSubtitleConfigurations(sidecars + listOfNotNull(extra))
         return b.build()
     }
 
@@ -316,7 +348,7 @@ object PlayerHolder {
 
     /**
      * Settings > Subtitles. Off selects no text track (forced subtitles for foreign dialogue still show); On prefers
-     * English, then untagged tracks such as CEA-608 captions, then (see [subtitleFallback]) the first text track.
+     * English, then untagged tracks such as CEA-608 captions, then (see [chooseText]) the first text track.
      * The text renderer is never left disabled from an earlier "Off" choice in the player's Subtitles menu.
      */
     private fun applySubtitlePreference(b: TrackSelectionParameters.Builder): TrackSelectionParameters.Builder {
@@ -325,18 +357,213 @@ object PlayerHolder {
         else b.setPreferredTextLanguages().setSelectUndeterminedTextLanguage(false)
     }
 
-    /** Subtitles On but no English or untagged track was picked: show the first playable text track instead. */
-    private fun subtitleFallback(p: ExoPlayer, tracks: Tracks) {
-        if (subtitleFallbackDone || !Repo.prefs.subtitlesOn.value) return
+    /**
+     * The id [item] gave a side-loaded track. Media3 merges the video and its subtitle files into one period and puts
+     * each source's place before its tracks' ids ("1:opensubtitles:<id>"), so that prefix is taken off.
+     */
+    internal fun sideLoadedId(format: Format): String? {
+        val id = format.id ?: return null
+        val colon = id.indexOf(':')
+        return if (colon > 0 && (0 until colon).all { id[it] in '0'..'9' }) id.substring(colon + 1) else id
+    }
+
+    /** Where a text track comes from: the provider's files and the OpenSubtitles file carry the ids [item] gives them. */
+    internal fun textSource(format: Format): SubtitleChoice.Source {
+        val id = sideLoadedId(format)
+        return when {
+            id?.startsWith(OPENSUBTITLES_ID) == true -> SubtitleChoice.Source.OPENSUBTITLES
+            id?.startsWith(PROVIDER_ID) == true -> SubtitleChoice.Source.PROVIDER
+            else -> SubtitleChoice.Source.STREAM
+        }
+    }
+
+    /** The text group of the attached OpenSubtitles track [id] in [tracks], once the item lists it. */
+    private fun extraGroup(tracks: Tracks, id: String): Tracks.Group? =
+        tracks.groups.firstOrNull { it.type == C.TRACK_TYPE_TEXT && it.length > 0 && sideLoadedId(it.getTrackFormat(0)) == OPENSUBTITLES_ID + id }
+
+    /**
+     * After the tracks change: select the OpenSubtitles track the viewer just chose once the reloaded item lists it,
+     * else, with Subtitles On and nothing chosen in the menu, the automatic choice ([SubtitleChoice]): the stream's
+     * English, the provider's English file, the OpenSubtitles file, then English or untagged captions as Media3 picked
+     * them, then the first playable text track.
+     */
+    private fun chooseText(p: ExoPlayer, tracks: Tracks) {
+        val text = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+        pendingExtraSelection?.let { id ->
+            val group = extraGroup(tracks, id) ?: return
+            pendingExtraSelection = null
+            p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0)).build()
+            return
+        }
+        if (subtitleFallbackDone || viewerChoseText || !Repo.prefs.subtitlesOn.value) return
         val params = p.trackSelectionParameters
         if (C.TRACK_TYPE_TEXT in params.disabledTrackTypes) return
-        val text = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
         if (text.isEmpty()) return
         subtitleFallbackDone = true
-        if (text.any { it.isSelected } || params.overrides.keys.any { it.type == C.TRACK_TYPE_TEXT }) return
+        if (params.overrides.keys.any { it.type == C.TRACK_TYPE_TEXT }) return
+        val flat = text.flatMap { g -> (0 until g.length).map { g to it } }
+        val described = flat.map { (g, i) -> textTrack(g, i) }
+        val choice = SubtitleChoice.automatic(described)
+        if (choice != null) {
+            // Media3's own pick of that kind (by language, default flag...) stays.
+            if (flat.indices.any { flat[it].first.isTrackSelected(flat[it].second) && SubtitleChoice.sameKind(described[it], described[choice]) }) return
+            val (group, index) = flat[choice]
+            p.trackSelectionParameters = params.buildUpon().setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, index)).build()
+            return
+        }
+        // Subtitles On but no English or untagged track was picked: show the first playable text track instead.
+        if (text.any { it.isSelected }) return
         val group = text.firstOrNull { g -> (0 until g.length).any(g::isTrackSupported) } ?: return
         val index = (0 until group.length).first(group::isTrackSupported)
         p.trackSelectionParameters = params.buildUpon().setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, index)).build()
+    }
+
+    // ------------------------------------------------------------------ OpenSubtitles (docs/extras.md, "Apps")
+
+    /** The OpenSubtitles tracks lumanest.tv offers for the movie or episode playing now: empty for live, and until it answers. */
+    val openSubtitles = MutableStateFlow<List<ExtrasTrack>>(emptyList())
+    /** The credit shown under [openSubtitles] in the subtitle menu, as lumanest.tv sent it. */
+    var openSubtitlesCredit: String = ExtrasApi.CREDIT
+        private set
+
+    private class AttachedSubtitle(val track: ExtrasTrack, val file: File)
+
+    private val extrasScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var extrasJob: Job? = null
+    private var pickJob: Job? = null
+    /** Bumped for every new title, stop and zap, so a late answer for an earlier title changes nothing. */
+    private var titleGeneration = 0
+    /** The one OpenSubtitles file attached to the item ([item]), read from the device's copy. */
+    private var attachedExtra: AttachedSubtitle? = null
+    /** The OpenSubtitles track the viewer chose, selected as soon as the reloaded item lists it. */
+    private var pendingExtraSelection: String? = null
+    /** The viewer chose subtitles (or Off) in the menu for this title: the automatic choice no longer applies. */
+    private var viewerChoseText = false
+    /** Playback waits (at most [EXTRAS_START_WAIT_MS]) for the OpenSubtitles file Subtitles On will show. */
+    private var awaitingStart = false
+    /** Where the title starts once it stops waiting. */
+    private var pendingStartMs = 0L
+
+    /** The id of the OpenSubtitles track attached to what plays now, or null. */
+    val attachedOpenSubtitlesId: String? get() = attachedExtra?.track?.id
+
+    private fun resetExtras() {
+        titleGeneration++
+        extrasJob?.cancel(); extrasJob = null
+        pickJob?.cancel(); pickJob = null
+        openSubtitles.value = emptyList()
+        openSubtitlesCredit = ExtrasApi.CREDIT
+        attachedExtra = null
+        pendingExtraSelection = null
+        viewerChoseText = false
+        awaitingStart = false
+    }
+
+    /**
+     * Looks the title's OpenSubtitles tracks up while it starts. With Subtitles On (and no English file from the
+     * provider, which would win anyway) the first track is attached at start: playback waits at most
+     * [EXTRAS_START_WAIT_MS] for the lookup and the file, and a file that comes later is attached by reloading the item
+     * at the position. With Subtitles Off nothing is downloaded until the viewer picks a track.
+     */
+    private suspend fun loadOpenSubtitles(p: ExoPlayer, query: SubtitleQuery, generation: Int, startMs: Long, atStart: Boolean) = coroutineScope {
+        val lookup = async { Extras.client.subtitles(query) }
+        val first = if (atStart) async {
+            val track = lookup.await()?.tracks?.firstOrNull() ?: return@async null
+            Extras.files?.get(track)?.let { AttachedSubtitle(track, it) }
+        } else null
+        var early: AttachedSubtitle? = null
+        if (first != null) {
+            early = withTimeoutOrNull(EXTRAS_START_WAIT_MS) { first.await() }
+            if (generation != titleGeneration) return@coroutineScope
+            if (awaitingStart) {
+                awaitingStart = false
+                if (early != null && !viewerChoseText) attachedExtra = early
+                startSource(p, startMs)
+            }
+        }
+        val answer = lookup.await()
+        if (generation != titleGeneration) return@coroutineScope
+        if (answer != null) { openSubtitlesCredit = answer.credit; openSubtitles.value = answer.tracks }
+        if (first == null || attachedExtra != null) return@coroutineScope
+        val late = early ?: first.await() ?: return@coroutineScope
+        if (generation != titleGeneration || attachedExtra != null || viewerChoseText || !Repo.prefs.subtitlesOn.value) return@coroutineScope
+        // The stream's or the provider's English track already shows: no reload for a file that wouldn't.
+        if (SubtitleChoice.hasOwnEnglish(textTracks(p.currentTracks))) return@coroutineScope
+        attachedExtra = late
+        subtitleFallbackDone = false
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().clearOverridesOfType(C.TRACK_TYPE_TEXT).build()
+        reloadAtPosition(p)
+    }
+
+    private fun textTracks(tracks: Tracks): List<SubtitleChoice.Track> =
+        tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }.flatMap { g -> (0 until g.length).map { i -> textTrack(g, i) } }
+
+    private fun textTrack(group: Tracks.Group, index: Int): SubtitleChoice.Track {
+        val f = group.getTrackFormat(index)
+        return SubtitleChoice.Track(textSource(f), f.language, group.isTrackSupported(index), forced = f.selectionFlags and C.SELECTION_FLAG_FORCED != 0)
+    }
+
+    /** Opens the current source again at the position, keeping play or pause, so a newly attached file is read. */
+    private fun reloadAtPosition(p: ExoPlayer) {
+        val url = source ?: return
+        if (currentUrl == null || isLive || awaitingStart) return
+        // A stream that failed starts again (with the file) when the viewer retries.
+        if (error.value != null) return
+        val position = resumePosition(p)
+        val wantsPlay = p.playWhenReady
+        sourceStartMs = position
+        p.setMediaItem(item(url, forceHls = triedHls), position)
+        p.prepare()
+        p.playWhenReady = wantsPlay && appForeground
+    }
+
+    /** The viewer chose a track of the stream or a provider file in the subtitle menu. */
+    fun chooseTextTrack(group: TrackGroup, index: Int) {
+        val p = exo ?: return
+        viewerChoseText = true
+        pendingExtraSelection = null
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .setOverrideForType(TrackSelectionOverride(group, index)).build()
+    }
+
+    /** The viewer chose Off in the subtitle menu. */
+    fun subtitlesOff() {
+        val p = exo ?: return
+        viewerChoseText = true
+        pendingExtraSelection = null
+        pickJob?.cancel()
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
+    }
+
+    /**
+     * The viewer chose an OpenSubtitles track: shown from the device's copy, downloaded now when there is none. Another
+     * track than the attached one reloads the item at the position. When the file can't be had, subtitles go Off and
+     * [onFailed] runs (a toast).
+     */
+    fun chooseOpenSubtitles(track: ExtrasTrack, onFailed: () -> Unit) {
+        val p = exo ?: return
+        if (currentUrl == null || isLive) return
+        viewerChoseText = true
+        pickJob?.cancel()
+        if (attachedExtra?.track?.id == track.id) {
+            val group = extraGroup(p.currentTracks, track.id)
+            if (group != null) chooseTextTrack(group.mediaTrackGroup, 0) else pendingExtraSelection = track.id
+            return
+        }
+        val generation = titleGeneration
+        pickJob = extrasScope.launch {
+            val file = Extras.files?.get(track)
+            if (generation != titleGeneration) return@launch
+            if (file == null) {
+                subtitlesOff()
+                onFailed()
+                return@launch
+            }
+            attachedExtra = AttachedSubtitle(track, file)
+            pendingExtraSelection = track.id
+            if (awaitingStart) { awaitingStart = false; startSource(p, pendingStartMs) } else reloadAtPosition(p)
+        }
     }
 
     /**
@@ -347,7 +574,8 @@ object PlayerHolder {
      * channel explicitly can promote that preview into one watch without reconnecting it.
      */
     @Suppress("UNUSED_PARAMETER") // Kept for callers from older request models; audio is never restricted.
-    fun play(url: String, live: Boolean, startMs: Long = 0, backups: List<String> = emptyList(), key: String? = null, requireEnglishAudio: Boolean = false, recordWatched: Boolean = true, subtitles: List<ExternalSubtitle> = emptyList()) {
+    fun play(url: String, live: Boolean, startMs: Long = 0, backups: List<String> = emptyList(), key: String? = null, requireEnglishAudio: Boolean = false, recordWatched: Boolean = true, subtitles: List<ExternalSubtitle> = emptyList(),
+             extras: SubtitleQuery? = null) {
         TwoChannelPlayer.stop()
         playbackIntent.requestStart()
         val p = player
@@ -358,6 +586,7 @@ object PlayerHolder {
             return
         }
         main.removeCallbacksAndMessages(null)
+        resetExtras()
         p.stop()
         p.volume = 1f
         p.playWhenReady = appForeground
@@ -378,7 +607,16 @@ object PlayerHolder {
         reconnects = 0
         error.value = null
         unavailable.value = null
-        startSource(p, startMs)
+        // Live channels never look subtitles up (docs/extras.md).
+        val query = extras?.takeIf { !live && Extras.client.enabled }
+        if (query == null) { startSource(p, startMs); return }
+        val atStart = Repo.prefs.subtitlesOn.value &&
+            subtitles.none { subtitleMimeType(it.url) != null && SubtitleChoice.isEnglish(it.language) }
+        awaitingStart = atStart
+        pendingStartMs = startMs
+        if (!atStart) startSource(p, startMs)
+        val generation = titleGeneration
+        extrasJob = extrasScope.launch { loadOpenSubtitles(p, query, generation, startMs, atStart) }
     }
 
     /** Settings > Subtitles changed: apply it to whatever is playing now. */
@@ -386,7 +624,8 @@ object PlayerHolder {
         val p = exo ?: return
         p.trackSelectionParameters = applySubtitlePreference(p.trackSelectionParameters.buildUpon()).build()
         subtitleFallbackDone = false
-        subtitleFallback(p, p.currentTracks)
+        viewerChoseText = false
+        chooseText(p, p.currentTracks)
     }
 
     /**
@@ -397,6 +636,7 @@ object PlayerHolder {
         val p = exo ?: return
         if (currentUrl == null) return
         main.removeCallbacksAndMessages(null)
+        resetExtras()
         p.stop()
         currentUrl = null
         watchIntent.stop()
@@ -415,13 +655,28 @@ object PlayerHolder {
         reconnects = 0
         error.value = null
         unavailable.value = null
+        awaitingStart = false
         startSource(p, position)
+    }
+
+    /**
+     * Tests only: stops and releases the shared player, so the next test builds a new one. Robolectric starts each test
+     * on a reset main looper, and a player left over from an earlier test can wait forever there for acknowledgements
+     * its playback thread posted before the reset (its state and tracks then never change).
+     */
+    @VisibleForTesting
+    internal fun releaseForTests() {
+        stop()
+        exo?.release()
+        exo = null
+        dataSourceUa = null
     }
 
     fun stop() {
         playbackIntent.stop()
         bufferingBudget = null
         main.removeCallbacksAndMessages(null)
+        resetExtras()
         exo?.playWhenReady = false
         exo?.stop()
         exo?.clearMediaItems()
@@ -461,6 +716,12 @@ object PlayerHolder {
         PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED -> "This device can't decode the stream's video or audio."
         else -> "Playback failed (${e.errorCodeName})"
     }
+
+    /** Format ids of side-loaded text tracks: the provider's files and the OpenSubtitles file. */
+    private const val PROVIDER_ID = "provider:"
+    private const val OPENSUBTITLES_ID = "opensubtitles:"
+    /** With Subtitles On, how long a movie or episode waits for its OpenSubtitles lookup and file before it starts. */
+    private const val EXTRAS_START_WAIT_MS = 1_500L
 
     private val RECONNECTABLE = setOf(
         PlaybackException.ERROR_CODE_IO_UNSPECIFIED,

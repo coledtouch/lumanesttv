@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import tv.lumanest.tuner.Edition
+import tv.lumanest.tuner.data.ExtrasApi
 import tv.lumanest.tuner.data.FreeEpg
 import tv.lumanest.tuner.data.LoadStatus
 import tv.lumanest.tuner.data.LocalLineup
@@ -228,13 +229,13 @@ fun SettingsScreen(state: AppState, store: Boolean = Edition.STORE) {
             item(key = "subtitles") {
                 SettingRow(
                     "Subtitles",
-                    if (subtitlesOn) "On · English preferred, otherwise the first subtitles or closed captions in the stream"
+                    if (subtitlesOn) "On · English preferred, from OpenSubtitles.com when a movie or episode has none"
                     else "Off · Press OK to show English subtitles and closed captions automatically",
                     trailing = if (subtitlesOn) "On" else "Off",
                     onClick = {
                         Repo.prefs.setSubtitlesOn(!subtitlesOn)
                         PlayerHolder.subtitlePreferenceChanged()
-                        Toasts.show(if (!subtitlesOn) "Subtitles on. English is chosen when a stream has it." else "Subtitles off")
+                        Toasts.show(if (!subtitlesOn) "Subtitles on. English is chosen when a stream or OpenSubtitles.com has it." else "Subtitles off")
                     },
                 )
             }
@@ -357,7 +358,7 @@ fun SettingsScreen(state: AppState, store: Boolean = Edition.STORE) {
             }
             // Focusable rows, so the D-pad brings them into view like every other row. Selecting the privacy row only
             // says where to read the policy: TV apps on Google Play must not open a web browser.
-            if (store || catalogRows.usesTmdb) header("About")
+            header("About")
             if (store) {
                 item(key = "privacy") {
                     SettingRow("Privacy policy", Edition.PRIVACY_URL,
@@ -369,6 +370,10 @@ fun SettingsScreen(state: AppState, store: Boolean = Edition.STORE) {
                 item(key = "tmdb") {
                     NoticeRow("Movie and series data", TMDB_NOTICE, Modifier.testTag("setting:tmdb"))
                 }
+            }
+            // The credit OpenSubtitles asks for (docs/extras.md), shown whatever lumanest.tv's plan is.
+            item(key = "opensubtitles") {
+                NoticeRow("Subtitles for movies and episodes", ExtrasApi.CREDIT, Modifier.testTag("setting:opensubtitles"))
             }
             item {
                 Text(

@@ -28,13 +28,15 @@ public enum TunerLinks {
     public static let pairingAPI = URL(string: "https://lumanest.tv/api/pair/")!
     /// docs/browse.md "catalog rows endpoint".
     public static let catalogRows = URL(string: "https://lumanest.tv/api/catalog/rows?v=1")!
+    /// docs/extras.md: `subtitles` and `trailer` are resolved against this; subtitle files must be on its origin.
+    public static let extrasAPI = URL(string: "https://lumanest.tv/api/extras/")!
     /// Tuner's own privacy policy (tunertv.app, the app's website). Not lumanest.tv/privacy, which covers only the shop
     /// and web player.
     public static let privacyPolicy = URL(string: "https://tunertv.app/privacy")!
     /// Help and contact. Deliberately not lumanest.tv/apps, which sells plans (App Review guidelines 3.1.1 and 3.1.3(a)).
     public static let help = URL(string: "https://tunertv.app/support")!
     public static let logos = URL(string: "https://iptv-org.github.io/api/logos.json")!
-    /// User-Agent for lumanest.tv calls (pairing, catalog rows).
+    /// User-Agent for lumanest.tv calls (pairing, catalog rows, subtitles and trailers).
     public static let lumanestUserAgent = "LumaNestTuner/AppleTV"
     /// User-Agent for provider API, guide, artwork and stream requests (same as Android).
     public static let streamUserAgent = "VLC/3.0.21 LibVLC/3.0.21"
@@ -42,6 +44,8 @@ public enum TunerLinks {
     public static let pairingDevice = "appletv"
     /// Settings → About, shown only when the catalog rows answered with `source == "tmdb"` (docs/browse.md).
     public static let tmdbAttribution = "This product uses the TMDB API but is not endorsed or certified by TMDB."
+    /// The subtitle menu (under the OpenSubtitles tracks) and Settings → About, whatever the plan (docs/extras.md).
+    public static let openSubtitlesCredit = "Subtitles provided by OpenSubtitles.com"
     /// Settings → About (guideline 5.1.1(i)).
     public static let privacyNotice = "Privacy policy: tunertv.app/privacy  ·  Help: tunertv.app/support"
 }

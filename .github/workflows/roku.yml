@@ -3,9 +3,9 @@ name: Roku
 on:
   push:
     branches: [main]
-    paths: ['apps/roku/**', 'docs/browse-cases.json', '.github/workflows/roku.yml']
+    paths: ['apps/roku/**', 'docs/browse-cases.json', 'docs/extras-cases.json', '.github/workflows/roku.yml']
   pull_request:
-    paths: ['apps/roku/**', 'docs/browse-cases.json', '.github/workflows/roku.yml']
+    paths: ['apps/roku/**', 'docs/browse-cases.json', 'docs/extras-cases.json', '.github/workflows/roku.yml']
   workflow_dispatch:
 
 permissions:

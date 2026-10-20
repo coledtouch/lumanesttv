@@ -1,9 +1,12 @@
 'use client';
 import {useEffect, useState, type ReactNode} from 'react';
 import {TMDB_NOTICE} from './browse-cards';
+import {SUBTITLE_CREDIT} from './extras';
+import {useSubtitleSetting} from './use-preferences';
 
-// The player's Settings: the line, Movies & Series (USA only / All, refresh), where the player starts, the adult
-// lock, the keyboard and remote keys, and About (with TMDB's notice whenever TMDB lists are in use).
+// The player's Settings: the line, Movies & Series (USA only / All, refresh), where the player starts, subtitles, the
+// adult lock, the keyboard and remote keys, and About (with TMDB's notice whenever TMDB lists are in use, and the
+// OpenSubtitles credit).
 
 function Segmented<T extends string>({label, value, options, onChange, name, start}: {label: string; value: T; options: {value: T; label: string}[]; onChange: (value: T) => void; name: string; start?: boolean}) {
   return <fieldset className="settings-segmented">
@@ -23,6 +26,7 @@ export default function Settings({username, expiresAt, region, onRegion, start, 
   const [refreshNote, setRefreshNote] = useState('');
   const [cooldown, setCooldown] = useState(0);
   const [until, setUntil] = useState('');
+  const [subtitles, setSubtitles] = useSubtitleSetting();
   useEffect(() => {
     if (!expiresAt) return;
     const timer = setTimeout(() => setUntil(new Date(expiresAt).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'})), 0);
@@ -54,6 +58,11 @@ export default function Settings({username, expiresAt, region, onRegion, start, 
       <h2 id="settings-start">Start on</h2>
       <Segmented name="watch-start" label="When the player opens" value={start} onChange={onStart} options={[{value: 'home', label: 'Home'}, {value: 'live', label: 'Live TV'}]}/>
     </section>}
+    <section className="settings-card" aria-labelledby="settings-subtitles">
+      <h2 id="settings-subtitles">Subtitles</h2>
+      <Segmented name="watch-subtitles" label="Show subtitles" value={subtitles} onChange={setSubtitles} options={[{value: 'off', label: 'Off'}, {value: 'on', label: 'On'}]}/>
+      <p className="settings-muted">On shows subtitles as soon as something starts: the stream&apos;s own (English first) or, for movies and episodes, English subtitles from OpenSubtitles.com. Choose another track, or none, with Subtitles under the video.</p>
+    </section>
     <section className="settings-card" aria-labelledby="settings-adult">
       <h2 id="settings-adult">Adult content</h2>
       <p className="settings-muted">Adult categories are hidden in Live TV and Movies &amp; Series until you unlock them with this browser’s passcode. Unlocking lasts until the page reloads.</p>
@@ -76,6 +85,7 @@ export default function Settings({username, expiresAt, region, onRegion, start, 
       <h2 id="settings-about">About</h2>
       <p className="settings-muted">LumaNest TV web player. Your Library and these settings are kept in this browser.</p>
       {withTmdb && <><p className="settings-muted">Movie and series lists: TMDB.</p><p className="tmdb-notice">{TMDB_NOTICE}</p></>}
+      <p className="settings-muted">{SUBTITLE_CREDIT}</p>
     </section>
   </div>;
 }

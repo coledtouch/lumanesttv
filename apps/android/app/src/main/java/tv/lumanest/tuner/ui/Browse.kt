@@ -65,12 +65,14 @@ import tv.lumanest.tuner.data.BrowseCatalog
 import tv.lumanest.tuner.data.BrowseIndex
 import tv.lumanest.tuner.data.BrowseTitle
 import tv.lumanest.tuner.data.ContinueItem
+import tv.lumanest.tuner.data.ExtrasTitle
 import tv.lumanest.tuner.data.LoadStatus
 import tv.lumanest.tuner.data.Movie
 import tv.lumanest.tuner.data.PlayRequest
 import tv.lumanest.tuner.data.Recent
 import tv.lumanest.tuner.data.Repo
 import tv.lumanest.tuner.data.Source
+import tv.lumanest.tuner.data.SubtitleQuery
 import tv.lumanest.tuner.data.VodType
 import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
@@ -280,6 +282,7 @@ internal fun browseActions(state: AppState, source: Source?) = BrowseActions(
             movie != null && (movie.url == recent.url || recent.url in movie.backups) -> state.push(Screen.Player(PlayRequest.Vod(
                 movie.id, movie.name, recent.subtitle, movie.poster ?: recent.image, movie.url, recent.positionMs,
                 streamBackups = movie.backups, titleKey = current.key,
+                extras = SubtitleQuery.movie(ExtrasTitle.movie(movie, current.tmdbId)),
             )))
             else -> Toasts.show("This title changed. Open it again.")
         }
