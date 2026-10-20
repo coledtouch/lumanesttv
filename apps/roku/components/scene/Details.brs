@@ -1,4 +1,5 @@
-' Details for one movie or series: Play or Resume, Add to / Remove from Library, and a series' episodes.
+' Details for one movie or series: Play or Resume, Add to / Remove from Library, Trailer when lumanest.tv has one
+' (Extras.brs), and a series' episodes.
 
 sub initDetails()
     m.detailsActions.observeField("itemSelected", "onDetailAction")
@@ -12,7 +13,7 @@ sub openDetails(refType as string, idx as integer, from as dynamic)
     item = catalogItem(refType, idx)
     if item = invalid then return
     m.detailToken = m.detailToken + 1
-    m.detail = {type: refType, idx: idx, item: item, episodes: invalid, loading: false, from: from}
+    m.detail = {type: refType, idx: idx, item: item, episodes: invalid, loading: false, from: from, trailer: invalid}
     m.detailsTitle.text = item.name
     m.detailsTileName.text = item.name
     m.detailsPoster.uri = item.icon
@@ -32,6 +33,7 @@ sub openDetails(refType as string, idx as integer, from as dynamic)
         if item.kind = "movie" and item.id <> "" then runTask({mode: "vodInfo", account: m.account, streamId: item.id, token: m.detailToken}, "onDetailMovie")
         m.detailsHint.text = "OK chooses  ·  * adds to or removes from your Library  ·  Back returns"
     end if
+    requestTrailer()
     buildDetailActions()
     m.shell.visible = false
     m.details.visible = true
@@ -150,6 +152,8 @@ sub buildDetailActions()
     else
         actions.Push({id: "fav", label: "Add to Library"})
     end if
+    ' Last, so appearing when the lookup answers never moves the focused action.
+    if d.trailer <> invalid then actions.Push({id: "trailer", label: "Trailer"})
     labels = []
     for each action in actions
         labels.Push(action.label)
@@ -173,6 +177,8 @@ sub onDetailAction()
     else if action.id = "fav"
         toggleFavorite(d.item)
         buildDetailActions()
+    else if action.id = "trailer"
+        showTrailer(d.trailer)
     end if
 end sub
 

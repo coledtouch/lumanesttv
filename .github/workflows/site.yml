@@ -3,9 +3,9 @@ name: Site
 on:
   push:
     branches: [main]
-    paths: ['site/**', 'docs/browse-cases.json', '.github/workflows/site.yml']
+    paths: ['site/**', 'docs/browse-cases.json', 'docs/extras-cases.json', '.github/workflows/site.yml']
   pull_request:
-    paths: ['site/**', 'docs/browse-cases.json', '.github/workflows/site.yml']
+    paths: ['site/**', 'docs/browse-cases.json', 'docs/extras-cases.json', '.github/workflows/site.yml']
   workflow_dispatch:
 
 permissions:

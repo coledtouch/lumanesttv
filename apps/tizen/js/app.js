@@ -118,10 +118,19 @@
     subtitles: function () {
       return !!store.settings.subtitles;
     },
+    externalSubtitles: outsideSubtitles,
+    onExternalSubtitles: autoOutside,
     onError: function (message) {
       if (!S.fullscreen) toast(message);
     },
   });
+  // Subtitles and trailers through lumanest.tv (docs/extras.md; js/data.js, TunerData.extras).
+  var extras =
+      D.extras && D.extras.createClient
+        ? D.extras.createClient({ XMLHttpRequest: window.XMLHttpRequest })
+        : null,
+    SUBTITLES_CREDIT = "Subtitles provided by OpenSubtitles.com",
+    CHECK = "\u2713 ";
 
   function el(tag, cls, text) {
     var n = document.createElement(tag);
@@ -2310,6 +2319,7 @@
     S.zone = "detail";
     renderNav();
     renderDetail();
+    requestTrailer(S.detail);
     var generation = S.sourceGeneration,
       result =
         kind === "series" ? client.seriesInfo(item) : client.movieInfo(item);
@@ -2380,6 +2390,11 @@
         toggleTitleFavorite(item);
       }
     );
+    // Trailer follows Add to Library wherever that is, and only once a trailer was found.
+    function addFav() {
+      copy.appendChild(favButton);
+      if (detail.trailer) copy.appendChild(trailerButton(detail.trailer));
+    }
     if (detail.kind === "movies") {
       var recent = store.recents().filter(function (r) {
         return r.id === item.id;
@@ -2399,12 +2414,12 @@
             playVod(item, 0);
           })
         );
-      copy.appendChild(favButton);
+      addFav();
     } else if (!info) {
-      copy.appendChild(favButton);
+      addFav();
       copy.appendChild(el("div", "loading", "Loading episodes…"));
     } else if (info.error) {
-      copy.appendChild(favButton);
+      addFav();
       copy.appendChild(
         button("Retry episodes", "detail-retry", function () {
           openDetail(item, "series");
@@ -2412,7 +2427,7 @@
       );
     } else {
       var seasons = info.seasons || [];
-      copy.appendChild(favButton);
+      addFav();
       // Opened from Continue watching: the episode being watched, or the one after the finished one.
       if (seasons.length && (detail.resume || detail.next)) {
         var opening = B.episodeToOpen(seasons, detail.resume, detail.next);
@@ -2524,7 +2539,234 @@
       title: item.name,
       id: item.id,
     });
+    startOutside(item);
     enterFullscreen();
+  }
+
+  // ---------------------------------------------------------------- subtitles and trailers (docs/extras.md)
+  // What a lookup names a movie or series by (Which ids an app sends): the provider's TMDB id, else the one the title
+  // matched in the catalog rows, else its name and year (js/data.js leaves out a title with neither).
+  function titleRef(kind, item) {
+    var index = browse.index[kind],
+      at = index && item ? index.byId[item.id] : undefined,
+      entry = at === undefined ? null : index.titles[at];
+    if (!item) return null;
+    return {
+      tmdb: item.tmdb ? String(item.tmdb) : (entry && entry.tmdb) || "",
+      name: item.name,
+      year: entry ? entry.year : B.titleYear(item),
+    };
+  }
+  // The OpenSubtitles tracks of the movie or episode playing: looked up when it starts, listed in the subtitle chooser
+  // after the stream's own tracks and drawn here at the player's position, as plain text (textContent, never markup).
+  // A file is fetched only when its track is shown, and the stream's own subtitles are off meanwhile. Live channels
+  // never look up. outside: { id, state: "pending" or "ready", tracks, credit, showing (a track or -1), picked
+  // (the viewer chose a track), failed (the automatic choice could not load), cues, timer }.
+  var outside = null;
+  function startOutside(item) {
+    var record, series, ref;
+    stopOutside();
+    if (!extras || !item || !item.id) return;
+    if (item.seriesId) {
+      // An episode: its series' TMDB id (or name and year), with the season and episode numbers.
+      series =
+        S.detail && S.detail.item && S.detail.item.id === item.seriesId
+          ? S.detail.item
+          : findTitle("series", item.seriesId);
+      ref = series ? titleRef("series", series) : null;
+      if (ref) {
+        ref.type = "episode";
+        ref.season = item.season;
+        ref.episode = item.episode;
+      }
+    } else {
+      ref = titleRef("movies", item);
+      if (ref) ref.type = "movie";
+    }
+    record = outside = {
+      id: item.id,
+      state: "pending",
+      tracks: [],
+      credit: "",
+      showing: -1,
+      picked: false,
+      failed: false,
+      cues: null,
+      timer: null,
+    };
+    extras.subtitles(ref, function (answer) {
+      if (outside !== record) return;
+      record.state = "ready";
+      record.tracks = (answer && answer.tracks) || [];
+      record.credit = (answer && answer.credit) || "";
+      if (player.refreshSubtitles) player.refreshSubtitles();
+    });
+  }
+  // The record of the movie or episode the player has now, or null.
+  function currentOutside() {
+    var request = player.state && player.state.request;
+    return outside && request && !request.live && request.id === outside.id ? outside : null;
+  }
+  // For the player's automatic choice (js/player.js): "showing", "available", "pending" or "".
+  function outsideSubtitles() {
+    var o = currentOutside();
+    if (!o) return "";
+    if (o.showing >= 0) return "showing";
+    if (o.picked || o.failed) return "";
+    if (o.state === "pending") return "pending";
+    return o.tracks.length ? "available" : "";
+  }
+  // The player's automatic choice is the first OpenSubtitles track.
+  function autoOutside() {
+    var o = currentOutside();
+    if (o && o.showing < 0 && o.tracks.length) showOutside(0, false);
+  }
+  // Shows track index; picked: the viewer chose it in the menu (a failure then says so and leaves subtitles off).
+  function showOutside(index, picked) {
+    var o = currentOutside(),
+      track = o && o.tracks[index];
+    if (!track) return;
+    hideOutside();
+    o.showing = index;
+    if (picked) o.picked = true;
+    extras.file(track.vtt, function (cues) {
+      if (currentOutside() !== o || o.showing !== index || o.cues) return;
+      if (!cues) {
+        o.showing = -1;
+        if (picked) toast("These subtitles couldn't be loaded.");
+        else o.failed = true;
+        return;
+      }
+      o.cues = cues;
+      o.timer = setInterval(outsideTick, 200);
+      outsideTick();
+    });
+  }
+  function hideOutside() {
+    var o = outside;
+    if (!o) return;
+    if (o.timer !== null) clearInterval(o.timer);
+    o.timer = null;
+    o.cues = null;
+    if (o.showing >= 0) {
+      o.showing = -1;
+      drawOutside("");
+    }
+  }
+  function stopOutside() {
+    hideOutside();
+    outside = null;
+  }
+  // The cues at the player's position, five times a second, at once after a seek (onPlayerTime) and unchanged while
+  // paused; nothing outside full-screen playback.
+  function outsideTick() {
+    var o = currentOutside();
+    if (!o) {
+      if (outside && outside.timer !== null) stopOutside();
+      return;
+    }
+    if (o.showing < 0 || !o.cues) return;
+    drawOutside(
+      S.fullscreen
+        ? D.extras.vttTextAt(o.cues, player.currentTime ? player.currentTime() : player.state.position)
+        : ""
+    );
+  }
+  function drawOutside(value) {
+    var shown = subtitleLayer.className.indexOf("hidden") < 0 ? subtitleLayer.textContent : "";
+    if (value === shown) return;
+    clearTimeout(subtitleTimer);
+    subtitleLayer.textContent = "";
+    if (!value) {
+      subtitleLayer.className = "subtitle-layer hidden";
+      return;
+    }
+    subtitleLayer.appendChild(el("span", "", value));
+    subtitleLayer.className = "subtitle-layer" + (S.controls ? " raised" : "");
+  }
+  // The Trailer button (docs/extras.md, The Trailer button): looked up once when a movie or series page opens, and
+  // added after Add to Library only when a trailer was found, in place and without taking focus.
+  function requestTrailer(detail) {
+    var ref;
+    if (!extras || !detail || detail.trailerAsked) return;
+    detail.trailerAsked = true;
+    ref = titleRef(detail.kind, detail.item);
+    if (ref) ref.type = detail.kind === "series" ? "tv" : "movie";
+    extras.trailer(ref, function (answer) {
+      var fav = document.getElementById("detail-fav"),
+        trailer = answer && answer.trailer;
+      if (S.detail !== detail || !trailer || detail.trailer) return;
+      detail.trailer = trailer;
+      if (!fav || !fav.parentNode || document.getElementById("detail-trailer")) return;
+      if (fav.nextSibling) fav.parentNode.insertBefore(trailerButton(trailer), fav.nextSibling);
+      else fav.parentNode.appendChild(trailerButton(trailer));
+    });
+  }
+  function trailerButton(trailer) {
+    return button("\u25b6 Trailer", "detail-trailer", function () {
+      openYouTube(trailer.key, function () {
+        // The YouTube app did not open: the QR code, unless the viewer has moved on meanwhile.
+        if (S.detail && S.detail.trailer === trailer && !S.fullscreen && !S.dialog) trailerDialog(trailer);
+      });
+    });
+  }
+  // Samsung: the YouTube app opened on the video by an application control (docs/extras.md, Trailer, Samsung), each
+  // known YouTube app id in turn; onFail (the QR dialog) when none opens or the TV lacks the API. Samsung does not
+  // document this payload: if a TV opens YouTube's home page instead, set YOUTUBE_LAUNCH to false (QR dialog only).
+  var YOUTUBE_LAUNCH = true,
+    YOUTUBE_APPS = ["111299001912", "9Ur5IzDKqV.TizenYouTube"];
+  function openYouTube(key, onFail) {
+    var tizen = window.tizen,
+      at = 0,
+      finished = false;
+    function fail() {
+      if (finished) return;
+      finished = true;
+      onFail();
+    }
+    function attempt() {
+      var id = YOUTUBE_APPS[at++],
+        settled = false;
+      function failed() {
+        if (settled || finished) return;
+        settled = true;
+        if (at < YOUTUBE_APPS.length) attempt();
+        else fail();
+      }
+      try {
+        tizen.application.launchAppControl(
+          new tizen.ApplicationControl("http://tizen.org/appcontrol/operation/view", null, null, null, [
+            new tizen.ApplicationControlData("PAYLOAD", [JSON.stringify({ values: "v=" + key })]),
+          ]),
+          id,
+          function () {
+            settled = finished = true;
+          },
+          failed
+        );
+      } catch (e) {
+        failed();
+      }
+    }
+    if (
+      !YOUTUBE_LAUNCH ||
+      !/^[A-Za-z0-9_-]{11}$/.test(key) ||
+      !tizen ||
+      !tizen.application ||
+      typeof tizen.application.launchAppControl !== "function" ||
+      typeof tizen.ApplicationControl !== "function" ||
+      typeof tizen.ApplicationControlData !== "function"
+    )
+      return fail();
+    attempt();
+  }
+  // The QR dialog: the trailer on a phone (https://youtu.be/<key>), drawn as the pairing code is. Close returns to
+  // Trailer.
+  function trailerDialog(trailer) {
+    showDialog("Watch the trailer on your phone", "Scan the code with your phone's camera.", [], {
+      qr: trailer.qr,
+      qrText: trailer.short,
+    });
   }
   function enterFullscreen() {
     S.fullscreen = true;
@@ -2581,6 +2823,7 @@
     showSubtitleText("", 0);
     if (player.state && player.state.request && !player.state.request.live) {
       saveRecent();
+      stopOutside();
       player.stop();
     } else if (S.tab === 0) {
       player.setRect({ left: 1398, top: 145, width: 466, height: 263 });
@@ -2605,6 +2848,7 @@
         (duration > 0 ? Math.min(100, (position / duration) * 100) : 0) + "%";
     if (time) time.textContent = elapsed(position) + " / " + elapsed(duration);
     if (Date.now() - savedRecentAt > 10000) saveRecent();
+    if (outside && outside.cues) outsideTick();
   }
   function saveRecent() {
     if (
@@ -2862,7 +3106,10 @@
     S.zone = "video";
     renderPlayerOverlay();
   }
+  // The stream's own cues (AVPlay's onsubtitlechange). An OpenSubtitles track keeps the layer while it is shown.
   function showSubtitleText(text, duration) {
+    var o = currentOutside();
+    if (o && o.showing >= 0) return;
     clearTimeout(subtitleTimer);
     var clean = String(text || "")
       .replace(/<br\s*\/?>/gi, "\n")
@@ -2888,18 +3135,34 @@
   function trackName(track, fallback) {
     return track.label || track.language || track.name || fallback + " " + (track.index + 1);
   }
+  // Off, the stream's tracks, then the title's OpenSubtitles tracks with the credit under them (not a choice).
   function subtitleDialog() {
     var tracks = player.tracks().subtitles || [],
-      on = !!(player.subtitlesShowing && player.subtitlesShowing()),
+      o = currentOutside(),
+      extra = o ? o.tracks : [],
+      outsideOn = !!o && o.showing >= 0,
+      on = !outsideOn && !!(player.subtitlesShowing && player.subtitlesShowing()),
       selected = 0;
-    if (!tracks.length) {
-      showDialog("Subtitles", "No subtitles in this stream.", []);
+    if (!tracks.length && !extra.length) {
+      showDialog(
+        "Subtitles",
+        o && o.state === "pending"
+          ? "Looking for subtitles for this title. Try again in a moment."
+          : "No subtitles in this stream.",
+        []
+      );
       return;
+    }
+    // A choice here is the viewer's: the automatic choice no longer changes it for this title.
+    function choose() {
+      if (o) o.picked = true;
+      hideOutside();
     }
     var actions = [
       {
-        text: (on ? "" : "✓ ") + "Off",
+        text: (on || outsideOn ? "" : CHECK) + "Off",
         run: function () {
+          choose();
           player.selectTrack("TEXT", -1);
           closeDialog();
           toast("Subtitles off");
@@ -2912,17 +3175,32 @@
       actions.push({
         text: (on && track.selected ? "✓ " : "") + name,
         run: function () {
+          choose();
           player.selectTrack("TEXT", track.index);
           closeDialog();
           toast("Subtitles: " + name);
         },
       });
     });
+    extra.forEach(function (track, i) {
+      var chosen = outsideOn && o.showing === i;
+      if (chosen) selected = actions.length;
+      actions.push({
+        text: (chosen ? CHECK : "") + track.label,
+        run: function () {
+          // The stream's own subtitles go off while an OpenSubtitles track is shown.
+          player.selectTrack("TEXT", -1);
+          closeDialog();
+          toast("Subtitles: " + track.label);
+          showOutside(i, true);
+        },
+      });
+    });
     showDialog(
       "Subtitles",
-      "Choose subtitles or captions for this stream.",
+      "Choose subtitles or captions for this " + (extra.length ? "title." : "stream."),
       actions,
-      { list: true, focus: selected }
+      { list: true, focus: selected, footnote: extra.length ? o.credit || SUBTITLES_CREDIT : "" }
     );
   }
   function audioDialog() {
@@ -2951,7 +3229,8 @@
   }
   // opts.list: a vertical list (Up/Down); otherwise a button row (Left/Right). opts.focus: first focused
   // action; opts.closeText / opts.focusClose: the close button's label and whether it starts focused;
-  // opts.note: a smaller line under the text.
+  // opts.note: a smaller line under the text; opts.footnote: one under the actions; opts.qr / opts.qrText: a QR
+  // code (rows of 0 and 1 from lumanest.tv) and the text under it, between the title and the text.
   function showDialog(title, text, actions, opts) {
     opts = opts || {};
     actions = actions || [];
@@ -2959,8 +3238,9 @@
     S.dialog = true;
     dialogLayer.className = "";
     dialogLayer.textContent = "";
-    var box = el("div", opts.list ? "dialog choices" : "dialog");
+    var box = el("div", (opts.list ? "dialog choices" : "dialog") + (opts.qrText ? " qr-dialog" : ""));
     box.appendChild(el("h2", "", title));
+    if (opts.qrText) box.appendChild(qrBlock(opts.qr, opts.qrText));
     box.appendChild(el("p", "", text));
     if (opts.note) box.appendChild(el("p", "dialog-note", opts.note));
     actions.forEach(function (action, i) {
@@ -2970,6 +3250,7 @@
         })
       );
     });
+    if (opts.footnote) box.appendChild(el("p", "dialog-note footnote", opts.footnote));
     box.appendChild(
       button(opts.closeText || "Close", "dialog-close", function () {
         closeDialog();
@@ -2981,6 +3262,25 @@
         ? "dialog-close"
         : "dialog-" + Math.max(0, Math.min(actions.length - 1, opts.focus || 0))
     );
+  }
+  // A QR code drawn as the pairing code is (js/pairing.js), with its text under it. Without the rows, the text alone.
+  function qrBlock(rows, caption) {
+    var block = el("div", "dialog-qr"),
+      code,
+      canvas;
+    if (rows && window.TunerPairing && typeof window.TunerPairing.drawQr === "function") {
+      code = el("div", "dialog-qr-code");
+      canvas = el("canvas");
+      canvas.width = 360;
+      canvas.height = 360;
+      code.appendChild(canvas);
+      try {
+        window.TunerPairing.drawQr(canvas, rows);
+        block.appendChild(code);
+      } catch (e) {}
+    }
+    block.appendChild(el("p", "dialog-qr-text", caption));
+    return block;
   }
   // Closes the dialog and, unless restore is false, puts focus back on the control that opened it.
   function closeDialog(restore) {
@@ -3329,7 +3629,7 @@
           focus("subtitles-setting");
           toast(
             store.settings.subtitles
-              ? "Subtitles start automatically when a stream has them."
+              ? "Subtitles start automatically when a stream has them, or from OpenSubtitles for movies and episodes."
               : "Subtitles are off. Turn them on while watching with CC Subtitles."
           );
         },
@@ -3475,7 +3775,7 @@
           "Tuner for Samsung TV",
           "Version 1.5.1 · Samsung TV\nLive TV, guide, movies, series and Favorites. Two-channel PiP works on supported TVs and playlists. Embedded torrent playback is not available on Samsung.",
           [],
-          { note: withTmdb() ? TMDB_NOTICE : "" }
+          { note: (withTmdb() ? TMDB_NOTICE + "\n" : "") + SUBTITLES_CREDIT }
         );
       })
     );
@@ -3779,6 +4079,7 @@
     if (!store.settings.source) return;
     var sameCatalog = client && client.catalogIdentity === D.catalogIdentity(store.settings.source, { zip: store.settings.zip, usOnly: !!store.settings.usOnly });
     stopDual();
+    stopOutside();
     player.stop();
     S.watched = null;
     S.sourceGeneration++;

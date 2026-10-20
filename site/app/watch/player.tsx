@@ -4,7 +4,7 @@ import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import type Hls from 'hls.js';
 import type mpegts from 'mpegts.js';
 import CastControls, {useCastSession} from './cast-controls';
-import SubtitleControls from './subtitle-controls';
+import SubtitleControls, {useExtraSubtitles} from './subtitle-controls';
 import AdultLock from './adult-lock';
 import NavRail from './nav-rail';
 import LiveLineup from './live-tv';
@@ -14,7 +14,8 @@ import LibraryView from './library';
 import Search from './search';
 import SettingsView from './settings';
 import VodControls from './vod-controls';
-import {TitleDetails, PlayAside, clearDetails, seriesEpisodes, yearShown, type Episode, type PlayRequest} from './title-details';
+import {TitleDetails, PlayAside, clearDetails, detailsTmdb, seriesEpisodes, yearShown, type Episode, type PlayRequest} from './title-details';
+import {liveLineup, subtitleQuery, type ExtraTrack} from './extras';
 import {closeOpenMenu} from './filter-menu';
 import {findTitle} from './browse-cards';
 import {useCatalogue, type Channel} from './use-catalogue';
@@ -42,6 +43,8 @@ type Playable = {
   resumeAt?: number;
   castable?: boolean;
   ext?: string;
+  /** A movie's or episode's OpenSubtitles lookup (extras.ts subtitleQuery), "" when there is nothing to ask. */
+  extras?: string;
 };
 
 const LAST_CHANNEL_KEY = 'lumanest_last_channel';
@@ -54,7 +57,7 @@ const SHORTCUTS: [string, string][] = [
 ];
 
 const live = (channel: Channel): Playable => ({id: channel.id, name: channel.name, group: channel.group, format: channel.format, token: channel.token, reason: channel.reason, kind: 'live'});
-const isLiveChannel = (channel: Channel) => !channel.kind || channel.kind === 'live';
+const NO_EXTRA_TRACKS: ExtraTrack[] = [];
 const canPlay = (type: string) => {
   try {return document.createElement('video').canPlayType(type);} catch {return '';}
 };
@@ -222,8 +225,9 @@ export default function Player({portal, support, castAppId}: {portal: string; su
   }
 
   // ---------------------------------------------------------------- the lineup (Live TV)
-  // Movie and series entries of the playlist are titles (Home, Discover…), not channels.
-  const liveChannels = useMemo(() => channels.filter(isLiveChannel), [channels]);
+  // Movie and series entries of the playlist are titles (Home, Discover…), not channels. The provider's "Most watched
+  // now" category is left out (docs/extras.md): it repeats channels of its other categories.
+  const liveChannels = useMemo(() => liveLineup(channels), [channels]);
   const catalogueAdult = useMemo(() => Boolean(catalog && (catalog.movies.items.some(item => item.adult) || catalog.series.items.some(item => item.adult))), [catalog]);
   const hasAdult = useMemo(() => catalogueAdult || liveChannels.some(channel => isAdultGroup(channel.group)), [liveChannels, catalogueAdult]);
   // Everything below (categories, search, favorites, resume) only ever sees the channels the lock allows.
@@ -430,6 +434,7 @@ export default function Player({portal, support, castAppId}: {portal: string; su
       group: episode ? episode.label + (episode.title ? ' · ' + episode.title : '') : yearShown(title.name, title.year) || (title.kind === 'episode' ? 'Episode' : 'Movie'),
       format: playFormat(plan.mode), token, reason: '', kind: title.kind === 'movie' ? 'movie' : 'episode', libraryKey: title.key,
       episode: episode ? {id: episode.id, label: episode.label, index: episode.index} : undefined, resumeAt, castable: plan.castable, ext,
+      extras: subtitleQuery(title, detailsTmdb(title), episode ? {season: episode.season, episode: episode.episode} : null),
     });
     go({view: 'play', key: title.key, ...(episode ? {ep: episode.id} : {})}, request.episode ? 'episode:' + request.episode.id : 'action:play');
   }
@@ -686,6 +691,10 @@ export default function Player({portal, support, castAppId}: {portal: string; su
   const connecting = selected && !castHold && !playError && (castWaiting || ['Connecting…', 'Reconnecting…', 'Buffering…'].includes(status));
   const shownStatus = castHold ? (casting ? 'Playing on your TV' : castLive ? 'Not on your TV' : 'Casting ended') : castPending ? 'Connecting to your TV…' : castWaiting ? 'Connecting…' : status;
   const vodSelected = Boolean(selected && selected.kind !== 'live');
+  // A movie's or episode's English subtitles from OpenSubtitles: looked up when it starts, offered while it plays here
+  // (not while it plays on a TV, where they would be downloaded for nothing).
+  const extraTracks = useExtraSubtitles(selected && selected.kind !== 'live' ? selected.extras || '' : '');
+  const shownExtraTracks = castHold || castLive ? NO_EXTRA_TRACKS : extraTracks;
   // The player stays mounted (hidden) while a channel or title plays on a TV and the viewer browses, so the cast
   // controls keep track of what is on the TV.
   const stageMounted = stageView || Boolean(selected && (castHold || castLive));
@@ -764,7 +773,7 @@ export default function Player({portal, support, castAppId}: {portal: string; su
               {selected && <div className="watch-player-tools">
                 {!vodSelected && <div className="watch-channel-navigation"><button className="small-button" aria-label="Previous channel in this lineup" aria-keyshortcuts="PageUp" disabled={selectedIndex <= 0} onClick={() => chooseChannel(playable[selectedIndex - 1])}>← Previous</button><button className="small-button" aria-label="Next channel in this lineup" aria-keyshortcuts="PageDown" disabled={selectedIndex < 0 || selectedIndex >= playable.length - 1} onClick={() => chooseChannel(playable[selectedIndex + 1])}>Next →</button></div>}
                 {qualities.length > 1 && <label className="quality-select">Picture quality<select value={quality} onChange={event => {const next = Number(event.target.value); setQuality(next); if (hls.current) hls.current.currentLevel = next;}}><option value={-1}>Automatic</option>{qualities.map(item => <option key={item.index} value={item.index}>{item.height ? item.height + 'p' : 'Quality ' + (item.index + 1)}</option>)}</select></label>}
-                <SubtitleControls key={(selected.token || '') + ':' + streamFormat + ':' + retry} video={video} engine={engine} supported={streamFormat !== 'mpegts'}/>
+                <SubtitleControls key={(selected.token || '') + ':' + streamFormat + ':' + retry} video={video} engine={engine} supported={streamFormat !== 'mpegts' || shownExtraTracks.length > 0} extras={shownExtraTracks}/>
                 {selected.token && <CastControls channel={selected.id} token={selected.token} name={selected.name} format={streamFormat} attempt={retry} video={video} castAppId={castAppId} castAvailable={castAvailable} castDevice={castDevice} onCastPending={setCastPending} onCastStart={castStarted} onCastFailed={castFailed} onSessionExpired={castSignedOut} onCastStop={stopCast}
                   castable={selected.kind === 'live' || selected.castable !== false} vod={vodSelected} position={() => vodPosition.current}/>}
               </div>}

@@ -62,9 +62,16 @@ export async function prepareCloudflare(options, root = new URL('../', import.me
     assets: {directory: '../client', binding: 'ASSETS'},
     d1_databases: [{binding: 'DB', database_name: options.databaseName, database_id: options.databaseId, migrations_dir: '../../drizzle'}],
     r2_buckets: [{binding: 'BUCKET', bucket_name: options.bucketName}],
-    // Web player poster requests per line across isolates (lib/player-vod.ts). Free; the Worker runs without it.
-    // namespace_id must differ from the stream relay's RELAY_LIMITER (1001), or the two would share counts.
-    ratelimits: [{name: 'PLAYER_LIMITER', namespace_id: '1002', simple: {limit: 1200, period: 60}}],
+    // Web player poster requests per line across isolates (lib/player-vod.ts), and for lib/extras-service.ts: subtitle
+    // and trailer lookups per client (an IPv4 address or an IPv6 /64) and upstream searches per service (EXTRAS_LIMITER),
+    // subtitle file downloads per client and uncached lookups per client and per IPv6 /48 (SUBTITLE_FILE_LIMITER), each
+    // under its own key prefix. Free; the Worker runs without them. Each namespace_id must differ from the others and
+    // from the stream relay's RELAY_LIMITER (1001), or they would share counts.
+    ratelimits: [
+      {name: 'PLAYER_LIMITER', namespace_id: '1002', simple: {limit: 1200, period: 60}},
+      {name: 'EXTRAS_LIMITER', namespace_id: '1003', simple: {limit: 120, period: 60}},
+      {name: 'SUBTITLE_FILE_LIMITER', namespace_id: '1004', simple: {limit: 12, period: 60}},
+    ],
     // Preserve dashboard settings without writing their values into source or this artifact.
     keep_vars: true,
     workers_dev: !options.production,

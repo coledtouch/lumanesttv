@@ -1,5 +1,6 @@
 'use client';
 import {useCallback, useSyncExternalStore} from 'react';
+import {readPreference, savePreference} from './subtitle-tracks';
 
 // Small settings kept in this browser: the "Movies & Series: USA only / All" switch and the screen the player starts
 // on. Read through useSyncExternalStore, so the server render (which has no localStorage) shows the defaults and the
@@ -33,3 +34,17 @@ export const REGIONS = ['us', 'all'] as const;
 export const START_VIEWS = ['home', 'live'] as const;
 export const REGION_KEY = 'lumanest_vod_region';
 export const START_KEY = 'lumanest_watch_start';
+
+/**
+ * Settings > Subtitles: Off or On, kept in the subtitle menu's preference (lumanest_subtitles) with the last language
+ * picked there. Never chosen reads as Off; the player then leaves a stream's own default track as it is.
+ */
+export function useSubtitleSetting(): ['on' | 'off', (value: 'on' | 'off') => boolean] {
+  const value = useSyncExternalStore<'on' | 'off'>(subscribe, () => readPreference()?.on ? 'on' : 'off', () => 'off');
+  const set = useCallback((next: 'on' | 'off') => {
+    const saved = savePreference({on: next === 'on', lang: readPreference()?.lang || ''});
+    for (const listener of listeners) listener();
+    return saved;
+  }, []);
+  return [value, set];
+}

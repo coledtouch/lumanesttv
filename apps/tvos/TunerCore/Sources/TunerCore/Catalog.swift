@@ -248,7 +248,8 @@ public actor CatalogService {
         var liveStale = true, moviesStale = true, seriesStale = true
         if current.live == nil, let snapshot = SnapshotFiles.read(LiveLineup.self, at: file("live", digest)), snapshot.identity == liveID,
            date.timeIntervalSince1970 - snapshot.saved <= SnapshotFiles.maxAge {
-            current.live = snapshot.payload
+            // A snapshot saved before the hidden-category rule may still hold "Most watched now".
+            current.live = HiddenLiveCategories.lineup(snapshot.payload)
             current.livePhase = .ready
             liveStale = date.timeIntervalSince1970 - snapshot.saved > CatalogService.liveTTL
         } else if current.live != nil {
@@ -556,12 +557,15 @@ public actor CatalogService {
         return M3UParser.parse(body)
     }
 
-    /// The adult filter runs here, before anything is kept or cached.
+    /// The adult filter runs here, before anything is kept or cached; then the provider's "Most watched now" category is
+    /// hidden (docs/extras.md), before the USA filter and the folding of copies.
     static func parseLive(_ channels: [Channel], _ categories: [Category], guideURL: URL?, edition: Edition, date: Date) -> ParsedLive {
         let adult = AdultFilter.adultCategoryIDs(categories, mode: edition.adultFilterMode)
         let allowed = AdultFilter.filter(channels, categories: categories, mode: edition.adultFilterMode, live: true,
                                          categoryIDs: { $0.categoryIDs }, name: { $0.name }, flagged: { $0.adult })
-        return ParsedLive(channels: allowed, categories: categories.filter { !adult.contains($0.id) }, guideURL: guideURL, parsedAt: date)
+        let kept = categories.filter { !adult.contains($0.id) }
+        let shown = HiddenLiveCategories.filter(allowed, categories: kept) ?? (allowed, kept)
+        return ParsedLive(channels: shown.channels, categories: shown.categories, guideURL: guideURL, parsedAt: date)
     }
 
     /// `lineup` on a background task: a large lineup takes a moment and the actor stays responsive meanwhile.

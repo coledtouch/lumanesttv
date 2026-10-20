@@ -141,6 +141,13 @@ for (const file of pages) {
   const path = urlPath(file);
   if (path !== '/404' && !listed.includes(ORIGIN + path)) fail(join(PUBLIC, 'sitemap.xml'), `missing ${ORIGIN + path}`);
 }
+// A legal page's lastmod is never older than its "Last updated" date: both change together (README, Changing the site).
+for (const name of ['privacy.html', 'terms.html', 'delete.html']) {
+  const updated = /Last updated <time datetime="(\d{4}-\d{2}-\d{2})">/.exec(readFileSync(join(PUBLIC, name), 'utf8'))?.[1];
+  const loc = ORIGIN + '/' + name.slice(0, -'.html'.length);
+  const lastmod = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>\s*<lastmod>(\d{4}-\d{2}-\d{2})<\/lastmod>/g)].find(m => m[1] === loc)?.[2];
+  if (updated && !(lastmod >= updated)) fail(join(PUBLIC, 'sitemap.xml'), `${loc} needs a lastmod of ${updated} or later (its "Last updated" date), not ${lastmod || 'none'}`);
+}
 if (!readFileSync(join(PUBLIC, 'robots.txt'), 'utf8').includes(`Sitemap: ${ORIGIN}/sitemap.xml`)) fail(join(PUBLIC, 'robots.txt'), 'must point to the sitemap');
 
 // Fonts and the stylesheet must stay on this origin.

@@ -2,17 +2,22 @@ import SwiftUI
 import TunerCore
 
 /// A movie: backdrop, poster, title, year · length · genre · rating, plot, director and cast. Resume (with Start over)
-/// or Play, and Add to Library.
+/// or Play, Add to Library, and Trailer when lumanest.tv found one.
 struct MovieDetailView: View {
     @Environment(AppModel.self) private var model
     let movieID: String
     @State private var info: MovieInfo?
+    @State private var trailer: Trailer?
 
     var body: some View {
         if let movie = model.movie(id: movieID) {
+            let trailerQuery = model.trailerQuery(for: movie)
             page(movie)
                 .task(id: movieID) {
                     await load(movie)
+                }
+                .task(id: trailerQuery) {
+                    trailer = await model.trailer(trailerQuery)
                 }
         } else {
             EmptyStateView(title: "This movie isn't available any more", systemImage: "film")
@@ -64,6 +69,9 @@ struct MovieDetailView: View {
                                 model.toggleLibrary(.movie(movie))
                             } label: {
                                 Label(inLibrary ? "In Library" : "Add to Library", systemImage: inLibrary ? "checkmark" : "plus")
+                            }
+                            if let trailer {
+                                TrailerButton(trailer: trailer)
                             }
                         }
                         .focusSection()

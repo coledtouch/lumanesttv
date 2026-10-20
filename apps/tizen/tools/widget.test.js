@@ -59,3 +59,10 @@ test("source validation rejects newer JavaScript, eval and inline remote script 
         fs.rmSync(resolved, { recursive: true, force: true });
     }
 });
+
+test("the trailer's YouTube launch (docs/extras.md) needs the application.launch privilege, and only that one more", () => {
+    const xml = manifest.toString("utf8"), line = /\s*<tizen:privilege name="http:\/\/tizen\.org\/privilege\/application\.launch" \/>/;
+    assert.match(xml, line);
+    assert.throws(() => widget.validateManifest(xml.replace(line, "")), /privileges/);
+    assert.throws(() => widget.validateManifest(xml.replace("application.launch", "application.launch\" />\n    <tizen:privilege name=\"http://tizen.org/privilege/appmanager.kill")), /privileges/);
+});

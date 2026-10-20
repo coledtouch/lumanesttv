@@ -3,11 +3,11 @@
 // The customer opens the code on their phone, signs in to the web player and approves; the TV then
 // receives its playlist login once. Only a hash of the device code is stored, and the login itself is
 // sealed with the player key until the TV collects it.
-import qrcode from 'qrcode-generator';
 import {z} from 'zod';
 import {ServiceError} from './mybunny';
 import {db} from './paypal';
 import {digest, open, seal} from './player-crypto';
+import {qrRows} from './qr';
 import {assertNotRevoked, playerSecret, session, tvAccount} from './player';
 import {SITE_URL} from '../app/site';
 
@@ -36,15 +36,7 @@ export function normalizeUserCode(value: string) {
 }
 export const displayCode = (code: string) => code.slice(0, 4) + '-' + code.slice(4);
 export function pairingURL(code: string) {return SITE_URL + '/pair?code=' + displayCode(code);}
-/** QR modules as rows of "0"/"1", so each app draws it without its own QR encoder. */
-export function qrRows(text: string) {
-  const qr = qrcode(0, 'M');
-  qr.addData(text);
-  qr.make();
-  const size = qr.getModuleCount(), rows: string[] = [];
-  for (let r = 0; r < size; r++) {let row = ''; for (let c = 0; c < size; c++) row += qr.isDark(r, c) ? '1' : '0'; rows.push(row);}
-  return rows;
-}
+export {qrRows};
 async function clientId(req: Request) {return digest('pair-client:' + (req.headers.get('cf-connecting-ip') || 'unknown'));}
 
 export async function startPairing(req: Request, body: unknown) {

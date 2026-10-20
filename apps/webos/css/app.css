@@ -1527,3 +1527,30 @@ body.black .poster.see-all .poster-art {
   background: #101010;
   border-color: #3a3a3a;
 }
+/* The credit under the OpenSubtitles tracks of the subtitle chooser (not a choice). */
+.dialog .dialog-note.footnote {
+  margin: 22px 0 0;
+}
+/* Trailer: "Watch the trailer on your phone", the QR code on white and the short link under it. */
+.dialog.qr-dialog {
+  text-align: center;
+}
+.dialog-qr-code {
+  width: 360px;
+  height: 360px;
+  margin: 0 auto 18px;
+  border-radius: 18px;
+  overflow: hidden;
+  background: #fff;
+}
+.dialog-qr-code canvas {
+  display: block;
+  width: 360px;
+  height: 360px;
+}
+.dialog .dialog-qr-text {
+  font-size: 34px;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 14px;
+}

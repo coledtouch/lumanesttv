@@ -5,7 +5,7 @@ export const metadata = {title: 'Privacy | LumaNest TV', description: 'What Luma
 
 export default function Privacy() {
   const {support} = legalSettings();
-  return <LegalPage path="/privacy" eyebrow="YOUR HOME, YOUR BUSINESS" title={<>Privacy <em>policy.</em></>} lead="We collect only what we need to sell, activate and renew your subscription. This page explains what that is and where it goes.">
+  return <LegalPage path="/privacy" updated={['2026-10-20', 'October 20, 2026']} eyebrow="YOUR HOME, YOUR BUSINESS" title={<>Privacy <em>policy.</em></>} lead="We collect only what we need to sell, activate and renew your subscription. This page explains what that is and where it goes.">
     <h2>What we collect at checkout</h2>
     <ul>
       <li><strong>Your email address</strong> (required) and <strong>your name</strong> (optional).</li>
@@ -33,6 +33,9 @@ export default function Privacy() {
       <li>The site runs on Cloudflare, which processes requests to deliver it.</li>
       <li>Fonts are hosted on this website and delivered by Cloudflare. Loading them does not send a request to Google Fonts.</li>
       <li>In the web player, posters hosted by TMDB are loaded by your browser directly from TMDB’s image service (image.tmdb.org): those of titles matched to TMDB’s movie and series lists, and any poster your line’s catalogue links there. TMDB then receives your IP address and browser details with those image requests, as any website you load an image from does; no referrer is sent. Every other poster is passed through this website, so other poster hosts never see your address.</li>
+      <li>English subtitles for movies and episodes come from OpenSubtitles.com through this website. When a movie or episode starts, the web player asks this website which subtitles exist, and this website looks them up at OpenSubtitles by the title’s TMDB number (with the season and episode). For a title without a TMDB number, this website first sends its name and year to TMDB to find the number. The subtitle file is downloaded from OpenSubtitles and passed to you only when subtitles are shown. OpenSubtitles and TMDB never receive your IP address or anything about you. We don’t keep subtitle files; your browser may keep one for up to 7 days.</li>
+      <li>When you choose Trailer, the trailer plays in YouTube’s embedded player (privacy-enhanced mode, youtube-nocookie.com), which is a YouTube API Service. YouTube (Google) then receives your IP address and browser details, and the <a href="https://www.youtube.com/t/terms" rel="noopener noreferrer">YouTube Terms of Service</a> and <a href="https://policies.google.com/privacy" rel="noopener noreferrer">Google Privacy Policy</a> apply. Nothing is loaded from YouTube until you choose Trailer. This website finds the trailer with TMDB without sending anything about you.</li>
+      <li>To prevent abuse, requests for subtitles and trailers are counted per network address for one minute; the address is not stored. Subtitle downloads are also counted per day: we keep a keyed hash of your network’s address (not the address itself) with its number of downloads for the current UTC day. It is kept for that day and the next, then removed by routine clean-up.</li>
     </ul>
     <h2>Your choices</h2>
     <p>You can ask us what we hold about you, or ask us to correct or delete it, by emailing support. We may need to keep payment records where the law requires it.</p>

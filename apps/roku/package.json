@@ -4,8 +4,8 @@
   "private": true,
   "description": "Tuner by LumaNest TV for Roku (SceneGraph).",
   "scripts": {
-    "cases": "node tools/browse-cases.mjs",
-    "check": "node tools/browse-cases.mjs --check && bsc --project bsconfig.json --create-package false && bsc --project bsconfig.tests.json --create-package false",
+    "cases": "node tools/browse-cases.mjs && node tools/extras-cases.mjs",
+    "check": "node tools/browse-cases.mjs --check && node tools/extras-cases.mjs --check && bsc --project bsconfig.json --create-package false && bsc --project bsconfig.tests.json --create-package false",
     "build": "bsc --project bsconfig.json",
     "build:tests": "bsc --project bsconfig.tests.json"
   },

@@ -189,5 +189,6 @@
     start();
   }
 
-  root.TunerPairing = { open: open, toSource: toSource, isOpen: function () { return !!active; } };
+  // drawQr also draws the trailer's QR code (docs/extras.md), from the same rows the server sends for pairing.
+  root.TunerPairing = { open: open, toSource: toSource, drawQr: drawQr, isOpen: function () { return !!active; } };
 })(window);

@@ -9,6 +9,7 @@
     <tizen:profile name="tv-samsung" />
     <tizen:privilege name="http://tizen.org/privilege/internet" />
     <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice" />
+    <tizen:privilege name="http://tizen.org/privilege/application.launch" />
     <tizen:setting screen-orientation="landscape" background-support="disable"
                    encryption="disable" hwkey-event="enable" />
     <tizen:content-security-policy>default-src 'self'; script-src 'self' file:; style-src 'self' 'unsafe-inline'; connect-src http: https:; img-src 'self' data: http: https:; media-src 'self' blob: http: https:; object-src 'self'; frame-src 'none'; base-uri 'self'; form-action 'none'</tizen:content-security-policy>

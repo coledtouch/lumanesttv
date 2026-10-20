@@ -21,7 +21,7 @@ function validateManifest(xml) {
     requireMatch(/<content\s+src="index\.html"\s*\/>/, "Widget entry point must be index.html");
     requireMatch(/<icon\s+src="assets\/icon\.png"\s*\/>/, "Widget icon must be assets/icon.png");
     const privileges = [...xml.matchAll(/<tizen:privilege\s+name="([^"]+)"\s*\/>/g)].map(match => match[1]).sort();
-    const expected = ["http://tizen.org/privilege/internet", "http://tizen.org/privilege/tv.inputdevice"].sort();
+    const expected = ["http://tizen.org/privilege/application.launch", "http://tizen.org/privilege/internet", "http://tizen.org/privilege/tv.inputdevice"].sort();
     if (JSON.stringify(privileges) !== JSON.stringify(expected)) throw new Error("Unexpected widget privileges");
     const policy = xml.match(/<tizen:content-security-policy>([^<]+)<\/tizen:content-security-policy>/);
     if (!policy) throw new Error("Widget CSP is missing");

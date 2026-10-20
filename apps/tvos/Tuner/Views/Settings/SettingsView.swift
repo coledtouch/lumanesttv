@@ -138,6 +138,10 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            // docs/extras.md: shown whatever the OpenSubtitles plan, so a plan change needs no app update.
+            Text(TunerLinks.openSubtitlesCredit)
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Button {
                 showsPrivacy = true
             } label: {

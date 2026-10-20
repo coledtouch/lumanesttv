@@ -151,6 +151,8 @@ sealed interface PlayRequest {
         val subtitles: List<ExternalSubtitle> = emptyList(),
         /** The movie or series this plays ("movie:<id>" / "series:<id>"), for Continue watching and Recently watched. */
         val titleKey: String? = null,
+        /** What lumanest.tv looks OpenSubtitles tracks up by (docs/extras.md); null when the title has no usable ids. */
+        val extras: SubtitleQuery? = null,
     ) : PlayRequest
 }
 

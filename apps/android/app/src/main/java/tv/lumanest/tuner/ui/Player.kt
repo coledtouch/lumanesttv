@@ -81,6 +81,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -99,6 +100,7 @@ import tv.lumanest.tuner.data.Program
 import tv.lumanest.tuner.data.Recent
 import tv.lumanest.tuner.data.Repo
 import tv.lumanest.tuner.player.PlayerHolder
+import tv.lumanest.tuner.player.SubtitleChoice
 import coil.compose.AsyncImage
 import kotlinx.coroutines.delay
 import java.util.Locale
@@ -633,7 +635,9 @@ private fun VodPlayer(req: PlayRequest.Vod, onExit: () -> Unit) {
         current = next
     }
 
-    LaunchedEffect(current.url) { PlayerHolder.play(current.url, live = false, startMs = current.startMs, backups = current.streamBackups, subtitles = current.subtitles) }
+    LaunchedEffect(current.url) {
+        PlayerHolder.play(current.url, live = false, startMs = current.startMs, backups = current.streamBackups, subtitles = current.subtitles, extras = current.extras)
+    }
     LaunchedEffect(Unit) { while (true) { delay(10_000); save() } }
     DisposableEffect(Unit) { onDispose { save() } }
     LaunchedEffect(ui.ended) { if (ui.ended > 0) playNext() }
@@ -774,38 +778,54 @@ private fun VodPlayer(req: PlayRequest.Vod, onExit: () -> Unit) {
     LaunchedEffect(Unit) { runCatching { rootFocus.requestFocus() } }
 }
 
+/**
+ * The player's Audio or Subtitles menu. Subtitles lists the stream's and the provider's tracks, then the OpenSubtitles
+ * tracks lumanest.tv offers (docs/extras.md) with their credit as a note. Labels are shown as plain text.
+ */
 @Composable
 private fun TrackDialog(type: Int, version: Int, onClose: () -> Unit) {
     val player = PlayerHolder.player
+    val openSubtitles by PlayerHolder.openSubtitles.collectAsState()
+    val extraTracks = if (type == C.TRACK_TYPE_TEXT) openSubtitles else emptyList()
     data class Option(val label: String, val selected: Boolean, val apply: () -> Unit)
-    val options = remember(type, version) {
+    val options = remember(type, version, extraTracks) {
         val out = mutableListOf<Option>()
         val params = player.trackSelectionParameters
         val textDisabled = C.TRACK_TYPE_TEXT in params.disabledTrackTypes
         var n = 0
+        var shownExtra: String? = null
         player.currentTracks.groups.filter { it.type == type }.forEach { g ->
             for (i in 0 until g.length) {
                 if (!g.isTrackSupported(i)) continue
-                n++
                 val f = g.getTrackFormat(i)
+                // The attached OpenSubtitles file is listed with the other OpenSubtitles tracks below.
+                if (type == C.TRACK_TYPE_TEXT && PlayerHolder.textSource(f) == SubtitleChoice.Source.OPENSUBTITLES) {
+                    if (g.isTrackSelected(i) && !textDisabled) shownExtra = PlayerHolder.attachedOpenSubtitlesId
+                    continue
+                }
+                n++
                 val lang = f.language?.takeIf { it != "und" }?.let { Locale(it).displayLanguage.ifBlank { it } }
                 val extra = if (type == C.TRACK_TYPE_AUDIO && f.channelCount > 0)
                     when (f.channelCount) { 1 -> "Mono"; 2 -> "Stereo"; 6 -> "5.1"; 8 -> "7.1"; else -> "${f.channelCount}ch" }
                     else if (type == C.TRACK_TYPE_TEXT) captionKind(f) else null
                 val label = listOfNotNull(f.label ?: lang ?: if (extra != null) null else "Track $n", extra).joinToString(" · ")
                 out += Option(label, g.isTrackSelected(i) && !(type == C.TRACK_TYPE_TEXT && textDisabled)) {
-                    player.trackSelectionParameters = params.buildUpon()
+                    if (type == C.TRACK_TYPE_TEXT) PlayerHolder.chooseTextTrack(g.mediaTrackGroup, i)
+                    else player.trackSelectionParameters = params.buildUpon()
                         .setTrackTypeDisabled(type, false)
                         .setOverrideForType(TrackSelectionOverride(g.mediaTrackGroup, i))
                         .build()
                 }
             }
         }
+        extraTracks.forEach { track ->
+            out += Option(track.label, track.id == shownExtra) {
+                PlayerHolder.chooseOpenSubtitles(track) { Toasts.show(SUBTITLES_FAILED) }
+            }
+        }
         // "Off" only makes sense when the stream has something to turn off.
         if (type == C.TRACK_TYPE_TEXT && out.isNotEmpty()) {
-            out.add(0, Option("Off", textDisabled || out.none { it.selected }) {
-                player.trackSelectionParameters = params.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true).build()
-            })
+            out.add(0, Option("Off", textDisabled || out.none { it.selected }) { PlayerHolder.subtitlesOff() })
         }
         out
     }
@@ -842,6 +862,7 @@ private fun TrackDialog(type: Int, version: Int, onClose: () -> Unit) {
                 itemsIndexed(options) { i, o ->
                 FocusBox(
                     onClick = { o.apply(); onClose() },
+                    // Plain text: a label from lumanest.tv is never read as markup.
                     modifier = Modifier.fillMaxWidth().height(48.dp).then(if (i == selectedIndex) Modifier.focusRequester(selectedFocus) else Modifier),
                     shape = RoundedCornerShape(8.dp), color = Palette.surface2, focusedColor = Palette.focus,
                     ring = false, focusedScale = 1.0f,
@@ -853,12 +874,22 @@ private fun TrackDialog(type: Int, version: Int, onClose: () -> Unit) {
                     }
                 }
                 }
+                // OpenSubtitles asks for this credit where its subtitles are picked: a note, not a choice.
+                if (extraTracks.isNotEmpty()) item(key = "opensubtitles-credit") {
+                    Text(
+                        PlayerHolder.openSubtitlesCredit, color = Palette.dim, fontSize = 12.sp, lineHeight = 16.sp,
+                        modifier = Modifier.padding(top = 6.dp, start = 4.dp).testTag("opensubtitles-credit"),
+                    )
+                }
             }
             PillButton("Done", onClose, Modifier.focusRequester(closeFocus).padding(top = 12.dp))
         }
     }
     }
 }
+
+/** The toast when an OpenSubtitles track the viewer picked can't be loaded (docs/extras.md, "Failure"). */
+internal const val SUBTITLES_FAILED = "These subtitles couldn't be loaded."
 
 /** Closed captions carried inside the video (CEA-608 / CEA-708) have no language tag; name them plainly. */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)

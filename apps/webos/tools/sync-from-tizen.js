@@ -34,6 +34,14 @@ function portApp(source, version) {
         ""
     ].join("\n"), "Multi View");
     source = replaceOnce(source, "window.tizen.application.getCurrentApplication().exit();", "window.TunerWebOS.exit();", "exit");
+    // Trailer: LG opens the YouTube app through webOS's application manager (js/webos-platform.js), not Samsung's
+    // application control; its onFail shows the same QR dialog (docs/extras.md, Trailer, LG).
+    source = replaceRange(source, "  // Samsung: the YouTube app opened on the video", "  // The QR dialog: the trailer on a phone", [
+        "  function openYouTube(key, onFail) {",
+        "    window.TunerWebOS.openYouTube(key, onFail);",
+        "  }",
+        ""
+    ].join("\n"), "YouTube launch");
     source = replaceOnce(source, "if (code === 10009 || code === 27 || code === 8) {", "if (code === 461 || code === 10009 || code === 27 || code === 8) {", "Back key");
     source = replaceOnce(source, "if (code === 10009 || code === 27) {", "if (code === 461 || code === 10009 || code === 27) {", "Back key in text fields");
     source = replaceOnce(source, 'el("h2", "", "Samsung remote")', 'el("h2", "", "LG Magic Remote")', "remote heading");

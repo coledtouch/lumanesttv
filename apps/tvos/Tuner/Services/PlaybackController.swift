@@ -32,7 +32,10 @@ final class PlaybackController {
         var plot: String?
         var sources: [URL]
         var containerExtension: String?
+        /// The provider's subtitle files.
         var subtitles: [ExternalSubtitle]
+        /// What to ask lumanest.tv for OpenSubtitles tracks (nil: no TMDB id and no name with a year, or no episode number).
+        var subtitleQuery: SubtitleQuery?
         var series: Series?
         var season: Int?
         var episode: Int?
@@ -91,12 +94,36 @@ final class PlaybackController {
     @ObservationIgnored private var pendingSeekMs: Int64?
     @ObservationIgnored private var lastSave = Date.distantPast
     @ObservationIgnored private var lastPositionMs: Int64 = 0
-    @ObservationIgnored private var subtitleCues: [SubtitleCue] = []
-    @ObservationIgnored private var sidecarIndex: Int?
     @ObservationIgnored private var showingNextAction = false
     @ObservationIgnored private var resumeVODAfterBackground = false
     /// What the local proxy reported for this title (busy line, missing upload…): shown if AVPlayer then gives up.
     @ObservationIgnored private var vodFailure: PlaybackFailure?
+
+    // MARK: Subtitle files (drawn over the video)
+
+    /// A subtitle file: one the provider lists (by index) or an OpenSubtitles track (by its id).
+    enum Sidecar: Equatable {
+        case provider(Int)
+        case openSubtitles(String)
+    }
+
+    /// The file shown, if any.
+    @ObservationIgnored private var sidecar: Sidecar?
+    /// The provider file's cues.
+    @ObservationIgnored private var subtitleCues: [SubtitleCue] = []
+    /// The OpenSubtitles file's cues.
+    @ObservationIgnored private var openSubtitleFile: WebVTT?
+    /// This title's OpenSubtitles lookup, and whether it has answered (or there is nothing to ask).
+    @ObservationIgnored private var openSubtitles = SubtitleLookup.empty
+    @ObservationIgnored private var lookupDone = false
+    /// The automatic choice (or the viewer's pick) has been applied for this title.
+    @ObservationIgnored private var subtitlesDecided = false
+    /// The current item's subtitle group, once loaded.
+    @ObservationIgnored private var legible: (item: AVPlayerItem, group: AVMediaSelectionGroup?)?
+    /// What the viewer picked in the menu: it stays picked for that title until playback ends (also over Try again).
+    @ObservationIgnored private var viewerPick: (titleID: String, sidecar: Sidecar?)?
+    /// OpenSubtitles files of the title being played, by track id: a replay or resume needs no new download.
+    @ObservationIgnored private var openSubtitleFiles: (titleID: String, files: [String: WebVTT]) = ("", [:])
 
     // MARK: Observers
 
@@ -223,8 +250,7 @@ final class PlaybackController {
         vodToken += 1
         vodEventsTask?.cancel()
         vod = nil
-        subtitleCues = []
-        sidecarIndex = nil
+        resetSubtitles(keepingPickFor: nil)
         stopLive()
         mode = .idle
     }
@@ -244,8 +270,7 @@ final class PlaybackController {
             vodToken += 1
             vodEventsTask?.cancel()
             vod = nil
-            subtitleCues = []
-            presenter.overlay.subtitle = nil
+            resetSubtitles(keepingPickFor: nil)
         }
         tuneToken += 1
         let token = tuneToken
@@ -523,21 +548,22 @@ final class PlaybackController {
     func playMovie(_ movie: Movie, info: MovieInfo?, from positionMs: Int64) {
         let item = VODItem(id: movie.id, kind: .movie, titleID: movie.id, title: movie.name, subtitle: nil, image: info?.poster ?? movie.poster,
                            plot: info?.plot, sources: [movie.url] + movie.backups, containerExtension: movie.containerExtension,
-                           subtitles: (info?.subtitles ?? []).filter { $0.format != nil }, series: nil, season: nil, episode: nil,
-                           durationSeconds: 0, queue: [])
+                           subtitles: (info?.subtitles ?? []).filter { $0.format != nil }, subtitleQuery: model?.subtitleQuery(for: movie),
+                           series: nil, season: nil, episode: nil, durationSeconds: 0, queue: [])
         startVOD(item, from: positionMs)
     }
 
     func playEpisode(_ episode: Episode, of series: Series, info: SeriesInfo, from positionMs: Int64) {
         let queue = SeriesNavigation.queue(after: episode, in: info)
-        startVOD(PlaybackController.episodeItem(episode, series: series, queue: queue), from: positionMs)
+        startVOD(episodeItem(episode, series: series, queue: queue), from: positionMs)
     }
 
-    private static func episodeItem(_ episode: Episode, series: Series, queue: [Episode]) -> VODItem {
+    private func episodeItem(_ episode: Episode, series: Series, queue: [Episode]) -> VODItem {
         VODItem(id: episode.id, kind: .episode, titleID: series.id, title: series.name, subtitle: SeriesNavigation.label(episode),
                 image: episode.image ?? series.cover, plot: episode.plot ?? series.plot, sources: [episode.url],
                 containerExtension: episode.containerExtension, subtitles: episode.subtitles.filter { $0.format != nil },
-                series: series, season: episode.season, episode: episode.number, durationSeconds: episode.durationSeconds, queue: queue)
+                subtitleQuery: model?.subtitleQuery(for: episode, of: series), series: series, season: episode.season,
+                episode: episode.number, durationSeconds: episode.durationSeconds, queue: queue)
     }
 
     private func startVOD(_ item: VODItem, from positionMs: Int64) {
@@ -558,8 +584,8 @@ final class PlaybackController {
         vodToken += 1
         let token = vodToken
         vodEventsTask?.cancel()
-        subtitleCues = []
-        sidecarIndex = nil
+        resetSubtitles(keepingPickFor: item.id)
+        startSubtitleLookup(item, token: token)
         showingNextAction = false
         vodFailure = nil
         pendingSeekMs = positionMs > 15_000 ? positionMs : nil
@@ -663,12 +689,7 @@ final class PlaybackController {
     private func tick(_ seconds: Double) {
         guard mode == .vod, vod != nil, seconds.isFinite, seconds >= 0 else { return }
         if pendingSeekMs == nil { lastPositionMs = Int64(seconds * 1000) }
-        if subtitleCues.isEmpty {
-            if presenter.overlay.subtitle != nil { presenter.overlay.subtitle = nil }
-        } else {
-            let text = SubtitleParser.cue(at: seconds, in: subtitleCues)?.text
-            if presenter.overlay.subtitle != text { presenter.overlay.subtitle = text }
-        }
+        updateSubtitleText(seconds)
         if Date().timeIntervalSince(lastSave) >= 10 { saveProgress() }
         updateNextEpisodeAction(at: seconds)
     }
@@ -705,7 +726,7 @@ final class PlaybackController {
                                 image: next.image ?? series.cover, seriesID: series.id, season: next.season, episode: next.number,
                                 positionMs: 0, durationMs: Int64(next.durationSeconds) * 1000, updated: Date(), upNext: true)
         model?.saveUpNext(upNext)
-        startVOD(PlaybackController.episodeItem(next, series: series, queue: Array(current.queue.dropFirst())), from: 0)
+        startVOD(episodeItem(next, series: series, queue: Array(current.queue.dropFirst())), from: 0)
     }
 
     /// "Next episode" over the video during an episode's last 30 seconds.
@@ -740,6 +761,12 @@ final class PlaybackController {
         Task { [weak self] in
             let group = try? await item.asset.loadMediaSelectionGroup(for: .legible)
             guard let self, item === self.player.currentItem else { return }
+            if self.mode == .vod {
+                if self.legible?.item !== item { self.legible = (item, group) }
+                self.decideSubtitles()
+                return
+            }
+            // Live: closed captions and the stream's subtitles. OpenSubtitles never applies to live channels.
             if let group, setting != .automatic {
                 var choice: AVMediaSelectionOption?
                 if setting == .on {
@@ -748,59 +775,224 @@ final class PlaybackController {
                 }
                 item.select(choice, in: group)
             }
-            let hasEmbedded = !(group?.options.isEmpty ?? true)
-            if self.mode == .vod, !hasEmbedded, self.sidecarIndex == nil, let vod = self.vod, !vod.subtitles.isEmpty {
-                let wanted = setting == .on || (setting == .automatic && CaptionPreference.systemCaptionsOn)
-                if wanted { self.selectSidecar(PlaybackController.preferredSidecar(vod.subtitles)) }
-            }
         }
     }
 
-    private static func preferredSidecar(_ subtitles: [ExternalSubtitle]) -> Int {
-        let english = subtitles.firstIndex { subtitle in
-            let language = (subtitle.language ?? "").lowercased()
-            return language == "en" || language == "eng" || language.hasPrefix("en-") || language == "english"
-                || subtitle.displayName.lowercased().contains("english")
-        }
-        return english ?? 0
+    /// Forgets the subtitles of the title that was playing. `id` is the title about to play (the viewer's pick and the
+    /// files already fetched are kept when it is the same title again, as after Try again), or nil when playback ends.
+    private func resetSubtitles(keepingPickFor id: String?) {
+        sidecar = nil
+        subtitleCues = []
+        openSubtitleFile = nil
+        openSubtitles = .empty
+        lookupDone = false
+        subtitlesDecided = false
+        legible = nil
+        if viewerPick?.titleID != id { viewerPick = nil }
+        if openSubtitleFiles.titleID != id { openSubtitleFiles = (id ?? "", [:]) }
+        presenter.overlay.subtitle = nil
     }
 
+    /// The OpenSubtitles lookup when a movie or episode starts (kept in memory for the session by `ExtrasService`).
+    /// Only the list: a file is fetched when it is about to be shown, never before.
+    private func startSubtitleLookup(_ item: VODItem, token: Int) {
+        guard let query = item.subtitleQuery, let extras = model?.extras else {
+            lookupDone = true
+            return
+        }
+        Task { [weak self] in
+            let lookup = await extras.subtitles(query)
+            guard let self, token == self.vodToken else { return }
+            self.openSubtitles = lookup
+            self.lookupDone = true
+            if !lookup.tracks.isEmpty { self.presenter.update(menuItems: self.vodMenuItems()) }
+            self.decideSubtitles()
+        }
+    }
+
+    /// docs/extras.md "Automatic choice", once per title, when the item is ready and (unless the stream or the provider
+    /// has English) the lookup has answered. Settings → Subtitles On, or Automatic with the Apple TV's captions on: the
+    /// stream's English track, else the provider's English file, else the first OpenSubtitles track, else the stream's
+    /// first track, else the provider's first file. A file turns the stream's subtitles off. The viewer's pick wins.
+    private func decideSubtitles() {
+        guard mode == .vod, !subtitlesDecided, let vod, let item = player.currentItem, let legible, legible.item === item else { return }
+        let group = legible.group
+        if let pick = viewerPick, pick.titleID == vod.id {
+            if case .openSubtitles(_)? = pick.sidecar, !lookupDone { return }
+            subtitlesDecided = true
+            if pick.sidecar != nil, let group { item.select(nil, in: group) }
+            showSidecar(pick.sidecar, automatic: false)
+            return
+        }
+        let setting = model?.settings.subtitles ?? .automatic
+        if setting == .off {
+            subtitlesDecided = true
+            if let group { item.select(nil, in: group) }
+            return
+        }
+        guard setting == .on || CaptionPreference.systemCaptionsOn else {
+            // Automatic with the Apple TV's captions off: the stream's tracks are AVPlayer's choice, and no file shows.
+            subtitlesDecided = true
+            return
+        }
+        let options = group?.options ?? []
+        let english = AVMediaSelectionGroup.mediaSelectionOptions(from: options, with: Locale(identifier: "en"))
+        guard let choice = SubtitleAutoChoice.choose(embeddedEnglish: !english.isEmpty, embeddedCount: options.count, provider: vod.subtitles,
+                                                     openSubtitles: lookupDone ? openSubtitles.tracks.count : nil) else { return }
+        subtitlesDecided = true
+        switch choice {
+        case .embeddedEnglish:
+            // Automatic leaves the stream's tracks to AVPlayer, which follows the Apple TV's language and caption settings.
+            if setting == .on, let group { item.select(english.first, in: group) }
+        case .embeddedOther:
+            if setting == .on, let group { item.select(options.first, in: group) }
+        case .provider(let index):
+            if let group { item.select(nil, in: group) }
+            showSidecar(.provider(index), automatic: true)
+        case .openSubtitles(let index):
+            if let group { item.select(nil, in: group) }
+            showSidecar(.openSubtitles(openSubtitles.tracks[index].id), automatic: true)
+        case .nothing:
+            break
+        }
+    }
+
+    /// "Subtitle files": Off, the provider's files, the OpenSubtitles tracks and, under them, the credit as a note.
     private func vodMenuItems() -> [UIMenuElement] {
-        guard let vod, !vod.subtitles.isEmpty else { return [] }
+        guard let vod else { return [] }
+        let tracks = openSubtitles.tracks
+        guard !vod.subtitles.isEmpty || !tracks.isEmpty else { return [] }
         var children: [UIMenuElement] = [
-            UIAction(title: "Off", state: sidecarIndex == nil ? .on : .off) { [weak self] _ in
-                self?.selectSidecar(nil)
+            UIAction(title: "Off", state: sidecar == nil ? .on : .off) { [weak self] _ in
+                self?.pickSidecar(nil)
             },
         ]
         for (index, subtitle) in vod.subtitles.enumerated() {
-            children.append(UIAction(title: subtitle.displayName, state: sidecarIndex == index ? .on : .off) { [weak self] _ in
-                self?.selectSidecar(index)
+            children.append(UIAction(title: subtitle.displayName, state: sidecar == .provider(index) ? .on : .off) { [weak self] _ in
+                self?.pickSidecar(.provider(index))
             })
+        }
+        for track in tracks {
+            let id = track.id
+            children.append(UIAction(title: track.label, state: sidecar == .openSubtitles(id) ? .on : .off) { [weak self] _ in
+                self?.pickSidecar(.openSubtitles(id))
+            })
+        }
+        if !tracks.isEmpty {
+            // A note, not a choice: shown dimmed.
+            children.append(UIAction(title: openSubtitles.credit, attributes: .disabled) { _ in })
         }
         return [UIMenu(title: "Subtitle files", image: UIImage(systemName: "captions.bubble"), children: children)]
     }
 
-    private func selectSidecar(_ index: Int?) {
-        sidecarIndex = index
+    /// The viewer's choice in "Subtitle files".
+    private func pickSidecar(_ choice: Sidecar?) {
+        guard mode == .vod, let vod else { return }
+        viewerPick = (vod.id, choice)
+        subtitlesDecided = true
+        if choice != nil, let item = player.currentItem, let legible, legible.item === item, let group = legible.group {
+            item.select(nil, in: group)
+        }
+        showSidecar(choice, automatic: false)
+    }
+
+    /// The stream's own subtitles chosen in the player's subtitle menu turn a subtitle file off.
+    private func mediaSelectionChanged(_ item: AVPlayerItem) {
+        guard mode == .vod, sidecar != nil, let legible, legible.item === item, let group = legible.group,
+              item.currentMediaSelection.selectedMediaOption(in: group) != nil else { return }
+        if let vod { viewerPick = (vod.id, nil) }
+        subtitlesDecided = true
+        showSidecar(nil, automatic: false)
+    }
+
+    /// Shows a file (nil: none). A file is fetched only here, when it is about to be shown. Its text is untrusted and goes
+    /// into the overlay's label as plain text. If an OpenSubtitles file can't be loaded, a menu choice falls back to Off
+    /// with a short message; an automatic choice fails silently.
+    private func showSidecar(_ choice: Sidecar?, automatic: Bool) {
+        sidecar = choice
         subtitleCues = []
+        openSubtitleFile = nil
         presenter.overlay.subtitle = nil
         presenter.update(menuItems: vodMenuItems())
-        guard let index, let vod, vod.subtitles.indices.contains(index), let format = vod.subtitles[index].format else { return }
-        let url = vod.subtitles[index].url
+        guard let choice, let vod else { return }
         let token = vodToken
-        let http = self.http
-        Task { [weak self] in
-            do {
-                let data = try await http.data(HTTPRequestSpec(url: url)).body
-                let cues = await Task.detached(priority: .userInitiated) { SubtitleParser.parse(data, format: format) }.value
-                guard let self, token == self.vodToken, self.sidecarIndex == index else { return }
-                self.subtitleCues = cues
-                if cues.isEmpty { self.notify("These subtitles couldn't be read.") }
-            } catch {
-                guard let self, token == self.vodToken else { return }
-                self.notify("These subtitles couldn't be loaded. \(TunerError.from(error).message)")
+        switch choice {
+        case .provider(let index):
+            guard vod.subtitles.indices.contains(index), let format = vod.subtitles[index].format else { return }
+            let url = vod.subtitles[index].url
+            let http = self.http
+            Task { [weak self] in
+                do {
+                    let data = try await http.data(HTTPRequestSpec(url: url)).body
+                    let cues = await Task.detached(priority: .userInitiated) { SubtitleParser.parse(data, format: format) }.value
+                    guard let self, token == self.vodToken, self.sidecar == choice else { return }
+                    guard !cues.isEmpty else {
+                        self.sidecarFailed(automatic: automatic, message: "These subtitles couldn't be read.")
+                        return
+                    }
+                    self.subtitleCues = cues
+                    self.updateSubtitleText()
+                } catch {
+                    guard let self, token == self.vodToken, self.sidecar == choice else { return }
+                    self.sidecarFailed(automatic: automatic, message: "These subtitles couldn't be loaded. \(TunerError.from(error).message)")
+                }
+            }
+        case .openSubtitles(let id):
+            guard let track = openSubtitles.tracks.first(where: { $0.id == id }) else {
+                sidecar = nil
+                presenter.update(menuItems: vodMenuItems())
+                return
+            }
+            let titleID = vod.id
+            if openSubtitleFiles.titleID == titleID, let kept = openSubtitleFiles.files[id] {
+                openSubtitleFile = kept
+                updateSubtitleText()
+                return
+            }
+            guard let extras = model?.extras else { return }
+            Task { [weak self] in
+                let file = try? await extras.subtitleFile(track)
+                guard let self, token == self.vodToken, self.sidecar == choice else { return }
+                guard let file else {
+                    self.sidecarFailed(automatic: automatic, message: "These subtitles couldn't be loaded.")
+                    return
+                }
+                if self.openSubtitleFiles.titleID != titleID { self.openSubtitleFiles = (titleID, [:]) }
+                self.openSubtitleFiles.files[id] = file
+                self.openSubtitleFile = file
+                self.updateSubtitleText()
             }
         }
+    }
+
+    /// A file that couldn't be loaded or read: the menu shows Off again. A menu choice gets a short message (and stays Off
+    /// for the title); an automatic choice fails silently.
+    private func sidecarFailed(automatic: Bool, message: String) {
+        sidecar = nil
+        subtitleCues = []
+        openSubtitleFile = nil
+        presenter.overlay.subtitle = nil
+        presenter.update(menuItems: vodMenuItems())
+        guard !automatic else { return }
+        if let vod { viewerPick = (vod.id, nil) }
+        notify(message)
+    }
+
+    /// The text at the player's position, from the periodic time observer (every 0.25 s, and at once when time jumps
+    /// after a seek or when playback starts or stops; while paused the text stays) and as soon as a file has loaded.
+    /// Live channels never show a file.
+    private func updateSubtitleText(_ seconds: Double? = nil) {
+        let time = seconds ?? player.currentTime().seconds
+        var text: String?
+        if mode == .vod && time.isFinite {
+            if let file = openSubtitleFile {
+                let current = file.text(at: time)
+                text = current.isEmpty ? nil : current
+            } else if !subtitleCues.isEmpty {
+                text = SubtitleParser.cue(at: time, in: subtitleCues)?.text
+            }
+        }
+        if presenter.overlay.subtitle != text { presenter.overlay.subtitle = text }
     }
 
     // MARK: - Player item plumbing
@@ -819,6 +1011,13 @@ final class PlaybackController {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.itemEnded()
+            }
+            .store(in: &itemObservers)
+        NotificationCenter.default.publisher(for: AVPlayerItem.mediaSelectionDidChangeNotification, object: item)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak item] _ in
+                guard let self, let item, item === self.player.currentItem else { return }
+                self.mediaSelectionChanged(item)
             }
             .store(in: &itemObservers)
     }
@@ -871,8 +1070,7 @@ final class PlaybackController {
             vodToken += 1
             vodEventsTask?.cancel()
             vod = nil
-            subtitleCues = []
-            sidecarIndex = nil
+            resetSubtitles(keepingPickFor: nil)
             pendingSeekMs = nil
             clearItem()
             mode = .idle

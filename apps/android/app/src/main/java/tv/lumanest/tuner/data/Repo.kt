@@ -80,6 +80,12 @@ object Repo {
      */
     val browse = MutableStateFlow<BrowseIndex?>(null)
 
+    /**
+     * The TMDB id the popularity lists matched a title to ([BrowseTitle.tmdbId]; [key] is "movie:<id>" or
+     * "series:<id>"), or 0 when it has none or the index belongs to another playlist.
+     */
+    fun matchedTmdb(key: String): Long = browse.value?.takeIf { it.source == activeSource }?.catalog?.get(key)?.tmdbId ?: 0L
+
     /** Off in Robolectric tests, so loading a playlist never calls the live site. */
     internal var catalogRowsEnabled = android.os.Build.FINGERPRINT != "robolectric"
     private var catalogRowsClient: CatalogRowsClient? = null
@@ -311,7 +317,9 @@ object Repo {
     private fun restoreLive(request: LoadRequest, live: CatalogSnapshots.Live) {
         startupPhases["livePublish"] = "preparing"
         val hidden = prefs.deadChannels()
-        val visible = live.channels.filterNot { it.key in hidden }
+        // Snapshots saved before the provider's "Most watched now" was hidden still list it.
+        val lineup = HiddenLiveCategory.filter(live.channels, live.categories)
+        val visible = lineup.channels.filterNot { it.key in hidden }
         val used = visible.flatMapTo(HashSet()) { it.categoryIds }
         commit(request) {
             startupPhases["livePublish"] = "remapping"
@@ -321,11 +329,20 @@ object Repo {
             deadNow.clear(); deadNow.addAll(hidden)
             merged = live.merged
             startupPhases["liveRemapMs"] = ((System.nanoTime() - started) / 1_000_000).toString()
-            liveCategories.value = live.categories.filter { it.id in used }
+            liveCategories.value = lineup.categories.filter { it.id in used }
             channels.value = visible
             liveStatus.value = LoadStatus.Ready
             startupPhases["livePublish"] = "ready"
         }
+    }
+
+    /**
+     * The provider's live lineup as the app shows it: its "Most watched now" category hidden by name
+     * ([HiddenLiveCategory], docs/extras.md), then [ContentPolicy.live]. The trending playlist doesn't come through here.
+     */
+    private fun liveCatalogue(channels: List<Channel>, categories: List<Category>, request: LoadRequest): ContentPolicy.Catalogue<Channel> {
+        val shown = HiddenLiveCategory.filter(channels, categories)
+        return ContentPolicy.live(shown.channels, shown.categories, request.usOnly, request.adultUnlocked, request.storeBuild)
     }
 
     /** Current/next listings restore after channels, without delaying the usable guide lineup. */
@@ -359,7 +376,7 @@ object Repo {
                 val listFile = File(dir, "live.json"); val categoriesFile = File(dir, "live_cats.json")
                 var availableAt = cached?.storedAt
                 if (cached == null && !request.force && cachedFile(listFile) != null && cachedFile(categoriesFile) != null) {
-                    publishLive(ContentPolicy.live(x.parseLive(listFile, request.format), x.parseCategories(categoriesFile), request.usOnly, request.adultUnlocked, request.storeBuild), request, storedAt(listFile, categoriesFile))
+                    publishLive(liveCatalogue(x.parseLive(listFile, request.format), x.parseCategories(categoriesFile), request), request, storedAt(listFile, categoriesFile))
                     liveAvailable.complete(Unit)
                     availableAt = storedAt(listFile, categoriesFile)
                     if (fresh(storedAt(listFile, categoriesFile), LIVE_AGE)) return@launch
@@ -371,7 +388,7 @@ object Repo {
                     val cats = catsF.await(); val list = listF.await()
                     coroutineContext.ensureActive()
                     if (storedAt(list, cats) != availableAt || before != (list.lastModified() to cats.lastModified()))
-                        publishLive(ContentPolicy.live(x.parseLive(list, request.format), x.parseCategories(cats), request.usOnly, request.adultUnlocked, request.storeBuild), request, storedAt(list, cats))
+                        publishLive(liveCatalogue(x.parseLive(list, request.format), x.parseCategories(cats), request), request, storedAt(list, cats))
                     liveAvailable.complete(Unit)
                 }
                 commit(request) { liveStatus.value = LoadStatus.Ready }
@@ -478,7 +495,7 @@ object Repo {
                 fun publish(file: File) {
                     if (!current(request)) return
                     val r = M3u.parse(file)
-                    publishLive(ContentPolicy.live(r.channels, r.liveCategories, request.usOnly, request.adultUnlocked, request.storeBuild), request, file.lastModified())
+                    publishLive(liveCatalogue(r.channels, r.liveCategories, request), request, file.lastModified())
                     liveAvailable.complete(Unit)
                     val vod = ContentPolicy.movies(r.movies, r.movieCategories, request.adultUnlocked, request.storeBuild)
                     val cleaned = Cleanup.movies(vod.items, vod.categories)

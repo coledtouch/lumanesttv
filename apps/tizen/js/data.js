@@ -103,6 +103,46 @@
         var blocked = Object.create(null), cats = (categories || []).filter(function (cat) { if (!isAdultCategory(cat)) return true; blocked[cat.id] = true; return false; });
         return { items: (items || []).filter(function (item) { return !item.adult && !(item.categoryIds || []).some(function (id) { return blocked[id] === true; }) && blocked[item.categoryId] !== true; }), categories: cats };
     }
+    // The provider's own "Most watched now" live category (docs/extras.md, Hidden live category), matched by name on
+    // every line: ASCII letters lower-cased, ASCII letters and digits kept, every other character a separator; one
+    // leading and then one trailing word us, usa or en dropped; hidden when the words left are "most watched now" or
+    // "most watched". A loop over character codes, no pattern. Tuner's own Most Watched (__hot) is not a category.
+    var HIDDEN_TAGS = { us: true, usa: true, en: true };
+    function isHiddenLiveCategory(name) {
+        var value = typeof name === 'string' ? name : '', words = [], word = '', i, c;
+        for (i = 0; i <= value.length; i++) {
+            c = i < value.length ? value.charCodeAt(i) : 32;
+            if (c >= 65 && c <= 90) word += String.fromCharCode(c + 32);
+            else if ((c >= 97 && c <= 122) || (c >= 48 && c <= 57)) word += String.fromCharCode(c);
+            else if (word) {
+                words.push(word); word = '';
+                // A tag, three words and a tag at most: a longer name is never hidden.
+                if (words.length > 5) return false;
+            }
+        }
+        if (words.length && HIDDEN_TAGS[words[0]] === true) words.shift();
+        if (words.length && HIDDEN_TAGS[words[words.length - 1]] === true) words.pop();
+        value = words.join(' ');
+        return value === 'most watched now' || value === 'most watched';
+    }
+    // Live channels and categories without the hidden ones: the category goes, its id leaves each channel, and a
+    // channel whose categories were all hidden goes too (it is a copy of a channel listed elsewhere). A channel with no
+    // category at all stays. The arrays come back unchanged when no category is hidden; changed channels are copies.
+    function hideLiveCategories(items, categories) {
+        var hidden = Object.create(null), any = false, kept = [], cats;
+        items = items || []; categories = categories || [];
+        cats = categories.filter(function (cat) { if (!cat || !isHiddenLiveCategory(cat.name)) return true; hidden[cat.id] = true; any = true; return false; });
+        if (!any) return { items: items, categories: categories };
+        items.forEach(function (item) {
+            var ids = Array.isArray(item.categoryIds) ? item.categoryIds : item.categoryId ? [item.categoryId] : [], left;
+            if (!ids.length) { kept.push(item); return; }
+            left = ids.filter(function (id) { return hidden[id] !== true; });
+            if (!left.length) return;
+            if (left.length !== ids.length || hidden[item.categoryId] === true) { item = copy(item); item.categoryIds = left; item.categoryId = left[0]; }
+            kept.push(item);
+        });
+        return { items: kept, categories: cats };
+    }
     function parseCategories(rows) { if (!Array.isArray(rows)) throw new Error('The provider did not return categories. Check your login details.'); var seen = Object.create(null); return rows.filter(function (row) { var id = text(row.category_id); if (!id || seen[id]) return false; seen[id] = true; return true; }).map(function (row) { var cat = { id: text(row.category_id), name: text(row.category_name) || 'Other' }; if (adultFlag(row.is_adult)) cat.adult = true; return cat; }); }
     function parseXtream(rows, kind, source, format) {
         if (!Array.isArray(rows)) throw new Error('The provider did not return a catalog. Check your login details.');
@@ -727,7 +767,9 @@
         function deliver(kind, payload, token) {
             if (token !== generation || cancelled) return;
             if (kind === 'live') {
-                var merged = Object.create(null);
+                // Catalogues saved before the hidden category rule still hold it: it goes here too (a no-op for new ones).
+                var visible = hideLiveCategories(payload.items, payload.categories), merged = Object.create(null);
+                if (visible.items !== payload.items || visible.categories !== payload.categories) payload = { items: visible.items, categories: visible.categories, merged: payload.merged, xmlUrl: payload.xmlUrl };
                 Object.keys(payload.merged || {}).forEach(function (id) { if (typeof payload.merged[id] === 'string') merged[id] = payload.merged[id]; });
                 aliases[key] = merged; liveChannels = payload.items; xmlUrl = source.epgUrl || payload.xmlUrl || '';
             }
@@ -736,8 +778,11 @@
         }
         function publish(kind, items, cats, token) {
             if (token !== generation || cancelled) return;
-            var merged = {};
-            if (kind === 'live') { var folded = foldLive(localPolicy(options.usOnly ? usPolicy(items, cats) : allPolicy(items, cats), options.zip === undefined ? '01608' : options.zip)); merged = folded.merged; items = folded.items; cats = folded.categories; }
+            var merged = {}, shown;
+            if (kind === 'live') {
+                // The hidden live category goes first, in every lineup: before USA only and before copies are folded.
+                shown = hideLiveCategories(items, cats); items = shown.items; cats = shown.categories;
+                var folded = foldLive(localPolicy(options.usOnly ? usPolicy(items, cats) : allPolicy(items, cats), options.zip === undefined ? '01608' : options.zip)); merged = folded.merged; items = folded.items; cats = folded.categories; }
             else if (kind === 'movies') { items = foldMovies(items, cats); cats = usedCategories(items, cats, '__tuner_movies', 'Movies'); }
             else cats = usedCategories(items, cats, '__tuner_series', 'Series');
             items.forEach(function (item) { item.sourceKey = key; });
@@ -808,6 +853,7 @@
     root.TunerData = { createStore: createStore, createClient: createClient, sourceKey: sourceKey, catalogIdentity: catalogIdentity, normalizeSource: normalizeSource, categoryItems: categoryItems,
         parseXtream: parseXtream, parseCategories: parseCategories, parseM3u: parseM3u, usPolicy: usPolicy, allPolicy: allPolicy, localPolicy: localPolicy, foldLive: foldLive, foldMovies: foldMovies, providerYear: providerYear, spaceText: spaceText, text: text,
         adultName: adultName, isAdultCategory: isAdultCategory, adultFilter: adultFilter, hashPasscode: hashPasscode, createPasscodeLock: createPasscodeLock,
+        isHiddenLiveCategory: isHiddenLiveCategory, hideLiveCategories: hideLiveCategories,
         parseGuide: parseGuide, parseSeriesInfo: parseSeriesInfo, parseXmltv: parseXmltv, parseXmltvAsync: parseXmltvAsync, xmlTime: xmlTime, marketForZip: marketForZip, displayName: displayName, idleEvent: idleEvent, offAir: offAir };
 }(typeof window !== 'undefined' ? window : this));
 
@@ -1346,4 +1392,209 @@
         categoryServices: categoryServices, usaAllowed: usaAllowed, parseRows: parseRows, hasTmdb: hasTmdb, rowsFreshness: rowsFreshness, createRowsClient: createRowsClient,
         createIndexBuilder: createIndexBuilder, createMatcher: createMatcher, matchIndex: matchIndex, buildIndex: buildIndex, matchTmdb: matchTmdb, listOf: listOf, visible: visible, pick: pick,
         homeRowSpecs: homeRowSpecs, discoverLists: discoverLists, homeRows: homeRows, continueWatching: continueWatching, episodeToOpen: episodeToOpen };
+}(typeof window !== 'undefined' ? window : this));
+
+/* Subtitles and trailers through lumanest.tv (docs/extras.md), shared by the Samsung and LG apps: the WebVTT reader
+   the apps draw OpenSubtitles cues with, the lookup queries, the answers' checks and a client that keeps the answers
+   for the session and the subtitle files of the last titles in memory. The apps never call OpenSubtitles or TMDB:
+   lumanest.tv does, and no key reaches the TV. Everything here is plain text and data; app.js draws it. */
+(function (root) {
+    'use strict';
+    var D = root.TunerData, text = D.text;
+    var BASE = 'https://lumanest.tv/', CREDIT = 'Subtitles provided by OpenSubtitles.com', YOUTUBE_KEY = /^[A-Za-z0-9_-]{11}$/,
+        LOOKUP_TIMEOUT = 10000, FILE_TIMEOUT = 20000, MAX_ANSWERS = 200, MAX_FILES = 4, MAX_TRACKS = 3;
+    function map() { return Object.create(null); }
+
+    // ---------------------------------------------------------------- reading WebVTT
+    // docs/extras.md, Reading WebVTT. [ \t] rather than \s, and [\s\S] for "anything" so a U+2028 in cue settings
+    // still matches (. stops at it in JavaScript).
+    var VTT_HEADER = /^WEBVTT(?:[ \t][\s\S]*)?$/;
+    var VTT_TIMING = /^((?:[0-9]{2,}:)?[0-9]{2}:[0-9]{2}\.[0-9]{3})[ \t]+-->[ \t]+((?:[0-9]{2,}:)?[0-9]{2}:[0-9]{2}\.[0-9]{3})(?:[ \t][\s\S]*)?$/;
+    var VTT_STAMP = /^(?:([0-9]{2,}):)?([0-9]{2}):([0-9]{2})\.([0-9]{3})$/;
+    var VTT_TAG = /<[^>]*>/g, VTT_ENTITY = /&(amp|lt|gt|nbsp|quot|apos);/g, VTT_ENTITIES = { amp: '&', lt: '<', gt: '>', nbsp: ' ', quot: '"', apos: "'" };
+    // A timestamp in milliseconds, or -1 when minutes or seconds pass 59.
+    function vttStamp(value) {
+        var m = VTT_STAMP.exec(value), minutes, seconds;
+        if (!m) return -1;
+        minutes = Number(m[2]); seconds = Number(m[3]);
+        if (minutes > 59 || seconds > 59) return -1;
+        return ((Number(m[1] || 0) * 60 + minutes) * 60 + seconds) * 1000 + Number(m[4]);
+    }
+    // value without spaces and tabs at its ends (only those two: a cue keeps any other character).
+    function trimSpaces(value) {
+        var start = 0, end = value.length, c;
+        while (start < end && ((c = value.charCodeAt(start)) === 32 || c === 9)) start++;
+        while (end > start && ((c = value.charCodeAt(end - 1)) === 32 || c === 9)) end--;
+        return value.substring(start, end);
+    }
+    function cueLine(line) {
+        return trimSpaces(line.replace(VTT_TAG, '').replace(VTT_ENTITY, function (all, name) { return VTT_ENTITIES[name]; }));
+    }
+    // A WebVTT file as [{ start, end, text }] (milliseconds; text is plain lines joined with LF), sorted by start with
+    // equal starts in file order. Anything that is not WebVTT gives [].
+    function parseVtt(input) {
+        var lines, blocks = [], block = [], cues = [], i, j, at, match, start, end, body, line;
+        if (typeof input !== 'string') return [];
+        if (input.charCodeAt(0) === 0xfeff) input = input.substring(1);
+        lines = input.split(/\r\n|\r|\n/);
+        if (!VTT_HEADER.test(lines[0])) return [];
+        for (i = 1; i < lines.length; i++) {
+            if (lines[i] !== '') block.push(lines[i]);
+            else if (block.length) { blocks.push(block); block = []; }
+        }
+        if (block.length) blocks.push(block);
+        for (i = 0; i < blocks.length; i++) {
+            block = blocks[i];
+            // The timing line is the first or the second line with "-->"; NOTE, STYLE and REGION blocks have none.
+            at = block[0].indexOf('-->') >= 0 ? 0 : block.length > 1 && block[1].indexOf('-->') >= 0 ? 1 : -1;
+            match = at < 0 ? null : VTT_TIMING.exec(block[at]);
+            if (!match) continue;
+            start = vttStamp(match[1]); end = vttStamp(match[2]);
+            if (start < 0 || end < 0 || end <= start) continue;
+            body = [];
+            for (j = at + 1; j < block.length; j++) { line = cueLine(block[j]); if (line) body.push(line); }
+            if (body.length) cues.push({ start: start, end: end, text: body.join('\n'), order: cues.length });
+        }
+        // Not every TV's sort is stable: file order is the tie-break.
+        cues.sort(function (a, b) { return a.start - b.start || a.order - b.order; });
+        return cues.map(function (cue) { return { start: cue.start, end: cue.end, text: cue.text }; });
+    }
+    // The text at ms: every cue with start <= ms < end, in order, joined with LF; '' when none. cues: parseVtt's.
+    function vttTextAt(cues, ms) {
+        var out = [], i;
+        if (!cues || !(ms >= 0)) return '';
+        for (i = 0; i < cues.length && cues[i].start <= ms; i++) if (ms < cues[i].end) out.push(cues[i].text);
+        return out.join('\n');
+    }
+
+    // ---------------------------------------------------------------- lookups
+    // docs/extras.md, Which ids an app sends. ref: { type, tmdb, name, year, season, episode } with type 'movie' or
+    // 'episode' (subtitles), 'movie' or 'tv' (trailer); for an episode tmdb, name and year are the series'. The
+    // parameters go in the documented order, so every app asks for the same URL (and hits the same cached answer).
+    // '' when the title cannot be asked for: no TMDB id and no year, or an episode without its numbers.
+    function whole(value, min, max) {
+        var n = typeof value === 'number' ? value : typeof value === 'string' && /^[0-9]{1,4}$/.test(value) ? Number(value) : NaN;
+        return Math.floor(n) === n && n >= min && n <= max ? n : -1;
+    }
+    function tmdbId(value) {
+        value = typeof value === 'number' ? String(value) : text(value);
+        return /^[1-9][0-9]{0,11}$/.test(value) ? value : '';
+    }
+    function query(ref, types) {
+        var parts, tmdb, season, episode, name, year;
+        if (!ref || types.indexOf(ref.type) < 0) return '';
+        parts = ['v=1', 'type=' + ref.type];
+        tmdb = tmdbId(ref.tmdb);
+        if (tmdb) parts.push('tmdb=' + tmdb);
+        if (ref.type === 'episode') {
+            season = whole(ref.season, 0, 9999); episode = whole(ref.episode, 1, 9999);
+            if (season < 0 || episode < 0) return '';
+            parts.push('season=' + season, 'episode=' + episode);
+        }
+        if (!tmdb) {
+            name = text(ref.name); year = whole(Number(ref.year), 1800, 2099);
+            if (!name || name.length > 300 || year < 0) return '';
+            parts.push('name=' + encodeURIComponent(name), 'year=' + year);
+        }
+        return parts.join('&');
+    }
+    function subtitlesQuery(ref) { return query(ref, ['movie', 'episode']); }
+    function trailerQuery(ref) { return query(ref, ['movie', 'tv']); }
+    function json(body) {
+        var data = body;
+        if (typeof body === 'string') { try { data = JSON.parse(body); } catch (_) { return null; } }
+        return data && typeof data === 'object' && !Array.isArray(data) && data.v === 1 ? data : null;
+    }
+    // A 200 answer of /api/extras/subtitles, or null when unreadable. Only tracks whose file is on lumanest.tv are
+    // kept (at most 3); labels and the credit are shown as plain text.
+    function parseSubtitles(body, base) {
+        var data = json(body), raw, tracks = [], i, track, label;
+        base = base || BASE;
+        if (!data) return null;
+        raw = Array.isArray(data.tracks) ? data.tracks : [];
+        for (i = 0; i < raw.length && tracks.length < MAX_TRACKS; i++) {
+            track = raw[i];
+            if (!track || typeof track !== 'object' || typeof track.vtt !== 'string' || track.vtt.indexOf(base) !== 0) continue;
+            label = typeof track.label === 'string' ? text(track.label).substring(0, 80) : '';
+            tracks.push({ id: typeof track.id === 'string' ? track.id : '', label: label || 'English (OpenSubtitles)', hi: track.hi === true, vtt: track.vtt });
+        }
+        label = typeof data.credit === 'string' ? text(data.credit).substring(0, 120) : '';
+        return { status: typeof data.status === 'string' ? data.status : '', tracks: tracks, credit: label || CREDIT };
+    }
+    // A QR code as the server draws it (rows of 0 and 1, square), or null.
+    function qrRows(rows) {
+        var i;
+        if (!Array.isArray(rows) || rows.length < 21 || rows.length > 177) return null;
+        for (i = 0; i < rows.length; i++) if (typeof rows[i] !== 'string' || rows[i].length !== rows.length || !/^[01]+$/.test(rows[i])) return null;
+        return rows.slice();
+    }
+    // A 200 answer of /api/extras/trailer, or null when unreadable. trailer is null unless the key is a YouTube key.
+    function parseTrailer(body) {
+        var data = json(body), raw, key;
+        if (!data) return null;
+        raw = data.trailer && typeof data.trailer === 'object' ? data.trailer : null;
+        key = raw && typeof raw.key === 'string' && YOUTUBE_KEY.test(raw.key) ? raw.key : '';
+        return { status: typeof data.status === 'string' ? data.status : '', trailer: key ? {
+            key: key, name: (typeof raw.name === 'string' ? text(raw.name).substring(0, 100) : '') || 'Trailer',
+            url: 'https://www.youtube.com/watch?v=' + key, short: 'youtu.be/' + key, qr: qrRows(raw.qr) } : null };
+    }
+
+    // options: XMLHttpRequest, base (https://lumanest.tv/). Every callback gets the answer, or null for no answer (a
+    // failure, a timeout, nothing to ask): the apps then show nothing, silently. Answers are kept for the session (200
+    // at most, the oldest go first); a request already running is shared. Files are fetched only when asked for.
+    function createClient(options) {
+        options = options || {};
+        var Xhr = options.XMLHttpRequest || null, base = options.base || BASE, answers = map(), order = [], pending = map(), files = [], filesPending = map();
+        function get(url, timeout, done) {
+            var xhr, finished = false;
+            function finish(status, body) { if (finished) return; finished = true; done(status, body); }
+            if (!Xhr) { finish(0, ''); return; }
+            try { xhr = new Xhr(); xhr.open('GET', url, true); xhr.timeout = timeout; } catch (_) { finish(0, ''); return; }
+            xhr.onreadystatechange = function () { if (xhr.readyState === 4) finish(xhr.status, xhr.responseText); };
+            xhr.onerror = xhr.ontimeout = xhr.onabort = function () { finish(0, ''); };
+            try { xhr.send(); } catch (_) { finish(0, ''); }
+        }
+        function keep(url, answer) {
+            if (!answers[url]) order.push(url);
+            answers[url] = answer;
+            while (order.length > MAX_ANSWERS) delete answers[order.shift()];
+        }
+        function lookup(path, search, parse, done) {
+            var url;
+            if (!search) { done(null); return; }
+            url = base + path + '?' + search;
+            if (answers[url]) { done(answers[url]); return; }
+            if (pending[url]) { pending[url].push(done); return; }
+            pending[url] = [done];
+            get(url, LOOKUP_TIMEOUT, function (status, body) {
+                var answer = status === 200 ? parse(body, base) : null, waiting = pending[url];
+                delete pending[url];
+                if (answer) keep(url, answer);
+                waiting.forEach(function (callback) { callback(answer); });
+            });
+        }
+        // The cues of a subtitle file (a vtt URL from a subtitles answer), or null when it fails or has none.
+        function file(url, done) {
+            var i;
+            if (typeof url !== 'string' || url.indexOf(base) !== 0) { done(null); return; }
+            for (i = 0; i < files.length; i++) if (files[i].url === url) { done(files[i].cues); return; }
+            if (filesPending[url]) { filesPending[url].push(done); return; }
+            filesPending[url] = [done];
+            get(url, FILE_TIMEOUT, function (status, body) {
+                var cues = status === 200 ? parseVtt(body) : [], waiting = filesPending[url];
+                delete filesPending[url];
+                if (cues.length) { files.unshift({ url: url, cues: cues }); if (files.length > MAX_FILES) files.length = MAX_FILES; } else cues = null;
+                waiting.forEach(function (callback) { callback(cues); });
+            });
+        }
+        return {
+            subtitles: function (ref, done) { lookup('api/extras/subtitles', subtitlesQuery(ref), parseSubtitles, done); },
+            trailer: function (ref, done) { lookup('api/extras/trailer', trailerQuery(ref), parseTrailer, done); },
+            file: file
+        };
+    }
+
+    D.extras = { BASE: BASE, CREDIT: CREDIT, isHiddenLiveCategory: D.isHiddenLiveCategory, parseVtt: parseVtt, vttTextAt: vttTextAt,
+        subtitlesQuery: subtitlesQuery, trailerQuery: trailerQuery, parseSubtitles: parseSubtitles, parseTrailer: parseTrailer, createClient: createClient };
+    D.parseVtt = parseVtt; D.vttTextAt = vttTextAt;
 }(typeof window !== 'undefined' ? window : this));

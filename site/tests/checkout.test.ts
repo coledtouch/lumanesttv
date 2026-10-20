@@ -633,9 +633,12 @@ test('cleanup purges expired rows and closes stale never-created checkouts idemp
   sqlite.prepare("INSERT INTO player_revoked_sessions VALUES ('expired',?)").run(now - 1);
   sqlite.prepare("INSERT INTO billing_line_locks VALUES (7,'token',?)").run(now - 1);
   sqlite.prepare("INSERT INTO paypal_webhook_events VALUES ('old','X',?),('recent','X',?)").run(now - 31 * 24 * 60 * 60 * 1000, now);
+  const day = (ms: number) => new Date(ms).toISOString().slice(0, 10), DAY = 24 * 60 * 60 * 1000;
+  sqlite.prepare("INSERT INTO extras_download_counts VALUES (?,'*',9),(?,'client',2),(?,'*',5),(?,'*',1)").run(day(now - 2 * DAY), day(now - 2 * DAY), day(now - DAY), day(now));
   sqlite.prepare("INSERT INTO orders (id,email,name,kind,devices,months,amount,state,created) VALUES ('stale','a@b.test','','new',1,12,'95.00','creating',?),('fresh','a@b.test','','new',1,12,'95.00','creating',?)").run(old, now);
   sqlite.prepare("INSERT INTO subscriptions (id,plan_id,line_id,line_slot,credential,devices,months,amount,currency,email,name,state,mode,starts_at,created,updated) VALUES ('stale-sub','P-PLAN',42,42,'digest',1,12,'95.00','USD','a@b.test','','creating','live','2026-10-01T00:00:00.000Z',?,?)").run(old, old);
-  assert.deepEqual(await cleanup(now), {owner_sessions: 1, owner_auth_attempts: 1, player_login_attempts: 1, player_revoked_sessions: 1, billing_line_locks: 1, paypal_webhook_events: 1, abandoned_orders: 1, cancelled_enrollments: 1});
+  assert.deepEqual(await cleanup(now), {owner_sessions: 1, owner_auth_attempts: 1, player_login_attempts: 1, player_revoked_sessions: 1, billing_line_locks: 1, paypal_webhook_events: 1, extras_download_counts: 2, abandoned_orders: 1, cancelled_enrollments: 1});
+  assert.deepEqual(sqlite.prepare('SELECT day FROM extras_download_counts ORDER BY day').all().map(row => row.day), [day(now - DAY), day(now)], 'yesterday and today stay');
   assert.deepEqual({...sqlite.prepare("SELECT state,error FROM orders WHERE id='stale'").get()}, {state: 'abandoned', error: 'checkout_not_created'});
   assert.equal(sqlite.prepare("SELECT state FROM orders WHERE id='fresh'").get()?.state, 'creating');
   assert.deepEqual({...sqlite.prepare('SELECT state,line_slot,error FROM subscriptions').get()}, {state: 'CANCELLED', line_slot: null, error: 'enrollment_not_created'});

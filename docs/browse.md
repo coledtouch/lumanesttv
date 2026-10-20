@@ -2,6 +2,8 @@
 
 This is the shared design for how every Tuner app (Android TV / Fire TV, Samsung, LG, Roku, Apple TV) presents movies and series. Each app implements it in its own UI toolkit and keeps its platform's remote conventions. Live TV keeps its guide and is not part of this change.
 
+Subtitles from OpenSubtitles, the Trailer button and the hidden "Most watched now" live category are specified in [`extras.md`](extras.md), with their shared cases in `docs/extras-cases.json`.
+
 ## Navigation
 
 Top-level sections, in this order: **Home**, **Live TV**, **Discover**, **Library**, **Search**, **Settings** (plus **Multi View** where the app has it). Home is the first section a returning customer lands on, unless the app's existing "start on Live TV" behaviour is kept as a setting.

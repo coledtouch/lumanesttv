@@ -605,6 +605,9 @@ export function categoryGenreKeys(name: string, table: GenreTable) {
 export type IndexedTitle = {
   kind: TitleKind; key: string; id: string; name: string; year: string; rating: number; poster: string; ext: string;
   adult: boolean; us: boolean; tmdb: string; g: string; channel?: string;
+  /** The provider's own TMDB id (Matching step 1), kept even when the TMDB lists don't hold it: subtitles and the
+   *  trailer are looked up by it (docs/extras.md, "Which ids an app sends"). */
+  hint?: string;
   /** Titles matched to the same TMDB title, when there are several: their indices, best first (see titleSectionSteps). */
   copies?: number[];
 };
@@ -688,6 +691,7 @@ export function* titleSectionSteps(titles: BrowseTitle[], categories: CategoryIn
     const i = items.length;
     const item: IndexedTitle = {kind: title.kind, key: title.key, id: title.id, name: title.name, year: title.year, rating: title.rating, poster: title.poster, ext: title.ext, adult: title.adult || info.adult, us, tmdb, g};
     if (title.channel) item.channel = title.channel;
+    if (title.hint) item.hint = title.hint;
     items.push(item);
     addedOf.push(title.added);
     if (!byKey.has(title.key)) byKey.set(title.key, i);

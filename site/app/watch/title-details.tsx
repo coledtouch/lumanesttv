@@ -9,13 +9,14 @@ import {PosterArt, posterSrc} from './poster';
 import {posterChoices, type PosterSources} from './poster-choice';
 import {MAYBE_MESSAGE, TUNER_MESSAGE, vodPlan} from './vod-format';
 import {focusElement, keysMode} from './use-spatial-navigation';
+import TrailerButton from './trailer';
 
-// A movie's or series' details: poster, facts, plot, Play or Resume, Library, and a series' seasons and episodes.
+// A movie's or series' details: poster, facts, plot, Play or Resume, Library, Trailer, and a series' seasons and episodes.
 // Details come from /api/player/vod/movie and /api/player/vod/series (Xtream lines) and are kept for this page load.
 // A series made of an M3U playlist's episode entries has its episodes listed locally (registerLocalSeries).
 
 export type {Episode} from './local-series';
-type SeriesData = {plot: string; year: string; genre: string; rating: number; poster: string; seasons: SeasonInfo[]; episodes: Episode[]};
+type SeriesData = {plot: string; year: string; genre: string; rating: number; poster: string; tmdb: string; seasons: SeasonInfo[]; episodes: Episode[]};
 type Loaded<T> = {status: 'loading' | 'ready' | 'error'; data?: T; message?: string};
 
 const seriesCache = new Map<string, Loaded<SeriesData>>();
@@ -26,13 +27,19 @@ export function clearDetails() {seriesCache.clear(); movieCache.clear();}
 /** Lists the episodes of series made from the playlist (they have no Xtream details to load). */
 export function registerLocalSeries(list: LocalSeries[]) {
   for (const key of [...seriesCache.keys()]) if (key.startsWith('s~')) seriesCache.delete(key);
-  for (const series of list) seriesCache.set(series.key, {status: 'ready', data: {plot: '', year: '', genre: '', rating: 0, poster: '', seasons: series.seasons, episodes: series.episodes}});
+  for (const series of list) seriesCache.set(series.key, {status: 'ready', data: {plot: '', year: '', genre: '', rating: 0, poster: '', tmdb: '', seasons: series.seasons, episodes: series.episodes}});
   for (const listener of listeners) listener();
 }
 
 /** "Dune (2021)" already says 2021: the year is not repeated beside it. */
 export function yearShown(name: string, year: string | undefined) {
   return year && !name.includes(year) ? year : '';
+}
+
+/** The provider's TMDB id from a title's details, once loaded ("" otherwise): subtitles and the trailer use it. */
+export function detailsTmdb(title: {kind: string; key: string}) {
+  const data = (title.kind === 'series' ? seriesCache : movieCache).get(title.key)?.data;
+  return data && typeof data.tmdb === 'string' ? data.tmdb : '';
 }
 
 /** A series' episodes in season and episode order, once loaded (the player needs them for Next episode). */
@@ -55,7 +62,7 @@ async function loadDetails(title: IndexedTitle) {
     if (series) {
       const episodes: Episode[] = [];
       for (const season of data.seasons || []) for (const episode of season.episodes) episodes.push({...episode, season: season.season, label: `S${season.season} E${episode.episode}`, index: episodes.length});
-      seriesCache.set(title.key, {status: 'ready', data: {plot: data.plot, year: data.year, genre: data.genre, rating: data.rating, poster: posterSrc(data.poster || '', data.posterBases || []), seasons: data.seasons || [], episodes}});
+      seriesCache.set(title.key, {status: 'ready', data: {plot: data.plot, year: data.year, genre: data.genre, rating: data.rating, poster: posterSrc(data.poster || '', data.posterBases || []), tmdb: typeof data.tmdb === 'string' ? data.tmdb : '', seasons: data.seasons || [], episodes}});
     } else movieCache.set(title.key, {status: 'ready', data});
   } catch (error) {
     cache.set(title.key, {status: 'error', message: error instanceof Error ? error.message : 'Details could not be loaded.'});
@@ -113,6 +120,9 @@ export function TitleDetails({title, library, posters, onPlay, onToggleFavorite,
   const srcs = posterChoices(title, posters, series?.poster);
   const facts = [yearShown(title.name, title.year || series?.year), movie?.duration ? minutes(movie.duration) : '', (title.rating || movie?.rating || series?.rating) ? '★ ' + (title.rating || movie?.rating || series?.rating) : '', movie?.genre || series?.genre].filter(Boolean);
   const plot = movie?.plot || series?.plot || '';
+  // An Xtream title's details (and the TMDB id they may carry) are on their way until they are ready or failed.
+  const detailsState = title.kind === 'series' ? details.series?.status : details.movie?.status;
+  const detailsPending = Boolean(title.id) && detailsState !== 'ready' && detailsState !== 'error';
 
   // What Play does: a movie or M3U entry plays itself; a series resumes its episode, plays the next one, or starts at S1 E1.
   let primary: {label: string; request: PlayRequest; episode?: Episode} | null = null;
@@ -166,6 +176,7 @@ export function TitleDetails({title, library, posters, onPlay, onToggleFavorite,
           {primary && <button ref={playButton} type="button" className="button primary" data-nav-start="" data-focus-key="action:play" aria-disabled={busy || undefined} onClick={guard(() => onPlay(primary!.request))}><Play size={18} aria-hidden="true"/> {busy ? 'Starting…' : primary.label}</button>}
           {startOver && <button type="button" className="small-button" data-focus-key="action:restart" aria-disabled={busy || undefined} onClick={guard(() => onPlay(startOver!))}><RotateCcw size={16} aria-hidden="true"/> Start over</button>}
           <button ref={libraryButton} type="button" className="small-button library-toggle" data-focus-key="action:library" aria-pressed={favorite} onClick={onToggleFavorite}>{favorite ? <><Check size={16} aria-hidden="true"/> In your Library</> : <><Plus size={16} aria-hidden="true"/> Add to Library</>}</button>
+          {title.kind !== 'episode' && <TrailerButton title={title} detailsTmdb={movie?.tmdb || series?.tmdb || ''} detailsPending={detailsPending}/>}
         </div>
         {(mode === 'tuner' || mode === 'maybe') && title.kind !== 'series' && <FormatNote mode={mode}/>}
         {error && <p className="watch-error" role="alert">{error}</p>}
