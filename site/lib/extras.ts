@@ -483,3 +483,33 @@ export const resolveObject = (media: Media, hash: string) => OBJECT_PREFIX + `re
 export const STATE_OBJECT = OBJECT_PREFIX + 'state/opensubtitles.json';
 /** What the resolve object's name hashes (hex SHA-256). */
 export const resolveHashInput = (key: string, whole: string, year: string) => key + '\n' + whole + '\n' + year;
+
+// ------------------------------------------------------------------ the edge cache (each location's Workers Cache API)
+
+/** Part of every edge cache key: raise it when an answer's shape, or a rule that decides an answer, changes. */
+export const EDGE_CACHE_VERSION = 1;
+export type EdgeKind = 'trailer' | 'subtitles';
+
+/**
+ * The path, on the site's own origin, that a lookup's answer is kept under in a location's Cache API. It is made from
+ * the parsed query, never the request's URL, so equivalent requests (parameters in any order, `v` left out, leading
+ * zeros in season and episode, unknown parameters, names that normalize alike) share one entry and unknown parameters
+ * can't make a new one. A lookup by name is kept under `nameHash`, the hash its R2 resolve object is named by
+ * (resolveHashInput). Subtitle answers carry file links signed with PLAYER_COOKIE_KEY, so their path also holds `keyId`,
+ * an id of that key: answers made with an earlier key are never served.
+ */
+export function edgeCachePath(kind: EdgeKind, query: LookupQuery, nameHash: string, keyId: string): string {
+  const title = query.media + '/' + (query.tmdb !== null ? String(query.tmdb) : 'name/' + nameHash);
+  const base = '/__lumanest-cache/extras-v' + EDGE_CACHE_VERSION + '/';
+  if (kind === 'trailer') return base + 'trailer/' + title;
+  const episode = query.episode ? '/s' + query.episode.season + '/e' + query.episode.episode : '';
+  return base + 'subtitles/' + keyId + '/' + title + episode + '/en';
+}
+
+/**
+ * The Cache-Tag of an answer kept at the edge, for purging by tag: `extras` (every answer), `extras-<kind>`, and
+ * `extras-<kind>-<movie|tv>-<tmdb>` when the answer names a TMDB id (a series' episodes share the series' tag).
+ */
+export function edgeCacheTags(kind: EdgeKind, media: Media, tmdb: number | null): string {
+  return ['extras', 'extras-' + kind, ...(tmdb !== null ? ['extras-' + kind + '-' + media + '-' + tmdb] : [])].join(',');
+}

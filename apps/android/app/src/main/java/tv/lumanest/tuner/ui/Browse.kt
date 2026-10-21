@@ -65,6 +65,7 @@ import tv.lumanest.tuner.data.BrowseCatalog
 import tv.lumanest.tuner.data.BrowseIndex
 import tv.lumanest.tuner.data.BrowseTitle
 import tv.lumanest.tuner.data.ContinueItem
+import tv.lumanest.tuner.data.Extras
 import tv.lumanest.tuner.data.ExtrasTitle
 import tv.lumanest.tuner.data.LoadStatus
 import tv.lumanest.tuner.data.Movie
@@ -73,6 +74,7 @@ import tv.lumanest.tuner.data.Recent
 import tv.lumanest.tuner.data.Repo
 import tv.lumanest.tuner.data.Source
 import tv.lumanest.tuner.data.SubtitleQuery
+import tv.lumanest.tuner.data.TrailerQuery
 import tv.lumanest.tuner.data.VodType
 import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
@@ -103,6 +105,12 @@ data class BrowseItem(
     val progressLabel: String? = null,
     /** Hold OK: add the title to the Library or remove it. */
     val onLongClick: (() -> Unit)? = null,
+    /**
+     * The trailer lookup of the details page this card opens ([trailerQueryOf]), started ahead of it
+     * ([tv.lumanest.tuner.data.TrailerPrefetcher]) once the card keeps the focus or is chosen. Null when the card opens
+     * no details page.
+     */
+    val trailerQuery: (() -> TrailerQuery?)? = null,
 )
 
 data class BrowseRow(val key: String, val title: String, val items: List<BrowseItem>)
@@ -176,6 +184,7 @@ internal fun titleItem(title: BrowseTitle, favorites: Set<String>, progress: Map
     movie = title.movie,
     favorite = title.savedIn(favorites),
     onLongClick = { actions.toggleLibrary(title) },
+    trailerQuery = { trailerQueryOf(title) },
 )
 
 internal fun continueItem(item: ContinueItem, favorites: Set<String>, actions: BrowseActions): BrowseItem {
@@ -190,6 +199,8 @@ internal fun continueItem(item: ContinueItem, favorites: Set<String>, actions: B
         movie = item.title.movie,
         favorite = item.title.savedIn(favorites),
         onLongClick = { actions.toggleLibrary(item.title) },
+        // A series opens on its page; a film resumes in the player, with no page to prepare.
+        trailerQuery = item.title.series?.let { series -> { trailerQueryOf(series) } },
     )
 }
 
@@ -589,14 +600,20 @@ private fun RowsContent(
 @Composable
 internal fun PosterCard(item: BrowseItem, modifier: Modifier, width: Dp, compact: Boolean, onFocusChanged: (Boolean) -> Unit) {
     FocusBox(
-        onClick = item.onClick,
+        onClick = {
+            item.trailerQuery?.let { Extras.prefetch.chosen(it()) }
+            item.onClick()
+        },
         onLongClick = item.onLongClick,
         modifier = modifier.width(width),
         shape = RoundedCornerShape(10.dp),
         color = Palette.surface,
         focusedColor = Palette.surface2,
         focusedScale = 1.045f,
-        onFocus = onFocusChanged,
+        onFocus = { focused ->
+            item.trailerQuery?.let { query -> if (focused) Extras.prefetch.focused(query()) else Extras.prefetch.unfocused(query()) }
+            onFocusChanged(focused)
+        },
     ) { focused ->
         Column {
             Box(Modifier.fillMaxWidth().height(width * 1.5f).clip(RoundedCornerShape(topStart = 10.dp, topEnd = 10.dp))

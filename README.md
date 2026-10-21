@@ -28,7 +28,7 @@ See [architecture and deployment](docs/deployment.md) for service boundaries and
 
 ## App downloads
 
-Installers are distributed through [LumaNest apps](https://lumanest.tv/apps), with archives on the repository's [Releases page](https://github.com/coledtouch/lumanesttv/releases). The approved Android download remains **1.5.3**, served from R2 through `/api/tuner`; historical 1.5.2 is retained as an archive. Android source changes and draft CI artifacts do not replace the approved release. The current LG installer is retained in the website's public downloads directory. Tags such as `android-v1.6.0` build draft releases; see [releases](releases/README.md#cutting-a-release).
+Installers are distributed through [LumaNest apps](https://lumanest.tv/apps), with archives on the repository's [Releases page](https://github.com/coledtouch/lumanesttv/releases). The approved Android download is **1.7.1**, served from R2 through `/api/tuner`; older APKs are kept as archives (see [releases](releases/README.md)). Android source changes and draft CI artifacts do not replace the approved release. The current LG installer is retained in the website's public downloads directory. Tags such as `android-v1.6.0` build draft releases; see [releases](releases/README.md#cutting-a-release).
 
 The Samsung widget included for development is unsigned. Samsung installation requires a valid business signing certificate and supported TV setup.
 

@@ -1,6 +1,6 @@
-// The real /api/extras/* routes in workerd, with a real R2 bucket, a D1 database with the site's migrations and the
-// Workers Rate Limiting binding as Miniflare runs them, and OpenSubtitles and TMDB replaced by an outbound double. No
-// request reaches the network.
+// The real /api/extras/* routes in workerd, with a real R2 bucket, a D1 database with the site's migrations, the
+// Workers Rate Limiting binding and the Cache API as Miniflare runs them, and OpenSubtitles and TMDB replaced by an
+// outbound double. No request reaches the network.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
@@ -28,6 +28,9 @@ function upstream(request) {
   if (url.origin === 'https://api.themoviedb.org' && url.pathname === '/3/movie/603/videos') {
     return Response.json({results: [{iso_639_1: 'en', name: 'Trailer', key: 'vKQi3bBA1y8', site: 'YouTube', type: 'Trailer', official: true, published_at: '2021-01-01T00:00:00.000Z'}]});
   }
+  if (url.origin === 'https://api.themoviedb.org' && url.pathname === '/3/tv/1399/videos') {
+    return Response.json({results: [{iso_639_1: 'en', name: 'Season 1 Teaser', key: 'BpJYNVhGf1s', site: 'YouTube', type: 'Teaser', official: true, published_at: '2011-01-01T00:00:00.000Z'}]});
+  }
   return new Response('unexpected', {status: 599});
 }
 
@@ -48,6 +51,14 @@ test.before(async () => {
           if (pathname === '/test/d1') {
             const {results} = await env.DB.prepare('SELECT day, client, count FROM extras_download_counts ORDER BY client').all();
             return Response.json(results);
+          }
+          if (pathname === '/test/r2-delete') {
+            await env.BUCKET.delete(searchParams.get('key'));
+            return Response.json(true);
+          }
+          if (pathname === '/test/edge') {
+            const kept = await caches.default.match(searchParams.get('key'));
+            return Response.json(kept ? {status: kept.status, headers: Object.fromEntries(kept.headers), body: await kept.text()} : null);
           }
           if (pathname === '/test/r2-list') {
             const listed = env.BUCKET ? await env.BUCKET.list({prefix: ''}) : {objects: []};
@@ -81,8 +92,8 @@ test.before(async () => {
 });
 test.after(async () => {await runtime?.dispose();});
 
-async function call(worker, path, method = 'GET') {
-  const response = await (await runtime.getWorker(worker)).fetch(new URL(path, 'https://lumanest.tv'), {method, headers: {'CF-Connecting-IP': '192.0.2.10'}});
+async function call(worker, path, method = 'GET', ip = '192.0.2.10') {
+  const response = await (await runtime.getWorker(worker)).fetch(new URL(path, 'https://lumanest.tv'), {method, headers: {'CF-Connecting-IP': ip}});
   return {status: response.status, headers: response.headers, text: await response.text()};
 }
 
@@ -158,4 +169,47 @@ test('a lookup, its file and a trailer in workerd, with only metadata in R2', as
   // Nothing but metadata under extras/v1/: no subtitle file was stored.
   const keys = JSON.parse((await call('extras', '/test/r2-list')).text);
   assert.deepEqual(keys.sort(), ['extras/v1/subtitles/movie/603/en.json', 'extras/v1/trailers/movie/603.json']);
+});
+
+test('the edge cache in workerd: an answer kept in caches.default is served again without R2 or TMDB, with Age; failures are not kept', async () => {
+  // Another client than the test above, whose uncached lookups (2 a minute here) are used up.
+  const ip = '192.0.2.11';
+  const path = '/api/extras/trailer?v=1&type=tv&tmdb=1399';
+  const edge = key => call('extras', '/test/edge?key=' + encodeURIComponent('https://lumanest.tv/__lumanest-cache/extras-v1/' + key)).then(r => JSON.parse(r.text));
+  const videos = () => calls.filter(c => c.url.pathname === '/3/tv/1399/videos').length;
+  const first = await call('extras', path, 'GET', ip);
+  assert.equal(first.status, 200);
+  assert.equal(JSON.parse(first.text).trailer.key, 'BpJYNVhGf1s');
+  assert.equal(first.headers.get('Age'), null);
+  // Written after the answer (waitUntil).
+  let kept = null;
+  for (let i = 0; i < 100 && !kept; i++) {kept = await edge('trailer/tv/1399'); if (!kept) await new Promise(resolve => setTimeout(resolve, 20));}
+  assert.ok(kept, 'kept in caches.default');
+  assert.equal(kept.status, 200);
+  assert.equal(kept.headers['cache-control'], 'public, max-age=86400');
+  assert.equal(kept.body, first.text);
+  assert.equal(videos(), 1);
+  // Without the R2 object only the edge cache can answer, and TMDB is not asked.
+  await call('extras', '/test/r2-delete?key=' + encodeURIComponent('extras/v1/trailers/tv/1399.json'));
+  for (const query of [path, '/api/extras/trailer?tmdb=1399&type=tv&utm_source=x']) {
+    const hit = await call('extras', query, 'GET', ip);
+    assert.equal(hit.status, 200);
+    assert.equal(hit.text, first.text);
+    assert.equal(hit.headers.get('Age'), '0', 'whole hours, rounded down');
+    for (const name of ['Content-Type', 'Cache-Control', 'Access-Control-Allow-Origin', 'Access-Control-Allow-Methods', 'Access-Control-Max-Age', 'X-Content-Type-Options']) {
+      assert.equal(hit.headers.get(name), first.headers.get(name), name);
+    }
+    assert.equal(hit.headers.get('Cache-Tag'), null);
+    assert.equal(hit.headers.get('X-Extras-Stored'), null);
+  }
+  const head = await call('extras', path, 'HEAD', ip);
+  assert.equal(head.status, 200);
+  assert.equal(head.text, '');
+  assert.equal(head.headers.get('Cache-Control'), 'public, max-age=86400');
+  assert.equal(videos(), 1);
+  // A TMDB failure is a 503 that nothing keeps.
+  const failed = await call('extras', '/api/extras/trailer?v=1&type=movie&tmdb=4040', 'GET', ip);
+  assert.equal(failed.status, 503);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(await edge('trailer/movie/4040'), null);
 });

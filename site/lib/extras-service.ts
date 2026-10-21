@@ -6,6 +6,10 @@
 // OpenSubtitles state) is kept, in R2 under extras/v1/. Each file request downloads the file from OpenSubtitles
 // (one download from the plan's quota), converts it and passes it on; the viewer's device may keep it.
 //
+// Lookup answers that are safe to share (ok, none, and unmatched by name; never errors, not_configured, unavailable or a
+// stale copy) are also kept in each Cloudflare location's Cache API under their own Cache-Control, keyed by the parsed
+// query (edgeCachePath), so a title asked for again there is answered without R2. Such a hit takes no lookup token.
+//
 // The plan's daily downloads are guarded by a count per UTC day in D1 (extras_download_counts): every client together
 // (row '*'), each client (a keyed hash of clientPrefix: an IPv4 address or an IPv6 /64, never the address) and, for
 // IPv6, its /48 (clientNetwork), so one address, one /64 or one /48 (a household's /56, a free tunnel) gets at most its
@@ -17,7 +21,7 @@
 // Logs carry fixed codes and numbers only: never keys, tokens, the OpenSubtitles login, IP addresses, titles or URLs.
 import {
   CLIENT_DAILY_DOWNLOADS, CREDIT, EXTRAS_VERSION, FILE_PATH, NETWORK_DAILY_DOWNLOADS, STATE_OBJECT, clientMacInput, clientNetwork, clientPrefix,
-  dailyDownloads, fileMacInput, matchResolved,
+  dailyDownloads, edgeCachePath, edgeCacheTags, fileMacInput, matchResolved, type EdgeKind,
   parseSrt, parseSubtitleQuery, parseTrailerQuery, pickSubtitles, utcDay,
   pickTrailer, resolveHashInput, resolveKeys, resolveObject, subtitleSearchPath, subtitlesObject, toSrt, toVtt, tmdbSearch, trackLabel, trailerName, trailerObject,
   youtubeShortText, youtubeShortURL, youtubeWatchURL, YOUTUBE_KEY, FILE_ID_MAX, MAX_TRACKS, type LookupQuery, type Media, type PickedFile, type QueryError,
@@ -25,7 +29,7 @@ import {
 } from './extras.ts';
 import {mac, open, seal} from './player-crypto.ts';
 import {qrRows} from './qr.ts';
-import {tmdbAuth, tmdbRequest, type TmdbAuth} from './catalog.ts';
+import {tmdbAuth, tmdbRequest, type CacheLike, type TmdbAuth} from './catalog.ts';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** How long each kind of R2 object is fresh. */
@@ -95,6 +99,9 @@ const CACHE = {
   ok: 'public, max-age=86400', empty: 'public, max-age=21600', notConfigured: 'public, max-age=600', stale: 'public, max-age=300', none: 'no-store',
 };
 const FILE_TYPES = {vtt: 'text/vtt; charset=utf-8', srt: 'application/x-subrip; charset=utf-8'};
+/** Kept with an edge cache entry only: when it was stored (ms), for Age and so it is never served past its max-age. */
+const STORED_HEADER = 'X-Extras-Stored';
+const MAX_AGE = /(?:^|[ ,])max-age=([0-9]{1,9})(?:$|[ ,])/;
 
 export type RateLimitLike = {limit?: (options: {key: string}) => Promise<{success?: boolean} | undefined>};
 export type D1StatementLike = {bind(...values: unknown[]): D1StatementLike; run(): Promise<unknown>};
@@ -115,8 +122,10 @@ export type ExtrasDeps = {
   env: ExtrasEnv;
   fetch?: typeof fetch;
   now?: () => number;
-  /** Keeps R2 writes going after the answer (ctx.waitUntil); without it they are awaited. */
+  /** Keeps R2 and edge cache writes going after the answer (ctx.waitUntil); without it they are awaited. */
   waitUntil?: (promise: Promise<unknown>) => void;
+  /** The location's shared cache (caches.default), where lookup answers safe to share are kept; none: nothing is kept. */
+  cache?: CacheLike | null;
   timing?: ExtrasTiming;
 };
 
@@ -257,7 +266,7 @@ export function createExtras() {
   const opened = new Map<string, OsAuth | null>();
 
   type Ctx = {
-    env: ExtrasEnv; send: typeof fetch; now: () => number; bucket: R2Like | null; waitUntil?: (promise: Promise<unknown>) => void;
+    env: ExtrasEnv; send: typeof fetch; now: () => number; bucket: R2Like | null; cache: CacheLike | null; waitUntil?: (promise: Promise<unknown>) => void;
     requestMs: number; linkMs: number; retryDelayMs: number; storeMs: number;
     osKey: string; playerKey: string;
   };
@@ -265,8 +274,9 @@ export function createExtras() {
     const env = deps.env || {}, timing = deps.timing || {};
     const bucket = env.BUCKET && typeof env.BUCKET.get === 'function' && typeof env.BUCKET.put === 'function' ? env.BUCKET : null;
     const playerKey = typeof env.PLAYER_COOKIE_KEY === 'string' && PLAYER_KEY.test(env.PLAYER_COOKIE_KEY) ? env.PLAYER_COOKIE_KEY : '';
+    const cache = deps.cache && typeof deps.cache.match === 'function' && typeof deps.cache.put === 'function' ? deps.cache : null;
     return {
-      env, send: deps.fetch || ((input, init) => fetch(input, init)), now: deps.now || Date.now, bucket, waitUntil: deps.waitUntil,
+      env, send: deps.fetch || ((input, init) => fetch(input, init)), now: deps.now || Date.now, bucket, cache, waitUntil: deps.waitUntil,
       requestMs: timing.requestMs ?? REQUEST_TIMEOUT_MS, linkMs: timing.linkMs ?? LINK_TIMEOUT_MS, retryDelayMs: timing.retryDelayMs ?? 1000,
       storeMs: timing.storeMs ?? STORE_TIMEOUT_MS,
       osKey: typeof env.OPENSUBTITLES_API_KEY === 'string' ? env.OPENSUBTITLES_API_KEY.trim() : '', playerKey,
@@ -374,6 +384,66 @@ export function createExtras() {
     if (!usable) return null;
     remember(blocked, key, ctx.now() + RETRY_MS);
     return {value: usable.value, stale: true};
+  }
+
+  // ---------------------------------------------------------------- the edge cache (the location's Cache API)
+
+  /**
+   * The edge cache key of a lookup (docs/extras.md, Edge cache): this site's origin (subtitle answers hold links on it)
+   * and edgeCachePath. Null without a cache.
+   */
+  async function edgeKey(ctx: Ctx, origin: string, kind: EdgeKind, query: LookupQuery): Promise<string | null> {
+    if (!ctx.cache) return null;
+    let nameHash = '';
+    if (query.tmdb === null) {
+      const {key, whole} = resolveKeys(query.name);
+      nameHash = await sha256Hex(resolveHashInput(key, whole, query.year));
+    }
+    const keyId = kind === 'subtitles' ? (await mac('extras-edge-v1', ctx.playerKey, 'extras-edge')).slice(0, 16) : '';
+    return origin + edgeCachePath(kind, query, nameHash, keyId);
+  }
+
+  /**
+   * The answer kept at `key`, with its status and headers as they were sent and Age, the time since it was stored in
+   * whole hours (rounded down: to the second, it would tell when another viewer at this location asked about the
+   * title, in the request that stored it), so a client's own cache keeps it less than an hour past its max-age in all.
+   * Null when there is none, it has reached its max-age, or the cache fails or takes longer than storeMs: the lookup
+   * then goes on as if there were no edge cache.
+   */
+  async function fromEdge(ctx: Ctx, key: string | null): Promise<Response | null> {
+    if (!key || !ctx.cache) return null;
+    const cache = ctx.cache;
+    const found = await within(Promise.resolve().then(() => cache.match(key)), ctx.storeMs);
+    if (!found) return null;
+    const stored = Number(found.headers.get(STORED_HEADER)), maxAge = MAX_AGE.exec(found.headers.get('Cache-Control') || '');
+    const age = Math.max(0, Math.floor((ctx.now() - stored) / 1000));
+    if (found.status !== 200 || !(stored > 0) || !maxAge || age >= Number(maxAge[1])) {await discard(found); return null;}
+    const headers = new Headers(found.headers);
+    headers.delete(STORED_HEADER);
+    headers.delete('Cache-Tag');
+    headers.set('Age', String(Math.floor(age / 3600) * 3600));
+    return new Response(found.body, {status: 200, headers});
+  }
+
+  /**
+   * Answers with `response` and keeps a copy at the edge under `key` with its own Cache-Control, the time it was
+   * stored and `tags` (Cache-Tag, for purging by tag), after the answer when it can; a failed or slow write is
+   * dropped. Only answers safe to share come here: ok, none and unmatched by name, never stale.
+   */
+  async function toEdge(ctx: Ctx, key: string | null, response: Response, tags: string): Promise<Response> {
+    if (!key || !ctx.cache) return response;
+    const cache = ctx.cache, copy = response.clone(), stored = ctx.now();
+    const job = within((async () => {
+      const headers = new Headers(copy.headers);
+      headers.set('Cache-Tag', tags);
+      headers.set(STORED_HEADER, String(stored));
+      await cache.put(key, new Response(await copy.text(), {status: copy.status, headers}));
+    })(), ctx.storeMs * 2);
+    if (ctx.waitUntil) {
+      try {ctx.waitUntil(job); return response;} catch { /* not in a Worker request */ }
+    }
+    await job;
+    return response;
   }
 
   // ---------------------------------------------------------------- OpenSubtitles state and login
@@ -743,28 +813,39 @@ export function createExtras() {
   const queryError = (query: LookupQuery | QueryError): query is QueryError => 'error' in query;
 
   return {
-    /** GET /api/extras/subtitles */
+    /**
+     * GET /api/extras/subtitles. Checked in this order: the parameters, the configuration, what this isolate knows of the
+     * quota and the day's budget (no I/O), the edge cache, the lookup limit, then R2 and OpenSubtitles.
+     */
     async subtitles(req: Request, deps: ExtrasDeps): Promise<Response> {
       const ctx = context(deps), url = new URL(req.url), who = client(ctx, req);
-      if (await limited(ctx, 'lookup', who.prefix)) return errorAnswer('rate_limited', 60);
       const query = parseSubtitleQuery(url.searchParams);
       if (queryError(query)) return errorAnswer(query.error);
       const answer = (status: string, tmdb: number | null, cacheControl: string, tracks: unknown[] = []) =>
         json({v: EXTRAS_VERSION, status, tmdb, tracks, credit: CREDIT}, cacheControl);
       if (!ctx.osKey || !ctx.playerKey) return answer('not_configured', query.tmdb, CACHE.notConfigured);
       // While the download quota (or, as far as this isolate has seen, the day's budget) is used up, no file could be
-      // served: offer none.
-      if (budgetUsedUntil > ctx.now() || (await readState(ctx)).quotaUntil > ctx.now()) return answer('unavailable', query.tmdb, CACHE.none);
+      // served: offer none, not even an answer kept at the edge.
+      const usedUp = () => budgetUsedUntil > ctx.now() || (stateMemo?.state.quotaUntil ?? 0) > ctx.now();
+      if (usedUp()) return answer('unavailable', query.tmdb, CACHE.none);
+      const auth = tmdbAuth(ctx.env.TMDB_API_KEY);
+      // A name is resolved with TMDB: without the key, no answer found with it earlier is served.
+      const edge = query.tmdb !== null || auth ? await edgeKey(ctx, url.origin, 'subtitles', query) : null;
+      const hit = await fromEdge(ctx, edge);
+      if (hit) return hit;
+      if (await limited(ctx, 'lookup', who.prefix)) return errorAnswer('rate_limited', 60);
+      if (usedUp() || (await readState(ctx)).quotaUntil > ctx.now()) return answer('unavailable', query.tmdb, CACHE.none);
+      const keep = (response: Response, id: number | null) => toEdge(ctx, edge, response, edgeCacheTags('subtitles', query.media, id));
       let tmdb = query.tmdb, stale = false;
       if (tmdb === null) {
-        const auth = tmdbAuth(ctx.env.TMDB_API_KEY);
+        // Decided by the configuration, not by TMDB: never kept at the edge.
         if (!auth) return answer('unmatched', null, CACHE.empty);
         const resolved = await resolveName(ctx, who, auth, query.media, query.name, query.year);
         if (resolved === 'limited') return errorAnswer('rate_limited', 60);
         if (resolved === 'failed') return errorAnswer('unavailable', 300);
         stale = resolved.stale;
         tmdb = resolved.id;
-        if (tmdb === null) return answer('unmatched', null, stale ? CACHE.stale : CACHE.empty);
+        if (tmdb === null) return stale ? answer('unmatched', null, CACHE.stale) : keep(answer('unmatched', null, CACHE.empty), null);
       }
       const id = tmdb;
       const result = await cached<PickedFile[]>(ctx, subtitlesObject(id, query.episode), readFiles, files => ({files}), async () => {
@@ -779,7 +860,9 @@ export function createExtras() {
         const token = await fileToken(ctx, file.file_id), base = origin + '/api/extras/subtitles/file/' + token;
         return {id: token, lang: 'en', label: file.label, hi: file.hi, vtt: base + '.vtt', srt: base + '.srt'};
       }));
-      return answer(tracks.length ? 'ok' : 'none', id, stale ? CACHE.stale : tracks.length ? CACHE.ok : CACHE.empty, tracks);
+      const status = tracks.length ? 'ok' : 'none';
+      if (stale) return answer(status, id, CACHE.stale, tracks);
+      return keep(answer(status, id, tracks.length ? CACHE.ok : CACHE.empty, tracks), id);
     },
 
     /**
@@ -814,15 +897,22 @@ export function createExtras() {
       return new Response(format === 'vtt' ? toVtt(cues) : toSrt(cues), {status: 200, headers: fileHeaders});
     },
 
-    /** GET /api/extras/trailer */
+    /**
+     * GET /api/extras/trailer. Checked in this order: the parameters, the configuration (without TMDB_API_KEY nothing
+     * found with it is served, not even from the edge), the edge cache, the lookup limit, then R2 and TMDB.
+     */
     async trailer(req: Request, deps: ExtrasDeps): Promise<Response> {
       const ctx = context(deps), url = new URL(req.url), who = client(ctx, req);
-      if (await limited(ctx, 'lookup', who.prefix)) return errorAnswer('rate_limited', 60);
       const query = parseTrailerQuery(url.searchParams);
       if (queryError(query)) return errorAnswer(query.error);
       const answer = (status: string, tmdb: number | null, cacheControl: string, trailer: unknown = null) => json({v: EXTRAS_VERSION, status, tmdb, trailer}, cacheControl);
       const auth = tmdbAuth(ctx.env.TMDB_API_KEY);
       if (!auth) return answer('not_configured', query.tmdb, CACHE.notConfigured);
+      const edge = await edgeKey(ctx, url.origin, 'trailer', query);
+      const hit = await fromEdge(ctx, edge);
+      if (hit) return hit;
+      if (await limited(ctx, 'lookup', who.prefix)) return errorAnswer('rate_limited', 60);
+      const keep = (response: Response, id: number | null) => toEdge(ctx, edge, response, edgeCacheTags('trailer', query.media, id));
       let tmdb = query.tmdb, stale = false;
       if (tmdb === null) {
         const resolved = await resolveName(ctx, who, auth, query.media, query.name, query.year);
@@ -830,7 +920,7 @@ export function createExtras() {
         if (resolved === 'failed') return errorAnswer('unavailable', 300);
         stale = resolved.stale;
         tmdb = resolved.id;
-        if (tmdb === null) return answer('unmatched', null, stale ? CACHE.stale : CACHE.empty);
+        if (tmdb === null) return stale ? answer('unmatched', null, CACHE.stale) : keep(answer('unmatched', null, CACHE.empty), null);
       }
       const id = tmdb;
       const result = await cached<{trailer: Trailer | null}>(ctx, trailerObject(query.media, id), readTrailer, value => value, async () => {
@@ -845,10 +935,11 @@ export function createExtras() {
       if (!result) return errorAnswer('unavailable', 300);
       stale = stale || result.stale;
       const trailer = result.value.trailer;
-      if (!trailer) return answer('none', id, stale ? CACHE.stale : CACHE.empty);
-      return answer('ok', id, stale ? CACHE.stale : CACHE.ok, {
+      if (!trailer) return stale ? answer('none', id, CACHE.stale) : keep(answer('none', id, CACHE.empty), id);
+      const found = {
         key: trailer.key, name: trailer.name, url: youtubeWatchURL(trailer.key), short: youtubeShortText(trailer.key), qr: qrRows(youtubeShortURL(trailer.key)),
-      });
+      };
+      return stale ? answer('ok', id, CACHE.stale, found) : keep(answer('ok', id, CACHE.ok, found), id);
     },
   };
 }

@@ -3,15 +3,16 @@ package tv.lumanest.tuner
 /**
  * Which edition this build is, chosen when it is built (`-Pstore=true`, see app/build.gradle.kts).
  *
- * The **direct edition** is the APK on lumanest.tv and stays exactly as it was. The **store edition** is the Google
- * Play and Amazon Appstore build, made for store review:
+ * The **direct edition** is the APK on lumanest.tv and stays exactly as it was, except that since 1.8.1 both editions
+ * show the privacy policy and YouTube's terms in Settings > About (trailers play in YouTube's embedded player). The
+ * **store edition** is the Google Play and Amazon Appstore build, made for store review:
  *  - adult categories are always hidden, with no passcode or unlock in Settings, and the filter also catches adult
  *    channel and title names and more category spellings ([tv.lumanest.tuner.data.AdultFilter]);
  *  - the optional Trending list only highlights channels already in the (filtered) lineup, so it can't add back a
  *    channel the adult filter hid;
  *  - no picture-in-picture (Google Play's TV rules), and Android TV only on Google Play (manifest placeholders);
  *  - neutral wording ("Server login", "Playlist link") instead of IPTV jargon, no user-agent field, generic remote
- *    help, and a "Privacy policy" row in Settings;
+ *    help;
  *  - the free guide fallback starts off and lists only country guides;
  *  - the LAN phone form only runs while its QR code is on screen.
  *

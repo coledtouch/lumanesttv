@@ -49,10 +49,11 @@ import tv.lumanest.tuner.data.ExtrasApi
 import tv.lumanest.tuner.data.Trailer
 
 /**
- * Hands a trailer to the TV's YouTube app (docs/extras.md, "Per platform", Android TV, Google TV and Fire TV): the
- * watch page with each YouTube app's package in turn, then the `vnd.youtube:` link YouTube apps answer. No browser is
- * ever opened (TV apps on Google Play must not open one), and no `<queries>` or permission is needed: the app only
- * starts activities. The same in both editions.
+ * Hands a trailer to the TV's YouTube app (docs/extras.md, "Per platform", Android TV, Google TV and Fire TV) when Tuner's
+ * own player can't play it ([TrailerPolicy]): the watch page with each YouTube app's package in turn, then the
+ * `vnd.youtube:` link YouTube apps answer. A YouTube link followed in the player goes to those packages too ([openLink]).
+ * No browser is ever opened (TV apps on Google Play must not open one), and no `<queries>` or permission is needed: the
+ * app only starts activities. The same in both editions.
  */
 object TrailerLauncher {
     /** Android TV and Google TV, Fire TV (two packages), Google TV's other build, then the phone app. */
@@ -74,8 +75,20 @@ object TrailerLauncher {
     }
 
     /** Tries each attempt with [start] until one starts; false when none could (then the QR dialog shows). */
-    fun open(key: String, start: (Attempt) -> Unit): Boolean {
-        for (attempt in attempts(key)) {
+    fun open(key: String, start: (Attempt) -> Unit): Boolean = firstThatStarts(attempts(key), start)
+
+    fun open(context: Context, key: String): Boolean = open(key) { context.startActivity(intent(it, newTask = context !is Activity)) }
+
+    /**
+     * A YouTube link the viewer followed in Tuner's trailer player ([TrailerPage.opensInYouTube]), in each YouTube app
+     * of [PACKAGES] in turn; never without a package, so no browser opens it. False when none could.
+     */
+    fun openLink(uri: String, start: (Attempt) -> Unit): Boolean = firstThatStarts(PACKAGES.map { Attempt(uri, it) }, start)
+
+    fun openLink(context: Context, uri: String): Boolean = openLink(uri) { context.startActivity(intent(it, newTask = context !is Activity)) }
+
+    private fun firstThatStarts(attempts: List<Attempt>, start: (Attempt) -> Unit): Boolean {
+        for (attempt in attempts) {
             try {
                 start(attempt)
                 return true
@@ -87,8 +100,6 @@ object TrailerLauncher {
         }
         return false
     }
-
-    fun open(context: Context, key: String): Boolean = open(key) { context.startActivity(intent(it, newTask = context !is Activity)) }
 
     fun intent(attempt: Attempt, newTask: Boolean = false): Intent =
         Intent(Intent.ACTION_VIEW, attempt.uri.toUri()).apply {
@@ -105,31 +116,55 @@ internal fun qrRows(text: String): List<String> {
 
 /**
  * Trailer, after Add to Library on a movie or series page (docs/extras.md, "The Trailer button"). Nothing is shown
- * without a [trailer], so the button appears in place when the lookup answers and never takes the focus. When no
- * YouTube app opens, a QR code for a phone shows instead; closing it brings the focus back here.
+ * without a [trailer], so the button appears in place when the lookup answers and never takes the focus. It plays the
+ * trailer in Tuner, full screen ([TrailerPlayerDialog]), so Back comes back here. When Tuner can't play it, the YouTube
+ * app opens on it; when no YouTube app opens, a QR code for a phone shows instead. When YouTube no longer has the
+ * video (removed or private), neither could play it: a toast says so ([TRAILER_GONE]). Closing the player or the QR
+ * code brings the focus back here.
  */
 @Composable
 internal fun TrailerButton(trailer: Trailer?, modifier: Modifier = Modifier) {
     if (trailer == null) return
     val context = LocalContext.current
+    var playing by remember(trailer.key) { mutableStateOf(false) }
     var showQr by remember(trailer.key) { mutableStateOf(false) }
     var restoreFocus by remember { mutableStateOf(false) }
     val focus = remember { FocusRequester() }
-    // Back on the page once its window has the focus again (the dialog had its own window).
+    // Back on the page once its window has the focus again (the player and the QR code have their own windows).
     val windowFocused = LocalWindowInfo.current.isWindowFocused
     LaunchedEffect(restoreFocus, windowFocused) {
         if (restoreFocus && windowFocused && requestAttachedFocus(focus)) restoreFocus = false
     }
     PillButton(
-        "Trailer", { if (!TrailerLauncher.open(context, trailer.key)) showQr = true },
+        "Trailer", { playing = true },
         modifier.focusRequester(focus).testTag("trailer"),
         icon = { Icon(Icons.Rounded.Movie, null, tint = it, modifier = Modifier.size(20.dp)) },
+    )
+    if (playing) TrailerPlayerDialog(
+        trailer,
+        onClose = {
+            playing = false
+            restoreFocus = true
+        },
+        onFallBack = {
+            playing = false
+            restoreFocus = true
+            if (!TrailerLauncher.open(context, trailer.key)) showQr = true
+        },
+        onUnavailable = {
+            playing = false
+            restoreFocus = true
+            Toasts.show(TRAILER_GONE)
+        },
     )
     if (showQr) TrailerQrDialog(trailer, onClose = {
         showQr = false
         restoreFocus = true
     })
 }
+
+/** Shown when YouTube says the trailer's video is gone (error 100: removed, or made private). */
+internal const val TRAILER_GONE = "This trailer isn't on YouTube anymore."
 
 /** "Watch the trailer on your phone": the QR code of the trailer's youtu.be link and the link itself. */
 @Composable

@@ -54,8 +54,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import tv.lumanest.tuner.data.BrowseTitle
+import tv.lumanest.tuner.data.Extras
 import tv.lumanest.tuner.data.PlayRequest
 import tv.lumanest.tuner.data.Repo
+import tv.lumanest.tuner.data.TrailerQuery
 import tv.lumanest.tuner.data.VodType
 import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
@@ -64,7 +66,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
-private data class Hit(val key: String, val title: String, val subtitle: String, val image: String?, val wide: Boolean, val channel: tv.lumanest.tuner.data.Channel? = null, val open: () -> Unit)
+private data class Hit(
+    val key: String, val title: String, val subtitle: String, val image: String?, val wide: Boolean,
+    val channel: tv.lumanest.tuner.data.Channel? = null,
+    /** A movie or series: the trailer lookup of the page it opens, started ahead of it (see [BrowseItem.trailerQuery]). */
+    val trailerQuery: (() -> TrailerQuery?)? = null,
+    val open: () -> Unit,
+)
 private data class Section(val title: String, val hits: List<Hit>)
 private fun favoriteFocusKey(hit: Hit) = hit.key + ":favorite"
 
@@ -179,13 +187,15 @@ fun SearchScreen(state: AppState) {
             val catalog = browse?.takeIf { vodUsOnly && it.source == Repo.activeSource && it.movies === movies && it.series === series }?.catalog
             fun shown(key: String) = catalog?.get(key)?.us != false
             val mv = movies.asSequence().filter { it.name.lowercase(Locale.ROOT).contains(q) && shown(BrowseTitle.movieKey(it.id)) }.take(40).map { m ->
-                Hit("$catalogueSource:movie:${m.id}", m.name, listOfNotNull("Movie", contentRating(m.rating)?.let { "★ $it" }).joinToString(" · "), m.poster, false) {
+                Hit("$catalogueSource:movie:${m.id}", m.name, listOfNotNull("Movie", contentRating(m.rating)?.let { "★ $it" }).joinToString(" · "), m.poster, false,
+                    trailerQuery = { trailerQueryOf(m) }) {
                     if (Repo.prefs.activeId.value == catalogueSource && Repo.movies.value.any { it.id == m.id && it.url == m.url }) state.push(Screen.MovieDetail(m))
                     else Toasts.show("This movie changed. Search again.")
                 }
             }.toList()
             val se = series.asSequence().filter { it.name.lowercase(Locale.ROOT).contains(q) && shown(BrowseTitle.seriesKey(it.id)) }.take(40).map { s ->
-                Hit("$catalogueSource:series:${s.id}", s.name, listOfNotNull("Series", s.year).joinToString(" · "), s.cover, false) {
+                Hit("$catalogueSource:series:${s.id}", s.name, listOfNotNull("Series", s.year).joinToString(" · "), s.cover, false,
+                    trailerQuery = { trailerQueryOf(s) }) {
                     if (Repo.prefs.activeId.value == catalogueSource && Repo.series.value.any { it.id == s.id }) state.push(Screen.SeriesDetail(s))
                     else Toasts.show("This series changed. Search again.")
                 }
@@ -258,7 +268,11 @@ fun SearchScreen(state: AppState) {
                                     state.restoreFocus = false
                                 }
                             },
-                            onOpen = { state.searchFocusedKey = h.key; h.open() },
+                            onOpen = {
+                                state.searchFocusedKey = h.key
+                                h.trailerQuery?.let { Extras.prefetch.chosen(it()) }
+                                h.open()
+                            },
                             onFavorite = { favoriteButton ->
                                 val c = h.channel
                                 if (c != null && h.key == "${Repo.prefs.activeId.value}:channel:${c.key}") {
@@ -288,7 +302,11 @@ private fun HitRow(
             onLongClick = if (h.channel == null) null else ({ onFavorite(false) }),
             modifier = Modifier.weight(1f).fillMaxHeight().focusRequester(requester).testTag("search-hit:${h.key}"),
             shape = RoundedCornerShape(10.dp), color = Palette.surface, focusedColor = Palette.focus,
-            ring = false, focusedScale = 1.02f, onFocus = { onFocus(h.key, it) },
+            ring = false, focusedScale = 1.02f,
+            onFocus = { focused ->
+                h.trailerQuery?.let { query -> if (focused) Extras.prefetch.focused(query()) else Extras.prefetch.unfocused(query()) }
+                onFocus(h.key, focused)
+            },
         ) { f ->
             val fg = if (f) Palette.onFocus else Palette.text
             Row(Modifier.fillMaxSize().padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
