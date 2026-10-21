@@ -13,6 +13,7 @@ import tv.lumanest.tuner.ui.TrailerEvent
 import tv.lumanest.tuner.ui.TrailerKey
 import tv.lumanest.tuner.ui.TrailerPage
 import tv.lumanest.tuner.ui.TrailerPolicy
+import tv.lumanest.tuner.ui.TrailerStall
 import tv.lumanest.tuner.ui.TrailerStep
 
 /** The in-app trailer player's page, the WebView's rules, and the player's decisions (docs/extras.md, Android). */
@@ -41,19 +42,22 @@ class TrailerPageTest {
         assertTrue(ExtrasApi.isYouTubeKey(key))
     }
 
-    @Test fun thePageAsksYouTubeForAnAutoplayingEmbedFromTheApp() {
+    @Test fun thePageAsksYouTubeForAnEmbedFromTheAppThatPlaysOnlyWhenTheAppSaysSo() {
         val origin = "https://" + BuildConfig.APPLICATION_ID
         listOf(
             "host:\"https://www.youtube-nocookie.com\"", "videoId:key",
-            "autoplay:1", "playsinline:1", "rel:0", "controls:1", "enablejsapi:1", "fs:0",
+            "autoplay:0", "playsinline:1", "rel:0", "controls:1", "enablejsapi:1", "fs:0",
             "origin:\"$origin\"", "s.src=\"https://www.youtube.com/iframe_api\"",
-            // A 1920 pixel wide layout: YouTube starts a full-screen player in 1080p (at 960 by 540, in 720p).
-            "<meta name=\"viewport\" content=\"width=1920\">",
             "<meta name=\"referrer\" content=\"strict-origin-when-cross-origin\">",
-            "onReady:function(e){send(\"ready\");e.target.playVideo()}",
-            "onStateChange:function(e){send(\"state:\"+e.data)}", "onError:function(e){send(\"error:\"+e.data)}",
+            "onReady:function(e){send(\"ready\");snap(\"ready\")}",
+            "onStateChange:function(e){ad=null;send(\"state:\"+e.data);snap(\"state\")}", "onError:function(e){send(\"error:\"+e.data);snap(\"error\")}",
             "s.onerror=function(){send(\"error:-1\")}",
         ).forEach { assertTrue(it, page.contains(it)) }
+        // Nothing plays by itself: not at ready (no autoplay, no playVideo), only the app's "play" or "toggle" once the
+        // player is in view (YouTube's Required Minimum Functionality, "Autoplay and scripted playbacks").
+        assertFalse(page.contains("autoplay:1"))
+        assertFalse(page.contains("e.target.playVideo"))
+        assertEquals(2, page.split("playVideo()").size - 1)
         // The page's origin is the app's id, as YouTube asks of a WebView app: the origin YouTube is told and the only
         // one the app's port goes to. The direct edition is tv.lumanest.tuner, the store edition app.tunertv.
         assertTrue(BuildConfig.APPLICATION_ID, BuildConfig.APPLICATION_ID in setOf("tv.lumanest.tuner", "app.tunertv"))
@@ -65,10 +69,23 @@ class TrailerPageTest {
         assertEquals(setOf("https://www.youtube-nocookie.com", "https://www.youtube.com/iframe_api", origin), urls)
     }
 
+    @Test fun thePageIsLaidOutAtTheScreensOwnWidthSoYouTubeSeesTheScreensPixels() {
+        // On a TV whose interface is 1080p at density 2 (an onn 4K Pro), the player is 960 by 540 CSS pixels at a pixel
+        // ratio of 2: YouTube sees 1920 by 1080 and picks up to 1080p. 1.8.1's width=1920 made it 3840 by 2160 (4K),
+        // whose frames that TV's WebView never showed: a black screen.
+        assertEquals("width=device-width,initial-scale=1", TrailerPage.VIEWPORT)
+        assertTrue(page.contains("<head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"))
+        assertEquals(1, page.split("name=\"viewport\"").size - 1)
+        assertFalse(page.contains("1920"))
+        // The player fills the page, so it is the screen's size.
+        assertTrue(page.contains("#player{position:absolute;left:0;top:0;width:100%;height:100%;border:0}"))
+        assertTrue(page.contains("width:\"100%\",height:\"100%\""))
+    }
+
     @Test fun youTubesApiLoadsOnlyAfterThePagesOwnLoadSoThePortComesAtOnce() {
         // The app sends its port when the page has loaded (onPageFinished). A script added while the page loads, and the
         // embed frame it makes, would hold that until YouTube's whole embed had loaded: its images and fonts too.
-        assertTrue(page.contains("window.addEventListener(\"load\",function(){document.head.appendChild(s)});"))
+        assertTrue(page.contains("window.addEventListener(\"load\",function(){\n document.head.appendChild(s);\n"))
         assertEquals(1, page.split("appendChild(").size - 1)
         // Nothing else in the page loads anything: no other script, frame, image, style sheet or font.
         listOf("<script src", "<iframe", "<img", "<link", "@import", "url(").forEach { assertFalse(it, page.contains(it)) }
@@ -101,6 +118,86 @@ class TrailerPageTest {
         assertTrue(page.contains("var t=player.getCurrentTime()+(c===\"back\"?-10:10),d=player.getDuration();"))
         assertTrue(page.contains("if(d>0&&t>d-1)t=d-1;"))
         assertTrue(page.contains("player.seekTo(t<0?0:t,true)"))
+    }
+
+    @Test fun anAdOfYouTubesIsReportedApartAndTheRemoteDrivesItWithoutSeeking() {
+        // YouTube's embed publishes the states of an ad it shows (one not stitched into the video) as onAdStateChange,
+        // never onStateChange: the page passes them on as "ad:" and keeps the ad's state while it shows (0, ended, or
+        // any state of the trailer's means none shows).
+        assertTrue(page.contains(
+            "onAdStateChange:function(e){ad=typeof e.data===\"number\"&&e.data!==0?e.data:null;send(\"ad:\"+e.data);snap(\"ad\")},"))
+        assertTrue(page.contains("onStateChange:function(e){ad=null;"))
+        assertTrue(page.contains(",counting=true,ad=null;\n"))
+        // OK pauses or plays the ad while it shows (YouTube's state for the trailer is then its own, not the ad's), and
+        // Left and Right never seek past it.
+        assertTrue(page.contains(" var s=ad!==null?ad:player.getPlayerState();\n if(c===\"toggle\"){if(s===1||s===3)player.pauseVideo();else player.playVideo()}"))
+        assertTrue(page.contains(" else if(ad===null&&(c===\"back\"||c===\"forward\")){"))
+        assertEquals(1, page.split("seekTo(").size - 1)
+    }
+
+    @Test fun thePageReportsOnItselfForTheLog() {
+        // At its load event: the WebView's user agent, the codecs its MediaSource takes, HDR and the screen.
+        listOf(
+            "send(\"diag:ua \"+navigator.userAgent);", "send(media());", "o=\"diag:media\"", "m.isTypeSupported(c[i][1])",
+            "[\"vp9\",'video/webm; codecs=\"vp9\"']", "[\"av1\",'video/mp4; codecs=\"av01.0.08M.08\"']",
+            "[\"h264\",'video/mp4; codecs=\"avc1.640028\"']", "window.matchMedia(\"(dynamic-range: high)\")",
+            "\" screen=\"+screen.width+\"x\"+screen.height",
+        ).forEach { assertTrue(it, page.contains(it)) }
+        // A snapshot at load, ready, every state change (an ad's too) and error, then every 2 seconds for 30 seconds,
+        // then a short one (state, time and ad: the stall check's) every 2 seconds for as long as the page lives.
+        assertTrue(page.contains(
+            " snap(\"load\");\n var n=0;setInterval(function(){if(n<15){snap(\"tick\");if(++n>=15)counting=false}else send(\"diag:p\"+now())},2000)});"))
+        assertTrue(page.contains(
+            "function now(){return \" st=\"+call(\"getPlayerState\")+\" t=\"+num(call(\"getCurrentTime\"),2)+\" ad=\"+(ad===null?\"\":ad)}"))
+        assertTrue(page.contains("+\n  now()+\" lf=\"+"))
+        assertFalse(page.contains("clearInterval"))
+        assertEquals(2_000, TrailerPage.DIAG_EVERY_MS)
+        assertEquals(30_000, TrailerPage.DIAG_EVERY_MS * TrailerPage.DIAG_TICKS)
+        // Frames painted (counted only those 30 seconds: a frame request every frame for the whole trailer would keep the
+        // WebView drawing), visibility, the window, the player's frame and what YouTube says it plays.
+        assertTrue(page.contains("function count(){frames++;if(counting)window.requestAnimationFrame(count)}\nwindow.requestAnimationFrame(count);"))
+        assertTrue(page.contains(",frames=0,counting=true,ad=null;\n"))
+        listOf(
+            "\" raf=\"+frames", "\" vis=\"+document.visibilityState", "\" w=\"+window.innerWidth", "\" h=\"+window.innerHeight",
+            "\" dpr=\"+window.devicePixelRatio", "call(\"getIframe\")", "\" rect=\"+(r?Math.round(r.left)", "\" st=\"+call(\"getPlayerState\")",
+            "\" t=\"+num(call(\"getCurrentTime\"),2)", "\" lf=\"+num(call(\"getVideoLoadedFraction\"),3)",
+            "\" q=\"+call(\"getPlaybackQuality\")", "\" levels=\"+(l&&l.join?l.join(\",\"):\"\")",
+        ).forEach { assertTrue(it, page.contains(it)) }
+        // A player method that is missing or throws never stops the page.
+        assertTrue(page.contains("function call(n){try{return player&&player[n]?player[n]():\"\"}catch(x){return \"x\"}}"))
+        // Nothing of the viewer's: the key is still the page's only variable part, written once.
+        assertEquals(1, page.split(key).size - 1)
+    }
+
+    @Test fun thePagesDiagnosticsDecideNothingButTheStallCheckReadsItsSnapshots() {
+        val tick = "diag:tick raf=120 vis=visible w=960 h=540 dpr=2 rect=0,0,960,540 st=1 t=12.50 ad= lf=0.250 q=hd1080 levels=hd1080,hd720,auto"
+        listOf(tick, "diag:ua Mozilla/5.0 (Linux; Android 12) Chrome/131.0 st=1 t=3", "diag:media vp9=true av1=false", "diag:",
+            "diag:p st=1 t=40.00 ad=", "diag:ad st=-1 t=0.00 ad=1").forEach {
+            assertNull(it, TrailerEvent.parse(it))
+        }
+        assertEquals(TrailerEvent.Progress(1, 12.5, 77L), TrailerEvent.progress(tick, 77L))
+        // The short one after 30 seconds, and one while an ad of YouTube's shows (the state is then the trailer's).
+        assertEquals(TrailerEvent.Progress(1, 40.0, 9L), TrailerEvent.progress("diag:p st=1 t=40.00 ad=", 9L))
+        assertEquals(TrailerEvent.Progress(-1, 0.0, 9L, ad = true), TrailerEvent.progress("diag:ad raf=3 st=-1 t=0.00 ad=1 lf=0.000", 9L))
+        assertEquals(TrailerEvent.Progress(1, 8.0, 9L, ad = true), TrailerEvent.progress("diag:p st=1 t=8.00 ad=2", 9L))
+        assertEquals(TrailerEvent.Progress(1, 8.0, 9L, ad = true), TrailerEvent.progress("diag:p st=1 t=8.00 ad=-1", 9L))
+        assertEquals(TrailerEvent.Progress(3, 0.0, 5L), TrailerEvent.progress("diag:ready raf=1 st=3 t=0.00 lf=0.000", 5L))
+        assertEquals(TrailerEvent.Progress(-1, 0.0, 5L), TrailerEvent.progress("diag:load raf=1 st=-1 t=0", 5L))
+        listOf("state", "error").forEach { assertEquals(it, TrailerEvent.Progress(2, 4.0, 1L), TrailerEvent.progress("diag:$it st=2 t=4.00", 1L)) }
+        // Only snapshots with both a state and a time, written as the page writes them.
+        listOf(
+            null, "", "tick st=1 t=1.00", "diag:ua st=1 t=1.00", "diag:media st=1 t=1.00", "diag:tick st=1", "diag:tick t=1.00",
+            "diag:tick st= t=", "diag:tick st=1 t=", "diag:tick st=x t=1.00", "diag:tick st=1 t=-1.00", "diag:tick st=1 t=1e3",
+            "diag:tick st=1 t=NaN", "diag:tick st=1 t=Infinity", "diag:tick st=1 t=1..0", "diag:tick st=1 t=.5", "diag:tick st=1 t=5.",
+            "diag:tick st=1 t=1.0.0", "diag:tick st=1 t=+1.00", "diag:tick st=1 t=1234567890123", "diag:tick st=1234567 t=1.00",
+            "diag:TICK st=1 t=1.00", "diag:tick  st=1 t=\u0661", "ready", "state:1", "diag:tick st=1 t=1.00" + " ".repeat(2_000),
+            "diag:p st=1 t=1.00 ad=x", "diag:p st=1 t=1.00 ad=1.0", "diag:p st=1 t=1.00 ad=undefined", "diag:P st=1 t=1.00", "ad:1",
+        ).forEach { assertNull("$it", TrailerEvent.progress(it, 0L)) }
+        assertEquals("diag:", TrailerEvent.DIAG)
+        assertEquals(setOf("load", "ready", "state", "ad", "error", "tick", "p"), TrailerEvent.SNAPSHOTS)
+        // A snapshot never decides anything by itself.
+        assertEquals(TrailerStep.WAIT, TrailerPolicy.on(TrailerEvent.Progress(1, 1.0, 0L), ready = true))
+        assertEquals(TrailerStep.WAIT, TrailerPolicy.on(TrailerEvent.Progress(-1, 0.0, 99_000L), ready = false))
     }
 
     // ------------------------------------------------------------------ what the WebView loads
@@ -182,8 +279,13 @@ class TrailerPageTest {
         assertEquals(TrailerEvent.State(-1), TrailerEvent.parse("state:-1"))
         assertEquals(TrailerEvent.Error(150), TrailerEvent.parse("error:150"))
         assertEquals(TrailerEvent.Error(-1), TrailerEvent.parse("error:-1"))
+        assertEquals(TrailerEvent.Ad(1), TrailerEvent.parse("ad:1"))
+        assertEquals(TrailerEvent.Ad(-1), TrailerEvent.parse("ad:-1"))
+        assertEquals(TrailerEvent.Ad(0), TrailerEvent.parse("ad:0"))
         listOf(null, "", "Ready", "ready ", "state:", "state:-", "state:1.0", "state: 1", "state:+1", "error:1e3", "error:9999999",
-            "error:\u0661", "tuner:port", "{\"event\":\"onReady\"}").forEach { assertNull("$it", TrailerEvent.parse(it)) }
+            "error:\u0661", "tuner:port", "{\"event\":\"onReady\"}", "ad:", "ad:undefined", "ad: 1", "Ad:1", "ad:1.0").forEach {
+            assertNull("$it", TrailerEvent.parse(it))
+        }
     }
 
     @Test fun anyOtherErrorAWaitTooLongOrNoWebViewFallsBackToTheYouTubeApp() {
@@ -208,10 +310,194 @@ class TrailerPageTest {
         assertEquals(TrailerStep.WAIT, TrailerPolicy.on(TrailerEvent.Ready, ready = true))
         assertEquals(TrailerStep.CLOSE, TrailerPolicy.on(TrailerEvent.State(TrailerEvent.ENDED), ready = true))
         listOf(-1, 1, 2, 3, 5).forEach { assertEquals("$it", TrailerStep.WAIT, TrailerPolicy.on(TrailerEvent.State(it), ready = true)) }
+        // An ad's end isn't the trailer's: the trailer follows it.
+        listOf(-1, 0, 1, 2, 3, 5).forEach {
+            assertEquals("$it", TrailerStep.WAIT, TrailerPolicy.on(TrailerEvent.Ad(it), ready = true))
+            assertEquals("$it", TrailerStep.WAIT, TrailerPolicy.on(TrailerEvent.Ad(it), ready = false))
+        }
         // A link the viewer followed opened the YouTube app: the player closes, ready or not. The page can't say so.
         assertEquals(TrailerStep.CLOSE, TrailerPolicy.on(TrailerEvent.Left, ready = true))
         assertEquals(TrailerStep.CLOSE, TrailerPolicy.on(TrailerEvent.Left, ready = false))
         listOf("left", "Left").forEach { assertNull(it, TrailerEvent.parse(it)) }
+    }
+
+    @Test fun aReadyTrailerThatDoesntPlayWithinTenSecondsGoesToTheYouTubeAppUnlessTheViewerOrTheAppPausedIt() {
+        assertEquals(10_000L, TrailerPolicy.PLAYING_TIMEOUT_MS)
+        fun timer(ms: Long, played: Boolean = false, viewerPaused: Boolean = false, appPaused: Boolean = false) =
+            TrailerPolicy.onPlayingTimer(ms, played, viewerPaused, appPaused)
+        // Never playing (playback refused, a picture that never comes, endless buffering), 10 seconds after it got ready
+        // or after the viewer's last command (a seek, OK while it buffers): never a black screen.
+        assertEquals(TrailerStep.WAIT, timer(9_999))
+        assertEquals(TrailerStep.FALL_BACK, timer(10_000))
+        assertEquals(TrailerStep.FALL_BACK, timer(60_000))
+        // It played, the viewer paused it, or the app did: it waits (for OK).
+        assertEquals(TrailerStep.WAIT, timer(10_000, played = true))
+        assertEquals(TrailerStep.WAIT, timer(10_000, viewerPaused = true))
+        assertEquals(TrailerStep.WAIT, timer(10_000, appPaused = true))
+        assertEquals(TrailerStep.WAIT, timer(60_000, played = true, viewerPaused = true, appPaused = true))
+    }
+
+    @Test fun tunersLoadingScreenCoversThePageOnlyUntilYouTubesPlayerIsReady() {
+        assertTrue(TrailerPolicy.showsLoading(ready = false))
+        assertFalse(TrailerPolicy.showsLoading(ready = true))
+    }
+
+    @Test fun theAppStartsTheTrailerOnceThePlayerIsInViewAndOnlyThen() {
+        fun starts(held: Boolean = false, appPaused: Boolean = false, started: Boolean = false, played: Boolean = false, commanded: Boolean = false) =
+            TrailerPolicy.startsOnceShown(held, appPaused, started, played, commanded)
+        // Ready, "Loading trailer" gone and a frame drawn without it: the app starts the trailer (the page doesn't).
+        assertTrue(starts())
+        // Not while Tuner is paused or holds it (it starts when Tuner is back), not twice, and not when it already plays
+        // (or an ad does) or the viewer has asked for something: their choice stands.
+        assertFalse(starts(held = true))
+        assertFalse(starts(appPaused = true))
+        assertFalse(starts(started = true))
+        assertFalse(starts(played = true))
+        assertFalse(starts(commanded = true))
+    }
+
+    @Test fun anAdOfYouTubesThatPlaysCountsAsPlaying() {
+        // YouTube reports its own ad apart: while it plays, nothing of Tuner's may cover it, and the trailer waits.
+        assertTrue(TrailerPolicy.plays(TrailerEvent.State(TrailerEvent.PLAYING)))
+        assertTrue(TrailerPolicy.plays(TrailerEvent.Ad(TrailerEvent.PLAYING)))
+        listOf(-1, 0, 2, 3, 5).forEach {
+            assertFalse("$it", TrailerPolicy.plays(TrailerEvent.State(it)))
+            assertFalse("$it", TrailerPolicy.plays(TrailerEvent.Ad(it)))
+        }
+        listOf(TrailerEvent.Ready, TrailerEvent.Left, TrailerEvent.Error(1), TrailerEvent.Progress(1, 5.0, 0L)).forEach {
+            assertFalse("$it", TrailerPolicy.plays(it))
+        }
+    }
+
+    @Test fun aTrailerTheAppPausedBeforeTheViewerSawItPlaysOnWhenTheAppIsBack() {
+        // It hadn't played and the viewer hadn't touched it: it plays on (then plays, or falls back), as it would have
+        // started, never waiting, paused, for nothing.
+        assertTrue(TrailerPolicy.playsOnReturn(held = true, played = false, commanded = false))
+        // The viewer has seen it play, or has controlled it: it waits, paused, for OK.
+        assertFalse(TrailerPolicy.playsOnReturn(held = true, played = true, commanded = false))
+        assertFalse(TrailerPolicy.playsOnReturn(held = true, played = false, commanded = true))
+        // The app didn't pause it: nothing to do.
+        assertFalse(TrailerPolicy.playsOnReturn(held = false, played = false, commanded = false))
+        assertFalse(TrailerPolicy.playsOnReturn(held = false, played = true, commanded = true))
+    }
+
+    @Test fun aTrailerThatSaysItPlaysButStandsStillForTenSecondsGoesToTheYouTubeApp() {
+        assertEquals(10_000L, TrailerPolicy.STALL_TIMEOUT_MS)
+        fun playing(time: Double, at: Long) = TrailerEvent.Progress(TrailerEvent.PLAYING, time, at)
+        val stall = TrailerStall()
+        // Moving: never.
+        listOf(0L to 1.0, 2_000L to 3.0, 4_000L to 5.0, 6_000L to 7.0, 20_000L to 9.0).forEach { (at, time) ->
+            assertEquals(TrailerStep.WAIT, stall.on(playing(time, at), appPaused = false))
+        }
+        // Standing still since 20 s (the clock is the snapshots' own): 9.99 s is not enough, 10 s is.
+        assertEquals(TrailerStep.WAIT, stall.on(playing(9.0, 22_000L), appPaused = false))
+        assertEquals(TrailerStep.WAIT, stall.on(playing(9.0, 29_999L), appPaused = false))
+        assertEquals(TrailerStep.FALL_BACK, stall.on(playing(9.0, 30_000L), appPaused = false))
+
+        // Any snapshot that isn't playing, a moved time (a seek, back too) or the app being paused counts again from there.
+        fun fresh(vararg samples: Pair<TrailerEvent.Progress, Boolean>): List<TrailerStep> = TrailerStall().let { s -> samples.map { s.on(it.first, it.second) } }
+        assertEquals(List(3) { TrailerStep.WAIT }, fresh(
+            playing(4.0, 0L) to false, TrailerEvent.Progress(TrailerEvent.PAUSED, 4.0, 6_000L) to false, playing(4.0, 12_000L) to false))
+        assertEquals(List(3) { TrailerStep.WAIT }, fresh(
+            playing(4.0, 0L) to false, TrailerEvent.Progress(TrailerEvent.BUFFERING, 4.0, 6_000L) to false, playing(4.0, 12_000L) to false))
+        assertEquals(List(3) { TrailerStep.WAIT }, fresh(playing(4.0, 0L) to false, playing(4.0, 6_000L) to true, playing(4.0, 12_000L) to false))
+        assertEquals(List(3) { TrailerStep.WAIT }, fresh(playing(14.0, 0L) to false, playing(4.0, 6_000L) to false, playing(4.0, 12_000L) to false))
+        assertEquals(listOf(TrailerStep.WAIT, TrailerStep.WAIT, TrailerStep.WAIT, TrailerStep.FALL_BACK), fresh(
+            playing(14.0, 0L) to false, playing(4.0, 6_000L) to false, playing(4.0, 12_000L) to false, playing(4.0, 16_000L) to false))
+        // A paused trailer, or one the app paused, never falls back, however long it stands.
+        assertEquals(List(3) { TrailerStep.WAIT }, fresh(
+            TrailerEvent.Progress(TrailerEvent.PAUSED, 4.0, 0L) to false, TrailerEvent.Progress(TrailerEvent.PAUSED, 4.0, 60_000L) to false,
+            playing(4.0, 120_000L) to true))
+    }
+
+    @Test fun aTrailerStuckAtItsStartWhileItSaysItPlaysIsCaughtAsYouTubesApiReportsIt() {
+        // While it plays, YouTube's API adds up to a second to the time its player last reported: a trailer that says it
+        // plays but never leaves 0 reads 0.00 only in the snapshot taken with the state change, then 1.00 every time.
+        fun playing(time: Double, at: Long) = TrailerEvent.Progress(TrailerEvent.PLAYING, time, at)
+        val stuck = TrailerStall()
+        assertEquals(TrailerStep.WAIT, stuck.on(playing(0.0, 0L), appPaused = false))
+        // 10 seconds from the first 1.00.
+        (1..5).forEach { assertEquals("$it", TrailerStep.WAIT, stuck.on(playing(1.0, 2_000L * it), appPaused = false)) }
+        assertEquals(TrailerStep.WAIT, stuck.on(playing(1.0, 11_999L), appPaused = false))
+        assertEquals(TrailerStep.FALL_BACK, stuck.on(playing(1.0, 12_000L), appPaused = false))
+        // One frozen later reads its time plus 1 the same way.
+        val frozen = TrailerStall()
+        listOf(0L to 5.31, 2_000L to 7.0, 4_000L to 7.0, 6_000L to 7.0, 8_000L to 7.0, 10_000L to 7.0).forEach { (at, time) ->
+            assertEquals("$at", TrailerStep.WAIT, frozen.on(playing(time, at), appPaused = false))
+        }
+        assertEquals(TrailerStep.FALL_BACK, frozen.on(playing(7.0, 12_000L), appPaused = false))
+    }
+
+    @Test fun anAdOfYouTubesNeverCountsAsAStall() {
+        // While YouTube shows its own ad, the trailer's time stands still (at its start, or where an ad breaks in): the
+        // snapshots say an ad shows, and the count starts again after it.
+        val stall = TrailerStall()
+        listOf(0L, 10_000L, 20_000L, 40_000L).forEach {
+            assertEquals("$it", TrailerStep.WAIT, stall.on(TrailerEvent.Progress(TrailerEvent.PLAYING, 6.0, it, ad = true), appPaused = false))
+            assertEquals("$it", TrailerStep.WAIT, stall.onClock(it + 30_000L, appPaused = false))
+        }
+        assertEquals(TrailerStep.WAIT, stall.on(TrailerEvent.Progress(TrailerEvent.PLAYING, 6.0, 42_000L), appPaused = false))
+        assertEquals(TrailerStep.WAIT, stall.on(TrailerEvent.Progress(TrailerEvent.PLAYING, 6.0, 51_999L), appPaused = false))
+        assertEquals(TrailerStep.FALL_BACK, stall.on(TrailerEvent.Progress(TrailerEvent.PLAYING, 6.0, 52_000L), appPaused = false))
+    }
+
+    @Test fun aTrailerThatBuffersForThirtySecondsAfterItPlayedGoesToTheYouTubeApp() {
+        assertEquals(30_000L, TrailerPolicy.BUFFERING_TIMEOUT_MS)
+        fun at(state: Int, time: Double, ms: Long, ad: Boolean = false) = TrailerEvent.Progress(state, time, ms, ad)
+        val stall = TrailerStall()
+        assertEquals(TrailerStep.WAIT, stall.on(at(TrailerEvent.PLAYING, 10.0, 0L), appPaused = false))
+        // Buffering at 12 s from 2 s on: 29.99 s is a slow network, 30 s is a picture that stopped.
+        assertEquals(TrailerStep.WAIT, stall.on(at(TrailerEvent.BUFFERING, 12.0, 2_000L), appPaused = false))
+        assertEquals(TrailerStep.WAIT, stall.on(at(TrailerEvent.BUFFERING, 12.0, 20_000L), appPaused = false))
+        assertEquals(TrailerStep.WAIT, stall.on(at(TrailerEvent.BUFFERING, 12.0, 31_999L), appPaused = false))
+        assertEquals(TrailerStep.FALL_BACK, stall.on(at(TrailerEvent.BUFFERING, 12.0, 32_000L), appPaused = false))
+        fun fresh(vararg samples: TrailerEvent.Progress): List<TrailerStep> = TrailerStall().let { s -> samples.map { s.on(it, appPaused = false) } }
+        // Before the trailer has played, buffering is the playing timer's (TrailerPolicy.onPlayingTimer), however long.
+        assertEquals(List(3) { TrailerStep.WAIT }, fresh(
+            at(TrailerEvent.BUFFERING, 0.0, 0L), at(TrailerEvent.BUFFERING, 0.0, 40_000L), at(TrailerEvent.BUFFERING, 0.0, 80_000L)))
+        // An ad that played isn't the trailer.
+        assertEquals(List(3) { TrailerStep.WAIT }, fresh(
+            at(TrailerEvent.PLAYING, 0.0, 0L, ad = true), at(TrailerEvent.BUFFERING, 0.0, 2_000L), at(TrailerEvent.BUFFERING, 0.0, 40_000L)))
+        // A time that moves, playing in between, or a pause starts the count again.
+        assertEquals(List(5) { TrailerStep.WAIT }, fresh(
+            at(TrailerEvent.PLAYING, 1.0, 0L), at(TrailerEvent.BUFFERING, 2.0, 2_000L), at(TrailerEvent.BUFFERING, 2.5, 30_000L),
+            at(TrailerEvent.PLAYING, 3.5, 31_000L), at(TrailerEvent.BUFFERING, 3.5, 60_000L)))
+        assertEquals(List(4) { TrailerStep.WAIT }, fresh(
+            at(TrailerEvent.PLAYING, 1.0, 0L), at(TrailerEvent.BUFFERING, 2.0, 2_000L), at(TrailerEvent.PAUSED, 2.0, 20_000L),
+            at(TrailerEvent.BUFFERING, 2.0, 40_000L)))
+    }
+
+    @Test fun aTrailerWhosePageFallsSilentWhileItPlaysGoesToTheYouTubeApp() {
+        // The page sends a snapshot every 2 seconds for as long as it lives: none for 10 seconds while the last said it
+        // plays is a renderer that hung (WebView reports a hung renderer only after an input event or a navigation,
+        // and this one gets neither).
+        val stall = TrailerStall()
+        assertEquals(TrailerStep.WAIT, stall.onClock(60_000L, appPaused = false))
+        assertEquals(TrailerStep.WAIT, stall.on(TrailerEvent.Progress(TrailerEvent.PLAYING, 3.0, 1_000L), appPaused = false))
+        assertEquals(TrailerStep.WAIT, stall.onClock(10_999L, appPaused = false))
+        assertEquals(TrailerStep.FALL_BACK, stall.onClock(11_000L, appPaused = false))
+        // A snapshot that doesn't count (paused, an ad, before it played) never arms it.
+        listOf(
+            TrailerEvent.Progress(TrailerEvent.PAUSED, 3.0, 1_000L), TrailerEvent.Progress(TrailerEvent.PLAYING, 3.0, 1_000L, ad = true),
+            TrailerEvent.Progress(TrailerEvent.BUFFERING, 0.0, 1_000L), TrailerEvent.Progress(-1, 0.0, 1_000L),
+        ).forEach { sample ->
+            val other = TrailerStall()
+            assertEquals("$sample", TrailerStep.WAIT, other.on(sample, appPaused = false))
+            assertEquals("$sample", TrailerStep.WAIT, other.onClock(60_000L, appPaused = false))
+        }
+        // Each snapshot that arrives counts from there; the app being paused (its page may be too) starts again.
+        val talking = TrailerStall()
+        listOf(0L to 1.0, 2_000L to 3.0, 4_000L to 5.0).forEach { (at, time) ->
+            assertEquals(TrailerStep.WAIT, talking.on(TrailerEvent.Progress(TrailerEvent.PLAYING, time, at), appPaused = false))
+            assertEquals(TrailerStep.WAIT, talking.onClock(at + 9_999L, appPaused = false))
+        }
+        assertEquals(TrailerStep.WAIT, talking.onClock(20_000L, appPaused = true))
+        assertEquals(TrailerStep.WAIT, talking.onClock(60_000L, appPaused = false))
+        // After it played, buffering arms it too.
+        val buffering = TrailerStall()
+        buffering.on(TrailerEvent.Progress(TrailerEvent.PLAYING, 1.0, 0L), appPaused = false)
+        buffering.on(TrailerEvent.Progress(TrailerEvent.BUFFERING, 2.0, 2_000L), appPaused = false)
+        assertEquals(TrailerStep.FALL_BACK, buffering.onClock(12_000L, appPaused = false))
     }
 
     // ------------------------------------------------------------------ the remote

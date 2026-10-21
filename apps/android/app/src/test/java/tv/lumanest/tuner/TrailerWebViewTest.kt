@@ -1,12 +1,16 @@
 package tv.lumanest.tuner
 
+import android.app.Activity
 import android.content.pm.PackageInfo
 import android.net.Uri
 import android.os.Looper
+import android.os.SystemClock
+import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
 import android.webkit.WebMessage
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.widget.FrameLayout
@@ -15,18 +19,22 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.fakes.RoboWebMessagePort
+import org.robolectric.shadows.ShadowLog
 import org.robolectric.shadows.ShadowWebView
 import tv.lumanest.tuner.ui.TrailerCommand
 import tv.lumanest.tuner.ui.TrailerEvent
+import tv.lumanest.tuner.ui.TrailerLog
 import tv.lumanest.tuner.ui.TrailerPage
 import tv.lumanest.tuner.ui.WebTrailerSurfaces
 
@@ -72,6 +80,22 @@ class TrailerWebViewTest {
     /** The WebView reports the page loaded (its load event has run). */
     private fun pageFinished(web: WebView) = checkNotNull(shadowOf(web).webViewClient).onPageFinished(web, TrailerPage.BASE_URL)
 
+    /** The player's window: an activity on screen. */
+    private fun window(): FrameLayout {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        return FrameLayout(activity).also { activity.setContentView(it) }
+    }
+
+    /** The WebView put in its window, and the main thread's queue run (where the page's load waits for the attach). */
+    private fun attach(web: WebView, window: FrameLayout = window()): FrameLayout {
+        window.addView(web)
+        shadowOf(Looper.getMainLooper()).idle()
+        return window
+    }
+
+    /** The trailer log's lines since the test began, without their times. */
+    private fun log(): List<String> = ShadowLog.getLogsForTag(TrailerLog.TAG).map { it.msg.substringAfter("ms ") }
+
     private class Request(url: String, private val main: Boolean) : WebResourceRequest {
         private val uri = Uri.parse(url)
         override fun getUrl(): Uri = uri
@@ -82,8 +106,44 @@ class TrailerWebViewTest {
         override fun getRequestHeaders(): Map<String, String> = emptyMap()
     }
 
+    @Test fun thePageLoadsOnceItsWebViewIsInItsWindowAndOnlyOnce() {
+        val (_, web) = open()
+        // Made, set up, but nothing loaded yet: the WebView isn't in a window.
+        assertNull(shadowOf(web).lastLoadDataWithBaseURL)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertNull(shadowOf(web).lastLoadDataWithBaseURL)
+        // In its window: the page loads once that attach is done (posted), not during it.
+        val window = window()
+        window.addView(web)
+        assertTrue(web.isAttachedToWindow)
+        assertNull(shadowOf(web).lastLoadDataWithBaseURL)
+        shadowOf(Looper.getMainLooper()).idle()
+        val first = checkNotNull(shadowOf(web).lastLoadDataWithBaseURL)
+        assertEquals(TrailerPage.html(key), first.data)
+        // Taken out and put back (the dialog's window rebuilt): never loaded again.
+        window.removeView(web)
+        assertFalse(web.isAttachedToWindow)
+        window.addView(web)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertSame(first, shadowOf(web).lastLoadDataWithBaseURL)
+        assertEquals(1, log().count { it.startsWith("load ") })
+        assertEquals(2, log().count { it.startsWith("attached ") })
+        assertEquals(1, log().count { it.startsWith("detached ") })
+    }
+
+    @Test fun aPlayerClosedBeforeItsWebViewIsInAWindowLoadsNothing() {
+        val (surface, web) = open()
+        val window = window()
+        window.addView(web)
+        surface.release()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("about:blank", shadowOf(web).lastLoadedUrl)
+        assertNull(shadowOf(web).lastLoadDataWithBaseURL)
+    }
+
     @Test fun thePageLoadsWithTheAppsIdAsItsOriginAndOnlyTheCheckedKey() {
         val (_, web) = open()
+        attach(web)
         val load = checkNotNull(shadowOf(web).lastLoadDataWithBaseURL)
         // YouTube's Required Minimum Functionality: a WebView app names itself by its app id (Referer and origin).
         assertEquals("https://" + BuildConfig.APPLICATION_ID + "/", load.baseUrl)
@@ -109,9 +169,10 @@ class TrailerWebViewTest {
             assertEquals(WebSettings.MIXED_CONTENT_NEVER_ALLOW, mixedContentMode)
             assertFalse(javaScriptCanOpenWindowsAutomatically)
             assertFalse(supportMultipleWindows())
-            // A 1920 pixel wide layout, so YouTube starts in 1080p.
-            assertTrue(useWideViewPort)
-            assertTrue(loadWithOverviewMode)
+            // Laid out at the screen's own width (the page's device-width viewport): no wide viewport or overview,
+            // which made YouTube's player 4K on a 1080p TV at density 2.
+            assertFalse(useWideViewPort)
+            assertFalse(loadWithOverviewMode)
         }
         // Third-party cookies off: YouTube's frame (another site than the page's) keeps none.
         assertEquals(listOf("thirdParty=false"), cookieCalls)
@@ -213,6 +274,119 @@ class TrailerWebViewTest {
         assertTrue(shadowOf(web).wasOnPauseCalled())
         surface.release()
         assertTrue(app.isClosed)
+    }
+
+    @Test fun thePagesDiagnosticsAreLoggedAndOnlyItsSnapshotsReachThePlayerStampedWithTheAppsClock() {
+        val (_, web) = open()
+        attach(web)
+        pageFinished(web)
+        val page = shadowOf(web).createdPorts.single()[1] as RoboWebMessagePort
+        val tick = "diag:tick raf=48 vis=visible w=960 h=540 dpr=2 rect=0,0,960,540 st=1 t=3.50 lf=0.120 q=hd1080 levels=hd1080,hd720,auto"
+        listOf(
+            "diag:ua Mozilla/5.0 (Linux; Android 12; onn 4K Pro) Chrome/131.0", "diag:media vp9=true av1=false", tick, "state:1", "ad:1",
+            "diag:ad st=1 t=3.50 ad=1", "diag:p st=1 t=40.00 ad=",
+        ).forEach { page.postMessage(WebMessage(it)) }
+        shadowOf(Looper.getMainLooper()).idle()
+        val now = SystemClock.elapsedRealtime()
+        assertEquals(listOf(
+            TrailerEvent.Progress(1, 3.5, now), TrailerEvent.State(1), TrailerEvent.Ad(1), TrailerEvent.Progress(1, 3.5, now, ad = true),
+            TrailerEvent.Progress(1, 40.0, now),
+        ), events)
+        // Every message the page sent is in the log, as sent.
+        listOf(
+            "page diag:ua Mozilla/5.0 (Linux; Android 12; onn 4K Pro) Chrome/131.0", "page diag:media vp9=true av1=false", "page $tick",
+            "page state:1", "page ad:1", "page diag:ad st=1 t=3.50 ad=1", "page diag:p st=1 t=40.00 ad=", "port sent",
+        ).forEach { assertTrue(it, it in log()) }
+    }
+
+    @Test fun aRepeatedShortSnapshotIsLoggedOnceUntilItChangesAndTheStallCheckGetsEveryOne() {
+        val (_, web) = open()
+        attach(web)
+        pageFinished(web)
+        val page = shadowOf(web).createdPorts.single()[1] as RoboWebMessagePort
+        // A trailer waiting, paused, for OK: its page says the same every 2 seconds for as long as it lives.
+        val paused = "diag:p st=2 t=40.00 ad="
+        listOf(paused, paused, "state:2", "state:2", paused, "diag:p st=1 t=41.00 ad=", "diag:p st=1 t=43.00 ad=", paused).forEach {
+            page.postMessage(WebMessage(it))
+        }
+        shadowOf(Looper.getMainLooper()).idle()
+        // Logged once until it changes (a playing trailer's differ, and are all logged); every other message as sent.
+        assertEquals(
+            listOf("page $paused", "page state:2", "page state:2", "page diag:p st=1 t=41.00 ad=", "page diag:p st=1 t=43.00 ad=", "page $paused"),
+            log().filter { it.startsWith("page diag:") || it.startsWith("page state:") },
+        )
+        // The stall check still gets every snapshot.
+        assertEquals(6, events.count { it is TrailerEvent.Progress })
+        // The page's short snapshot is "diag:p" and then " st=...", as the log check reads it.
+        val html = checkNotNull(TrailerPage.html(key))
+        assertTrue(html.contains("else send(\"diag:p\"+now())"))
+        assertTrue(html.contains("function now(){return \" st=\"+"))
+        assertEquals("diag:p ", TrailerEvent.SHORT_SNAPSHOT)
+    }
+
+    @Test fun theTrailerLogSaysWhatTheWebViewDidAndNoAddressesQueries() {
+        val (surface, web) = open()
+        val client = checkNotNull(shadowOf(web).webViewClient)
+        val chrome = checkNotNull(shadowOf(web).webChromeClient)
+        assertTrue(log().any { it.startsWith("device sdk=34 model=") && " webview=com.google.android.webview " in it && " screen=" in it && " density=" in it })
+        attach(web)
+        assertTrue(log().any { it.startsWith("attached hw=") && " layer=" in it && " size=" in it })
+        assertTrue(log().any { it.startsWith("load hw=") })
+        client.onPageStarted(web, TrailerPage.BASE_URL, null)
+        pageFinished(web)
+        // A request the player may not make: its scheme and host only.
+        client.shouldInterceptRequest(web, Request("http://ads.example/pixel?id=viewer-1234&v=$key", main = false))
+        // An HTTP error: its status and host only.
+        client.onReceivedHttpError(web, Request("https://www.youtube-nocookie.com/embed/$key?autoplay=1", main = false),
+            WebResourceResponse("text/html", "utf-8", 404, "Not Found", emptyMap(), null))
+        // The page's console and YouTube's frames: level, host and line, the message cut to 300 characters and any
+        // address in it without its query.
+        chrome.onConsoleMessage(ConsoleMessage("Failed to load https://www.youtube.com/api/stats?docid=$key&cpn=x\nnext line " + "x".repeat(400),
+            "https://www.youtube-nocookie.com/s/player/abc/base.js?v=$key", 1234, ConsoleMessage.MessageLevel.ERROR))
+        surface.send(TrailerCommand.TOGGLE)
+        surface.pause()
+        surface.resume()
+        checkNotNull(shadowOf(web).webViewClient).onRenderProcessGone(web, null)
+        surface.release()
+        val lines = log()
+        listOf("page started " + BuildConfig.APPLICATION_ID, "blocked http://ads.example", "http 404 host=www.youtube-nocookie.com main=false", "port sent", "send toggle",
+            "pause", "send pause", "resume", "renderer gone", "release",
+        ).forEach { assertTrue("$it in $lines", it in lines) }
+        assertTrue(lines.any { it.startsWith("page finished ") })
+        val console = lines.single { it.startsWith("console ") }
+        assertTrue(console, console.startsWith("console ERROR www.youtube-nocookie.com:1234 Failed to load https://www.youtube.com/api/stats?... next line xxx"))
+        assertEquals("console ERROR www.youtube-nocookie.com:1234 ".length + TrailerLog.CONSOLE_MAX, console.length)
+        // Nothing after an address's host and path: no query, no fragment, no key.
+        lines.forEach { line ->
+            assertFalse(line, "viewer-1234" in line)
+            assertFalse(line, "docid=" in line)
+            assertFalse(line, "?v=" in line)
+            assertFalse(line, "/pixel" in line)
+            assertFalse(line, "\n" in line)
+        }
+        // The player's own key is logged once, by the player screen when it opens; the WebView never logs it.
+        assertTrue(lines.none { key in it })
+    }
+
+    @Test fun theLogsTextHelpersKeepHostsAndCutQueries() {
+        assertEquals("www.youtube.com", TrailerLog.hostOf("https://www.youtube.com/watch?v=$key"))
+        assertEquals("www.youtube.com", TrailerLog.hostOf("https://user:pw@www.youtube.com:443/x#y"))
+        assertEquals("tv.lumanest.tuner", TrailerLog.hostOf("https://tv.lumanest.tuner/"))
+        assertEquals("example.com", TrailerLog.hostOf("https://example.com?q=1"))
+        listOf(null, "", "about:blank", "data:text/html,x", "https://", "https:///x").forEach { assertEquals("$it", "-", TrailerLog.hostOf(it)) }
+        assertEquals("https://www.youtube.com", TrailerLog.origin("https", "www.youtube.com"))
+        assertEquals("file://", TrailerLog.origin("file", null))
+        assertEquals("a b c", TrailerLog.clean("a\nb\tc", 100))
+        assertEquals("a b c", TrailerLog.clean("a\u2028b\u0085c", 100))
+        assertEquals("see https://x.example/a/b?... now", TrailerLog.clean("see https://x.example/a/b?token=1&v=2 now", 100))
+        assertEquals("'https://x.example/a?...' (x)", TrailerLog.clean("'https://x.example/a#frag?x=1' (x)", 100))
+        assertEquals("what? yes#1", TrailerLog.clean("what? yes#1", 100))
+        assertEquals("abc", TrailerLog.clean("abcdef", 3))
+        assertEquals("ab", TrailerLog.clean("ab\uD83D\uDE00", 3))
+        assertEquals("", TrailerLog.clean(null, 3))
+        assertEquals("console LOG -:0 hi", TrailerLog.console(null, "hi", null, 0))
+        assertEquals(300, TrailerLog.CONSOLE_MAX)
+        assertEquals("TunerTrailer", TrailerLog.TAG)
     }
 
     @Test fun closingThePlayerFreesTheWebView() {

@@ -114,6 +114,19 @@ Every channel shows a logo. Tuner tries the provider's logo, then the guide's ic
 
 Themes (True Black, Midnight, Carbon, Ocean, Ember, Cable Blue, Daylight), multiple playlists, live format (TS or HLS), guide preview on/off, free guide regions, local stations, onn remote help, refresh, clear cache. In the theme picker, arrows preview a theme, OK saves it, and Back cancels the preview.
 
+## Trailers
+
+**Trailer** on a movie or series page plays the trailer inside Tuner, in YouTube's embedded player. "Loading trailer", the trailer's name and the remote's keys stay on screen until YouTube's player is ready, so a slow start never shows as a black screen; the trailer then starts with the player in full view. When it can't play there (YouTube refuses it, the player isn't ready within 12 seconds, the trailer hasn't started 10 seconds after that, after an ad or after your last key press, unless you paused it, its picture stands still while YouTube says it plays, it buffers for 30 seconds after it played, or its page stops answering), Tuner opens it in the YouTube app instead, or shows a QR code for a phone when no YouTube app opens. If YouTube no longer has the video, a short message says so.
+
+When a trailer doesn't play on a TV, capture Tuner's trailer log while you try it (with the TV connected over `adb`, as in Install on Google TV):
+
+```powershell
+adb logcat -c
+adb logcat -s TunerTrailer:V chromium:V
+```
+
+`TunerTrailer` lists the TV's model, Android and WebView versions and screen, what the trailer page did (loading, errors by host, its own playback snapshots) and each of the player's decisions; `chromium` is the WebView's own log. Neither holds your playlist, channels or stream addresses.
+
 ## Build
 
 Both build types use the LumaNest application ID `tv.lumanest.tuner` (the store edition below uses `app.tunertv`). Debug builds are always signed with the standard Android debug key, so a debug build cannot replace an installed release; uninstall the release first when testing a debug build on the same device. Install the signed release APK for normal use.

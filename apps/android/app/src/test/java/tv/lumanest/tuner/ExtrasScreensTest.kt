@@ -1,6 +1,7 @@
 package tv.lumanest.tuner
 
 import android.content.Context
+import android.os.SystemClock
 import android.view.KeyEvent
 import android.view.View
 import androidx.compose.runtime.Composable
@@ -49,6 +50,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import org.robolectric.shadows.ShadowDialog
+import org.robolectric.shadows.ShadowSystemClock
 import tv.lumanest.tuner.data.CatalogRows
 import tv.lumanest.tuner.data.Episode
 import tv.lumanest.tuner.data.ExtrasTitle
@@ -114,7 +116,13 @@ class ExtrasScreensTest {
         /** The pauses the page itself got (the ones after its port was there). */
         @Volatile var pagePauses = 0
         @Volatile var released = false
-        override fun send(command: TrailerCommand) { check(!released); commands += command }
+        /** For each command: whether Tuner's "Loading trailer" was on the player's screen when it was sent. */
+        val underLoading = CopyOnWriteArrayList<Boolean>()
+        override fun send(command: TrailerCommand) {
+            check(!released)
+            commands += command
+            underLoading += ShadowDialog.getLatestDialog()?.window?.decorView?.let(::drawnIn).orEmpty().contains("trailer-loading")
+        }
         override fun pause() { pauses++; if (connected) pagePauses++ }
         override fun resume() = Unit
         override fun release() { released = true }
@@ -131,21 +139,8 @@ class ExtrasScreensTest {
         override fun create(context: Context, key: String, onEvent: (TrailerEvent) -> Unit): TrailerSurface? {
             val window = ShadowDialog.getLatestDialog()?.window?.decorView
             laidOutFirst += window?.isLaidOut == true
-            screenFirst += window?.let(::drawn).orEmpty()
+            screenFirst += window?.let(::drawnIn).orEmpty()
             return if (!webView) null else FakePlayer(context, key, onEvent).also { players += it }
-        }
-
-        /** The texts and test tags Compose has drawn in [view]'s window (read as the test framework does, without waiting). */
-        private fun drawn(view: View): Set<String> {
-            val roots = mutableListOf<androidx.compose.ui.node.RootForTest>()
-            fun walk(v: View) {
-                if (v is androidx.compose.ui.node.RootForTest) roots += v
-                if (v is android.view.ViewGroup) for (i in 0 until v.childCount) walk(v.getChildAt(i))
-            }
-            walk(view)
-            return roots.flatMap { it.semanticsOwner.getAllSemanticsNodes(mergingEnabled = false, skipDeactivatedNodes = true) }.flatMap { node ->
-                node.config.getOrNull(SemanticsProperties.Text).orEmpty().map { it.text } + listOfNotNull(node.config.getOrNull(SemanticsProperties.TestTag))
-            }.toSet()
         }
     }
 
@@ -197,6 +192,12 @@ class ExtrasScreensTest {
                 ?: node.config.getOrNull(SemanticsProperties.Text)?.joinToString()
                 ?: node.config.getOrNull(SemanticsProperties.ProgressBarRangeInfo)?.let { "progress" }
         }
+
+    /** Whether the player keeps the TV's screen on (a view in its window asks to). */
+    private fun keepsScreenOn(): Boolean = rule.runOnIdle {
+        fun on(v: View): Boolean = v.keepScreenOn || (v is android.view.ViewGroup && (0 until v.childCount).any { on(v.getChildAt(it)) })
+        on(checkNotNull(ShadowDialog.getLatestDialog()).window!!.decorView)
+    }
 
     /** Robolectric creates a dialog's window but does not deliver the OS window-focus event: this does. */
     private fun focusWindow(dialog: Boolean) = rule.runOnIdle {
@@ -311,12 +312,24 @@ class ExtrasScreensTest {
         // Until then: "Loading trailer", the trailer's name and the remote's keys.
         val loading = surfaces.screenFirst.single()
         listOf("trailer-loading", "Loading trailer", "Official Trailer", "trailer-keys", TrailerPage.KEYS).forEach { assertTrue(it, it in loading) }
-        // Then nothing of Tuner's over YouTube's player (its Required Minimum Functionality): it loads and autoplays in
-        // full view. Not after it is ready, a remote key or a pause either.
-        assertEquals(emptyList<String>(), drawnOverPlayer())
+        // They stay over the WebView while its page loads (a TV's web engine can take a while to paint anything: never
+        // a black screen), and nothing is asked to play meanwhile...
+        val overlay = listOf("trailer-loading", "progress", "Loading trailer", "Official Trailer", "trailer-keys")
+        assertEquals(overlay, drawnOverPlayer())
+        assertEquals(emptyList<TrailerCommand>(), player.commands.toList())
+        // ...until YouTube's player is ready: then nothing of Tuner's over it (YouTube's Required Minimum Functionality,
+        // "Overlays and frames"), and once a frame without "Loading trailer" has been drawn, Tuner starts the trailer
+        // (the page doesn't autoplay: "Autoplay and scripted playbacks", only a player in view may start).
         emit(player, TrailerEvent.Ready)
         assertEquals(emptyList<String>(), drawnOverPlayer())
+        await { player.commands.isNotEmpty() }
+        assertEquals(listOf(TrailerCommand.PLAY), player.commands.toList())
+        assertEquals(listOf(false), player.underLoading.toList())
+        // Nothing comes back over it while it buffers, plays, after a remote key or a pause.
+        emit(player, TrailerEvent.State(TrailerEvent.BUFFERING))
+        assertEquals(emptyList<String>(), drawnOverPlayer())
         emit(player, TrailerEvent.State(TrailerEvent.PLAYING))
+        assertEquals(emptyList<String>(), drawnOverPlayer())
         // The remote drives YouTube's player through the page; Up and Down do nothing and keep the focus.
         remote(KeyEvent.KEYCODE_DPAD_CENTER)
         remote(KeyEvent.KEYCODE_DPAD_LEFT)
@@ -326,7 +339,7 @@ class ExtrasScreensTest {
         remote(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
         remote(KeyEvent.KEYCODE_MEDIA_PAUSE)
         remote(KeyEvent.KEYCODE_MEDIA_PLAY)
-        assertEquals(listOf(TrailerCommand.TOGGLE, TrailerCommand.BACK, TrailerCommand.FORWARD, TrailerCommand.TOGGLE,
+        assertEquals(listOf(TrailerCommand.PLAY, TrailerCommand.TOGGLE, TrailerCommand.BACK, TrailerCommand.FORWARD, TrailerCommand.TOGGLE,
             TrailerCommand.PAUSE, TrailerCommand.PLAY), player.commands.toList())
         assertEquals(emptyList<String>(), drawnOverPlayer())
         emit(player, TrailerEvent.State(TrailerEvent.PAUSED))
@@ -411,6 +424,173 @@ class ExtrasScreensTest {
         assertEquals(null, shadowOf(rule.activity).nextStartedActivity)
     }
 
+    @Test fun aReadyTrailerThatDoesntPlayWithinTenSecondsGoesToTheYouTubeApp() {
+        mount { MovieDetailScreen(matrix, AppState(Tab.HOME)) }
+        await { hasTrailer() }
+        focusTrailer()
+        val player = openPlayer()
+        rule.mainClock.advanceTimeBy(5_000)
+        emit(player, TrailerEvent.Ready)
+        // Ready, in view and asked to play, but YouTube never says it plays (playback refused, a picture that never
+        // comes, endless buffering): after 10 seconds the trailer goes to the YouTube app, never a black screen.
+        emit(player, TrailerEvent.State(-1))
+        emit(player, TrailerEvent.State(TrailerEvent.BUFFERING))
+        rule.mainClock.advanceTimeBy(9_000)
+        rule.waitForIdle()
+        assertTrue(shown("trailer-player"))
+        assertEquals(emptyList<String>(), drawnOverPlayer())
+        assertEquals(listOf(TrailerCommand.PLAY), player.commands.toList())
+        assertEquals(null, shadowOf(rule.activity).nextStartedActivity)
+        rule.mainClock.advanceTimeBy(1_100)
+        await { !shown("trailer-player") }
+        assertTrue(player.released)
+        val started = shadowOf(rule.activity).nextStartedActivity
+        assertEquals("com.google.android.youtube.tv", started.`package`)
+        assertEquals("https://www.youtube.com/watch?v=$key", started.dataString)
+        // A late answer from the page changes nothing.
+        rule.runOnIdle { player.emit(TrailerEvent.State(TrailerEvent.PLAYING)) }
+        rule.waitForIdle()
+        assertEquals(null, shadowOf(rule.activity).nextStartedActivity)
+        awaitFocusBackOnTrailer()
+    }
+
+    @Test fun aTrailerThatPlaysOrThatTheViewerControlsStaysInTuner() {
+        mount { MovieDetailScreen(matrix, AppState(Tab.HOME)) }
+        await { hasTrailer() }
+        focusTrailer()
+        // It plays: the trailer stays however long it plays.
+        val playing = openPlayer()
+        emit(playing, TrailerEvent.Ready)
+        emit(playing, TrailerEvent.State(TrailerEvent.PLAYING))
+        assertTrue(!shown("trailer-loading"))
+        rule.mainClock.advanceTimeBy(30_000)
+        rule.waitForIdle()
+        assertTrue(shown("trailer-player"))
+        assertEquals(null, shadowOf(rule.activity).nextStartedActivity)
+        remote(KeyEvent.KEYCODE_BACK)
+        await { !shown("trailer-player") }
+        awaitFocusBackOnTrailer()
+        // OK before the page is ready reaches nothing: "Loading trailer" stays until the player is ready, which Tuner
+        // then starts. OK once it is ready is the viewer's choice: here pausing it before it ever played, so it waits
+        // for OK however long.
+        val paused = openPlayer()
+        remote(KeyEvent.KEYCODE_DPAD_CENTER)
+        assertTrue(shown("trailer-loading"))
+        emit(paused, TrailerEvent.Ready)
+        await { !shown("trailer-loading") }
+        await { paused.commands.size == 2 }
+        remote(KeyEvent.KEYCODE_DPAD_CENTER)
+        assertEquals(emptyList<String>(), drawnOverPlayer())
+        emit(paused, TrailerEvent.State(TrailerEvent.PAUSED))
+        assertEquals(listOf(TrailerCommand.TOGGLE, TrailerCommand.PLAY, TrailerCommand.TOGGLE), paused.commands.toList())
+        rule.mainClock.advanceTimeBy(30_000)
+        rule.waitForIdle()
+        assertTrue(shown("trailer-player"))
+        assertTrue(!paused.released)
+        assertEquals(null, shadowOf(rule.activity).nextStartedActivity)
+    }
+
+    @Test fun aSeekOrOkWhileTheTrailerDoesntPlayGivesItTenSecondsMoreAndNoMore() {
+        mount { MovieDetailScreen(matrix, AppState(Tab.HOME)) }
+        await { hasTrailer() }
+        focusTrailer()
+        // An impatient viewer presses Right on a trailer that buffers and never plays: the count starts again from the
+        // key, and 10 seconds later the trailer goes to the YouTube app all the same, never an endless black screen.
+        val seeking = openPlayer()
+        emit(seeking, TrailerEvent.Ready)
+        await { seeking.commands.size == 1 }
+        emit(seeking, TrailerEvent.State(TrailerEvent.BUFFERING))
+        rule.mainClock.advanceTimeBy(6_000)
+        rule.waitForIdle()
+        remote(KeyEvent.KEYCODE_DPAD_RIGHT)
+        emit(seeking, TrailerEvent.State(TrailerEvent.BUFFERING))
+        rule.mainClock.advanceTimeBy(9_000)
+        rule.waitForIdle()
+        assertTrue(shown("trailer-player"))
+        assertEquals(null, shadowOf(rule.activity).nextStartedActivity)
+        rule.mainClock.advanceTimeBy(1_100)
+        await { !shown("trailer-player") }
+        assertTrue(seeking.released)
+        assertEquals(listOf(TrailerCommand.PLAY, TrailerCommand.FORWARD), seeking.commands.toList())
+        assertEquals("com.google.android.youtube.tv", shadowOf(rule.activity).nextStartedActivity.`package`)
+        awaitFocusBackOnTrailer()
+        // OK on a player that hasn't started (the page plays it): the same, 10 seconds from the key.
+        val starting = openPlayer()
+        emit(starting, TrailerEvent.Ready)
+        await { starting.commands.size == 1 }
+        emit(starting, TrailerEvent.State(-1))
+        rule.mainClock.advanceTimeBy(6_000)
+        rule.waitForIdle()
+        remote(KeyEvent.KEYCODE_DPAD_CENTER)
+        emit(starting, TrailerEvent.State(TrailerEvent.BUFFERING))
+        rule.mainClock.advanceTimeBy(9_000)
+        rule.waitForIdle()
+        assertTrue(shown("trailer-player"))
+        assertEquals(null, shadowOf(rule.activity).nextStartedActivity)
+        rule.mainClock.advanceTimeBy(1_100)
+        await { !shown("trailer-player") }
+        assertTrue(starting.released)
+        assertEquals("com.google.android.youtube.tv", shadowOf(rule.activity).nextStartedActivity.`package`)
+        awaitFocusBackOnTrailer()
+    }
+
+    @Test fun aTrailerTheViewerControlledWaitsPausedWhenTunerIsBackAndOkGivesItTenSecondsToPlay() {
+        mount { MovieDetailScreen(matrix, AppState(Tab.HOME)) }
+        await { hasTrailer() }
+        focusTrailer()
+        val player = openPlayer()
+        emit(player, TrailerEvent.Ready)
+        await { player.commands.size == 1 }
+        emit(player, TrailerEvent.State(TrailerEvent.BUFFERING))
+        remote(KeyEvent.KEYCODE_DPAD_RIGHT)
+        // A voice assistant comes over Tuner: the trailer pauses, and when Tuner is back it waits, paused, for OK (the
+        // viewer had taken it over), however long.
+        rule.activityRule.scenario.moveToState(Lifecycle.State.STARTED)
+        rule.waitForIdle()
+        emit(player, TrailerEvent.State(TrailerEvent.PAUSED))
+        rule.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        await { shown("trailer-player") }
+        rule.mainClock.advanceTimeBy(30_000)
+        rule.waitForIdle()
+        assertTrue(shown("trailer-player"))
+        assertEquals(listOf(TrailerCommand.PLAY, TrailerCommand.FORWARD), player.commands.toList())
+        assertEquals(null, shadowOf(rule.activity).nextStartedActivity)
+        // OK: it is the viewer's again, and if it still doesn't play, 10 seconds later the YouTube app.
+        focusWindow(dialog = true)
+        remote(KeyEvent.KEYCODE_DPAD_CENTER)
+        emit(player, TrailerEvent.State(TrailerEvent.BUFFERING))
+        rule.mainClock.advanceTimeBy(9_000)
+        rule.waitForIdle()
+        assertTrue(shown("trailer-player"))
+        assertEquals(null, shadowOf(rule.activity).nextStartedActivity)
+        rule.mainClock.advanceTimeBy(1_100)
+        await { !shown("trailer-player") }
+        assertEquals(listOf(TrailerCommand.PLAY, TrailerCommand.FORWARD, TrailerCommand.TOGGLE), player.commands.toList())
+        assertEquals("com.google.android.youtube.tv", shadowOf(rule.activity).nextStartedActivity.`package`)
+        awaitFocusBackOnTrailer()
+    }
+
+    @Test fun aTrailerWhoseTimeStandsStillWhileItSaysItPlaysGoesToTheYouTubeApp() {
+        mount { MovieDetailScreen(matrix, AppState(Tab.HOME)) }
+        await { hasTrailer() }
+        focusTrailer()
+        val player = openPlayer()
+        emit(player, TrailerEvent.Ready)
+        emit(player, TrailerEvent.State(TrailerEvent.PLAYING))
+        // The page's snapshots (stamped by the app's clock as they arrive), as YouTube's API reads them: 0.00 with the
+        // state change, then its time moves, then stands at 6 s (read as 7.00: the API adds up to a second while playing).
+        val base = SystemClock.elapsedRealtime()
+        fun at(time: Double, ms: Long) = emit(player, TrailerEvent.Progress(TrailerEvent.PLAYING, time, base + ms))
+        at(0.0, 0); at(2.0, 2_000); at(4.0, 4_000); at(7.0, 6_000); at(7.0, 10_000); at(7.0, 15_999)
+        assertTrue(shown("trailer-player"))
+        assertEquals(null, shadowOf(rule.activity).nextStartedActivity)
+        at(7.0, 16_000)
+        await { !shown("trailer-player") }
+        assertTrue(player.released)
+        assertEquals("com.google.android.youtube.tv", shadowOf(rule.activity).nextStartedActivity.`package`)
+        awaitFocusBackOnTrailer()
+    }
+
     @Test fun pausingTheAppPausesTheTrailerAndStoppingItClosesThePlayer() {
         mount { MovieDetailScreen(matrix, AppState(Tab.HOME)) }
         await { hasTrailer() }
@@ -432,7 +612,63 @@ class ExtrasScreensTest {
         assertEquals(1, player.pauses)
     }
 
-    @Test fun aTrailerThatGetsReadyWhileTheAppIsPausedWaitsPaused() {
+    @Test fun aReadyTrailerTunerPausedBeforeItPlayedPlaysOnWhenTunerIsBack() {
+        mount { MovieDetailScreen(matrix, AppState(Tab.HOME)) }
+        await { hasTrailer() }
+        focusTrailer()
+        val player = openPlayer()
+        emit(player, TrailerEvent.Ready)
+        await { player.commands.size == 1 }
+        // The settings panel comes over Tuner before the trailer plays, and goes: Tuner paused the trailer, and while
+        // Tuner is paused it never goes to the YouTube app for not playing.
+        rule.activityRule.scenario.moveToState(Lifecycle.State.STARTED)
+        rule.waitForIdle()
+        assertEquals(1, player.pagePauses)
+        rule.mainClock.advanceTimeBy(30_000)
+        rule.waitForIdle()
+        assertTrue(!player.released)
+        assertEquals(null, shadowOf(rule.activity).nextStartedActivity)
+        rule.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        await { shown("trailer-player") }
+        // Tuner is back: the trailer, which Tuner had started once it was in view, plays on, with nothing over it.
+        assertEquals(listOf(TrailerCommand.PLAY, TrailerCommand.PLAY), player.commands.toList())
+        assertEquals(emptyList<String>(), drawnOverPlayer())
+        emit(player, TrailerEvent.State(TrailerEvent.PLAYING))
+        assertEquals(emptyList<String>(), drawnOverPlayer())
+        rule.mainClock.advanceTimeBy(30_000)
+        rule.waitForIdle()
+        assertTrue(shown("trailer-player"))
+        assertTrue(!player.released)
+        assertEquals(null, shadowOf(rule.activity).nextStartedActivity)
+    }
+
+    @Test fun aTrailerTheViewerHasSeenWaitsPausedForOkWhenTunerIsBack() {
+        mount { MovieDetailScreen(matrix, AppState(Tab.HOME)) }
+        await { hasTrailer() }
+        focusTrailer()
+        val player = openPlayer()
+        emit(player, TrailerEvent.Ready)
+        await { player.commands.size == 1 }
+        emit(player, TrailerEvent.State(TrailerEvent.PLAYING))
+        rule.activityRule.scenario.moveToState(Lifecycle.State.STARTED)
+        rule.waitForIdle()
+        assertEquals(1, player.pagePauses)
+        emit(player, TrailerEvent.State(TrailerEvent.PAUSED))
+        rule.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        await { shown("trailer-player") }
+        // YouTube's paused player, nothing over it, and nothing sent since Tuner started it: it waits for OK, however long.
+        assertEquals(listOf(TrailerCommand.PLAY), player.commands.toList())
+        assertEquals(emptyList<String>(), drawnOverPlayer())
+        rule.mainClock.advanceTimeBy(30_000)
+        rule.waitForIdle()
+        assertTrue(shown("trailer-player"))
+        assertEquals(null, shadowOf(rule.activity).nextStartedActivity)
+        focusWindow(dialog = true)
+        remote(KeyEvent.KEYCODE_DPAD_CENTER)
+        assertEquals(listOf(TrailerCommand.PLAY, TrailerCommand.TOGGLE), player.commands.toList())
+    }
+
+    @Test fun aTrailerThatGetsReadyWhileTheAppIsPausedPlaysOnWhenTunerIsBack() {
         mount { MovieDetailScreen(matrix, AppState(Tab.HOME)) }
         await { hasTrailer() }
         focusTrailer()
@@ -443,15 +679,107 @@ class ExtrasScreensTest {
         rule.waitForIdle()
         assertEquals(1, player.pauses)
         assertEquals(0, player.pagePauses)
-        // The page gets ready behind the overlay and starts its trailer: the player pauses it, now that the page hears.
+        // The page gets ready meanwhile: it doesn't autoplay, and Tuner doesn't start it while it is paused.
         emit(player, TrailerEvent.Ready)
-        assertEquals(1, player.pagePauses)
+        rule.mainClock.advanceTimeBy(1_000)
+        rule.waitForIdle()
+        assertEquals(0, player.pagePauses)
+        assertEquals(emptyList<TrailerCommand>(), player.commands.toList())
         assertTrue(!player.released)
-        // Back in Tuner: the player is there, its trailer paused until OK.
+        // Back in Tuner: the player is there, nothing over it, and its trailer starts.
         rule.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
         await { shown("trailer-player") }
-        assertEquals(1, player.pagePauses)
+        assertEquals(0, player.pagePauses)
+        assertEquals(listOf(TrailerCommand.PLAY), player.commands.toList())
         assertTrue(!player.released)
+        // It still doesn't play 10 seconds after Tuner is back: the YouTube app, never a black screen.
+        rule.mainClock.advanceTimeBy(9_000)
+        rule.waitForIdle()
+        assertTrue(shown("trailer-player"))
+        assertEquals(listOf(TrailerCommand.PLAY), player.commands.toList())
+        assertEquals(emptyList<String>(), drawnOverPlayer())
+        assertEquals(null, shadowOf(rule.activity).nextStartedActivity)
+        rule.mainClock.advanceTimeBy(1_100)
+        await { !shown("trailer-player") }
+        assertTrue(player.released)
+        assertEquals("com.google.android.youtube.tv", shadowOf(rule.activity).nextStartedActivity.`package`)
+        awaitFocusBackOnTrailer()
+    }
+
+    @Test fun anAdOfYouTubesBeforeTheTrailerShowsWithNothingOverItAndTheTrailerFollows() {
+        mount { MovieDetailScreen(matrix, AppState(Tab.HOME)) }
+        await { hasTrailer() }
+        focusTrailer()
+        val player = openPlayer()
+        // YouTube reports its own ad apart (onAdStateChange): the trailer's state stays -1 meanwhile.
+        emit(player, TrailerEvent.Ready)
+        emit(player, TrailerEvent.State(-1))
+        emit(player, TrailerEvent.Ad(-1))
+        emit(player, TrailerEvent.Ad(TrailerEvent.BUFFERING))
+        assertEquals(emptyList<String>(), drawnOverPlayer())
+        emit(player, TrailerEvent.Ad(TrailerEvent.PLAYING))
+        // The ad plays: nothing of Tuner's over it, the screen stays on, and the trailer waits for it, however long.
+        assertEquals(emptyList<String>(), drawnOverPlayer())
+        assertTrue(keepsScreenOn())
+        rule.mainClock.advanceTimeBy(30_000)
+        rule.waitForIdle()
+        assertTrue(shown("trailer-player"))
+        assertEquals(null, shadowOf(rule.activity).nextStartedActivity)
+        // Its end isn't the trailer's: the trailer follows, and plays on with nothing over it.
+        emit(player, TrailerEvent.Ad(TrailerEvent.ENDED))
+        assertTrue(shown("trailer-player"))
+        emit(player, TrailerEvent.State(TrailerEvent.BUFFERING))
+        emit(player, TrailerEvent.State(TrailerEvent.PLAYING))
+        assertEquals(emptyList<String>(), drawnOverPlayer())
+        rule.mainClock.advanceTimeBy(30_000)
+        rule.waitForIdle()
+        assertTrue(shown("trailer-player"))
+        assertTrue(!player.released)
+        assertEquals(null, shadowOf(rule.activity).nextStartedActivity)
+    }
+
+    @Test fun aTrailerThatDoesntFollowItsAdWithinTenSecondsGoesToTheYouTubeApp() {
+        mount { MovieDetailScreen(matrix, AppState(Tab.HOME)) }
+        await { hasTrailer() }
+        focusTrailer()
+        val player = openPlayer()
+        emit(player, TrailerEvent.Ready)
+        emit(player, TrailerEvent.Ad(TrailerEvent.PLAYING))
+        rule.mainClock.advanceTimeBy(20_000)
+        rule.waitForIdle()
+        emit(player, TrailerEvent.Ad(TrailerEvent.ENDED))
+        // YouTube's player has shown the ad: "Loading trailer" doesn't come back over it, but the trailer has 10 seconds.
+        rule.mainClock.advanceTimeBy(9_000)
+        rule.waitForIdle()
+        assertEquals(emptyList<String>(), drawnOverPlayer())
+        assertEquals(null, shadowOf(rule.activity).nextStartedActivity)
+        rule.mainClock.advanceTimeBy(1_100)
+        await { !shown("trailer-player") }
+        assertTrue(player.released)
+        assertEquals("com.google.android.youtube.tv", shadowOf(rule.activity).nextStartedActivity.`package`)
+        awaitFocusBackOnTrailer()
+    }
+
+    @Test fun aTrailerWhosePageFallsSilentWhileItPlaysGoesToTheYouTubeApp() {
+        mount { MovieDetailScreen(matrix, AppState(Tab.HOME)) }
+        await { hasTrailer() }
+        focusTrailer()
+        val player = openPlayer()
+        emit(player, TrailerEvent.Ready)
+        emit(player, TrailerEvent.State(TrailerEvent.PLAYING))
+        emit(player, TrailerEvent.Progress(TrailerEvent.PLAYING, 0.0, SystemClock.elapsedRealtime()))
+        // Then nothing from the page, which sends a snapshot every 2 seconds (its renderer hung).
+        ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(9_000))
+        rule.mainClock.advanceTimeBy(2_100)
+        rule.waitForIdle()
+        assertTrue(shown("trailer-player"))
+        assertEquals(null, shadowOf(rule.activity).nextStartedActivity)
+        ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(1_000))
+        rule.mainClock.advanceTimeBy(2_100)
+        await { !shown("trailer-player") }
+        assertTrue(player.released)
+        assertEquals("com.google.android.youtube.tv", shadowOf(rule.activity).nextStartedActivity.`package`)
+        awaitFocusBackOnTrailer()
     }
 
     @Test fun anAnswerTheSessionHasIsOnThePagesFirstFrame() {
@@ -570,6 +898,7 @@ class ExtrasScreensTest {
             await { focused("trailer-player") }
             val player = surfaces.players.single()
             emit(player, TrailerEvent.Ready)
+            emit(player, TrailerEvent.State(TrailerEvent.PLAYING))
             // The panel answers while the trailer plays: the page shows its episodes, and the trailer plays on.
             answer.countDown()
             await { rule.onAllNodesWithText("Loading episodes…").fetchSemanticsNodes().isEmpty() }
@@ -636,4 +965,17 @@ class ExtrasScreensTest {
         rule.onNode(hasTestTag("setting:opensubtitles") and hasText(ExtrasApi.CREDIT)).assertExists()
         assertEquals("Subtitles provided by OpenSubtitles.com", ExtrasApi.CREDIT)
     }
+}
+
+/** The texts and test tags Compose has drawn in [view]'s window (read as the test framework does, without waiting). */
+private fun drawnIn(view: View): Set<String> {
+    val roots = mutableListOf<androidx.compose.ui.node.RootForTest>()
+    fun walk(v: View) {
+        if (v is androidx.compose.ui.node.RootForTest) roots += v
+        if (v is android.view.ViewGroup) for (i in 0 until v.childCount) walk(v.getChildAt(i))
+    }
+    walk(view)
+    return roots.flatMap { it.semanticsOwner.getAllSemanticsNodes(mergingEnabled = false, skipDeactivatedNodes = true) }.flatMap { node ->
+        node.config.getOrNull(SemanticsProperties.Text).orEmpty().map { it.text } + listOfNotNull(node.config.getOrNull(SemanticsProperties.TestTag))
+    }.toSet()
 }
