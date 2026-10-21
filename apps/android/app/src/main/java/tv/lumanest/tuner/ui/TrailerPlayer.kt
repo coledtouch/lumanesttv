@@ -126,7 +126,10 @@ internal class WebTrailerSurfaces(private val cookies: () -> CookieManager = Coo
             return null
         }
         val web = try {
-            WebView(context)
+            // MATCH_PARENT, set before Compose adds it: a view added without layout params gets WRAP_CONTENT, and a
+            // WebView whose height wraps its content lays its page out at zero height, so the player's 100% height
+            // was 0 and the trailer played unseen on a black screen (1.8.2 on an onn 4K Pro).
+            WebView(context).apply { layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT) }
         } catch (e: Exception) {
             TrailerLog.i("no WebView: " + e.javaClass.simpleName)
             return null // MissingWebViewPackageException, wrapped in an AndroidRuntimeException
@@ -454,7 +457,7 @@ internal fun TrailerPlayerDialog(trailer: Trailer, onClose: () -> Unit, onFallBa
         val onEvent: (TrailerEvent) -> Unit = { event ->
             if (event is TrailerEvent.Progress) {
                 // Logged by the surface as the page's message; only a stall decides anything.
-                finish(stall.on(event, appPaused()), "its time stood still while it played or buffered")
+                finish(stall.on(event, appPaused()), "its time stood still, or its player had no size, while it played or buffered")
             } else {
                 if (event is TrailerEvent.State) {
                     state = event.code

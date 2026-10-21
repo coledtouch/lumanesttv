@@ -100,6 +100,8 @@ object TrailerPage {
             " return o+\" hdr=\"+(window.matchMedia?window.matchMedia(\"(dynamic-range: high)\").matches:\"none\")+\" screen=\"+screen.width+\"x\"+screen.height}\n" +
             "function count(){frames++;if(counting)window.requestAnimationFrame(count)}\n" +
             "window.requestAnimationFrame(count);\n" +
+            "function fit(){var e=document.getElementById(\"player\"),w=window.innerWidth,h=window.innerHeight;if(e&&w>0&&h>0){e.style.width=w+\"px\";e.style.height=h+\"px\"}}\n" +
+            "window.addEventListener(\"resize\",fit);\n" +
             "function command(c){\n" +
             " if(!player||!player.getPlayerState)return;\n" +
             " var s=ad!==null?ad:player.getPlayerState();\n" +
@@ -122,16 +124,18 @@ object TrailerPage {
             " player=new YT.Player(\"player\",{host:\"" + EMBED_HOST + "\",videoId:key,width:\"100%\",height:\"100%\",\n" +
             "  playerVars:{autoplay:0,playsinline:1,rel:0,controls:1,enablejsapi:1,fs:0,iv_load_policy:3,disablekb:1,origin:\"" + ORIGIN + "\"},\n" +
             "  events:{\n" +
-            "   onReady:function(e){send(\"ready\");snap(\"ready\")},\n" +
+            "   onReady:function(e){fit();send(\"ready\");snap(\"ready\")},\n" +
             "   onStateChange:function(e){ad=null;send(\"state:\"+e.data);snap(\"state\")},\n" +
             "   onAdStateChange:function(e){ad=typeof e.data===\"number\"&&e.data!==0?e.data:null;send(\"ad:\"+e.data);snap(\"ad\")},\n" +
             "   onError:function(e){send(\"error:\"+e.data);snap(\"error\")}}});\n" +
+            " fit();\n" +
             "};\n" +
             "var s=document.createElement(\"script\");\n" +
             "s.src=\"" + API_URL + "\";\n" +
             "s.onerror=function(){send(\"error:-1\")};\n" +
             "window.addEventListener(\"load\",function(){\n" +
             " document.head.appendChild(s);\n" +
+            " fit();\n" +
             " send(\"diag:ua \"+navigator.userAgent);\n" +
             " send(media());\n" +
             " snap(\"load\");\n" +
@@ -208,7 +212,7 @@ sealed interface TrailerEvent {
      * [ad] of YouTube's own was showing (its state is then the ad's, and the trailer's time stands still), stamped [atMs]
      * by the app's clock when it arrived. Only the stall check reads it ([TrailerStall]); [TrailerPolicy.on] waits.
      */
-    data class Progress(val state: Int, val time: Double, val atMs: Long, val ad: Boolean = false) : TrailerEvent
+    data class Progress(val state: Int, val time: Double, val atMs: Long, val ad: Boolean = false, val sized: Boolean? = null) : TrailerEvent
 
     companion object {
         const val ENDED = 0
@@ -253,15 +257,29 @@ sealed interface TrailerEvent {
             var state: Int? = null
             var time: Double? = null
             var ad = false
+            var sized: Boolean? = null
             for (part in parts.drop(1)) {
-                if (part.startsWith("st=")) state = code(part.substring(3))
+                if (part.startsWith("rect=")) sized = sized(part.substring(5))
+                else if (part.startsWith("st=")) state = code(part.substring(3))
                 else if (part.startsWith("t=")) time = seconds(part.substring(2))
                 else if (part.startsWith("ad=") && part.length > 3) {
                     code(part.substring(3)) ?: return null
                     ad = true
                 }
             }
-            return if (state != null && time != null) Progress(state, time, atMs, ad) else null
+            return if (state != null && time != null) Progress(state, time, atMs, ad, sized) else null
+        }
+
+        /**
+         * Whether the player's frame has a size, from the page's `rect=left,top,width,height` (whole CSS pixels): false
+         * when its width or height is 0 (it plays unseen), null when the page couldn't say ("none", or anything else).
+         */
+        private fun sized(text: String): Boolean? {
+            val sides = text.split(',')
+            if (sides.size != 4) return null
+            val width = code(sides[2]) ?: return null
+            val height = code(sides[3]) ?: return null
+            return width > 0 && height > 0
         }
 
         /** An optional minus and one to six ASCII digits. */
@@ -330,6 +348,11 @@ object TrailerPolicy {
      * ([TrailerStall]).
      */
     const val STALL_TIMEOUT_MS = 10_000L
+    /**
+     * How long YouTube's player may play or buffer in a frame with no size (the page's snapshots say its width or
+     * height is 0, so nothing of it shows) before the trailer goes to the YouTube app ([TrailerStall]).
+     */
+    const val UNSEEN_TIMEOUT_MS = 4_000L
     /** How long a trailer that played may buffer with its time standing still before it goes to the YouTube app ([TrailerStall]). */
     const val BUFFERING_TIMEOUT_MS = 30_000L
     /** YouTube's error for a video it doesn't have (removed, or private). */
@@ -412,7 +435,10 @@ object TrailerPolicy {
  * - once it has played, it buffers (state 3) with the same time for [TrailerPolicy.BUFFERING_TIMEOUT_MS] (a short wait
  *   for data is normal; this long, the picture has stopped);
  * - the last snapshot said it plays or buffers as above and the page has sent none for [TrailerPolicy.STALL_TIMEOUT_MS]
- *   ([onClock]: its renderer hung).
+ *   ([onClock]: its renderer hung);
+ * - YouTube's player (the trailer or an ad) plays or buffers in a frame with no size for
+ *   [TrailerPolicy.UNSEEN_TIMEOUT_MS]: it plays where nothing shows. A snapshot that can't say (the short one) changes
+ *   nothing; one with a size starts the count again.
  * Any other snapshot, a different state or time (a seek too), an ad of YouTube's (its time is the trailer's, standing
  * still meanwhile) or the app being paused starts the count again. Main thread only.
  */
@@ -424,9 +450,17 @@ class TrailerStall {
     private var played = false
     /** When the last snapshot that counts arrived, or -1 when the last one didn't count. */
     private var lastAt = -1L
+    /** Since when the player has played or buffered in a frame with no size, or -1. */
+    private var unseenSince = -1L
 
     fun on(sample: TrailerEvent.Progress, appPaused: Boolean): TrailerStep {
         if (!sample.ad && sample.state == TrailerEvent.PLAYING) played = true
+        val active = sample.ad || sample.state == TrailerEvent.PLAYING || sample.state == TrailerEvent.BUFFERING
+        if (appPaused || !active || sample.sized == true) unseenSince = -1L
+        else if (sample.sized == false) {
+            if (unseenSince < 0L) unseenSince = sample.atMs
+            else if (sample.atMs - unseenSince >= TrailerPolicy.UNSEEN_TIMEOUT_MS) return TrailerStep.FALL_BACK
+        }
         val counts = !appPaused && !sample.ad &&
             (sample.state == TrailerEvent.PLAYING || (sample.state == TrailerEvent.BUFFERING && played))
         if (!counts) {
