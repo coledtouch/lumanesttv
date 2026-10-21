@@ -2,7 +2,12 @@ package tv.lumanest.tuner.data
 
 import android.content.Context
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.Call
@@ -66,7 +71,14 @@ data class SubtitleQuery(val title: ExtrasTitle, val season: Int = -1, val episo
 }
 
 /** A trailer lookup for a movie, or a series ([tv]). */
-data class TrailerQuery(val title: ExtrasTitle, val tv: Boolean)
+data class TrailerQuery(val title: ExtrasTitle, val tv: Boolean) {
+    companion object {
+        /** A film's lookup, by the same ids as its subtitles ([ExtrasTitle.movie]); null when nothing can be asked. */
+        fun movie(movie: Movie, matchedTmdb: Long): TrailerQuery? = ExtrasTitle.movie(movie, matchedTmdb)?.let { TrailerQuery(it, tv = false) }
+
+        fun series(series: Series, matchedTmdb: Long): TrailerQuery? = ExtrasTitle.series(series, matchedTmdb)?.let { TrailerQuery(it, tv = true) }
+    }
+}
 
 /** One OpenSubtitles track lumanest.tv offers. [label] is shown as it is, as plain text; [vtt] is its WebVTT file. */
 data class ExtrasTrack(val id: String, val label: String, val hearingImpaired: Boolean, val vtt: String)
@@ -207,6 +219,8 @@ object ExtrasApi {
  * Lookups at lumanest.tv (docs/extras.md): subtitles for a movie or an episode, and a title's trailer. Each answer
  * (any status) is kept in memory for the app's session, at most [MAX_ANSWERS]; a failed request (an error status, a
  * timeout or unreadable JSON) is "nothing" and not kept, so the next title or the viewer's next choice asks again.
+ * Callers asking the same thing at once share one request ([TrailerPrefetcher] and a details page often do), which
+ * runs to its end even when the caller that started it stops waiting, so its answer is kept for the next one.
  * Never throws; [enabled] is off in Robolectric tests, so screens never call the live site.
  *
  * [fetch] returns a 200 answer's body, or null; the default goes through the app's shared OkHttp client.
@@ -218,10 +232,22 @@ class ExtrasClient(
     private val answers = object : LinkedHashMap<String, Any>(32, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Any>?) = size > MAX_ANSWERS
     }
+    /** Requests on their way, by URL; guarded by [answers]' lock. */
+    private val inFlight = HashMap<String, Deferred<Any?>>()
+    /** Runs shared requests, so a caller that stops waiting (a page that closed) doesn't cancel them for the others. */
+    private val requests = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
 
     suspend fun subtitles(query: SubtitleQuery): SubtitleLookup? = lookup(ExtrasApi.subtitlesUrl(query), ExtrasApi::parseSubtitles)
 
     suspend fun trailer(query: TrailerQuery): Trailer? = lookup(ExtrasApi.trailerUrl(query), ExtrasApi::parseTrailer)?.trailer
+
+    /**
+     * The session's answer for [query] without asking: null when there is none yet (then [trailer] asks), else the
+     * kept answer, whose [TrailerLookup.trailer] is null when the title has no trailer. A details page reads it while it
+     * composes, so an answer a prefetch already has shows the button on the page's first frame.
+     */
+    fun cachedTrailer(query: TrailerQuery): TrailerLookup? =
+        if (!enabled) null else synchronized(answers) { answers[ExtrasApi.trailerUrl(query)] as? TrailerLookup }
 
     /** One subtitle file's text (a lumanest.tv `vtt` URL), or null when it can't be had. Not kept here: see [SubtitleFiles]. */
     suspend fun file(url: String): String? {
@@ -231,11 +257,26 @@ class ExtrasClient(
 
     private suspend inline fun <reified T : Any> lookup(url: String, crossinline parse: (String) -> T?): T? {
         if (!enabled) return null
-        synchronized(answers) { answers[url] }?.let { return it as? T }
-        val body = safely { fetch(url, ExtrasApi.LOOKUP_TIMEOUT_MS, ExtrasApi.MAX_LOOKUP_BYTES) } ?: return null
-        val answer = parse(body) ?: return null
-        synchronized(answers) { answers[url] = answer }
-        return answer
+        val request = synchronized(answers) {
+            answers[url]?.let { return it as? T }
+            // Started outside the lock (LAZY): with the unconfined dispatcher it would otherwise run in it.
+            inFlight.getOrPut(url) {
+                requests.async(start = CoroutineStart.LAZY) {
+                    var answer: T? = null
+                    try {
+                        answer = safely { fetch(url, ExtrasApi.LOOKUP_TIMEOUT_MS, ExtrasApi.MAX_LOOKUP_BYTES) }?.let { parse(it) }
+                    } finally {
+                        synchronized(answers) {
+                            answer?.let { answers[url] = it }
+                            inFlight.remove(url)
+                        }
+                    }
+                    answer
+                }
+            }
+        }
+        request.start()
+        return request.await() as? T
     }
 
     private suspend inline fun safely(block: () -> String?): String? = try {
@@ -250,7 +291,12 @@ class ExtrasClient(
         const val MAX_ANSWERS = 200
 
         private val clients = HashMap<Long, OkHttpClient>()
-        private fun client(timeoutMs: Long) = synchronized(clients) {
+
+        /**
+         * The app's shared client with [timeoutMs] for the whole call. Built from [Net.client], so it shares its
+         * connection pool: a lumanest.tv connection the Movies & Series lists or an earlier lookup opened is reused.
+         */
+        internal fun client(timeoutMs: Long) = synchronized(clients) {
             clients.getOrPut(timeoutMs) { Net.client.newBuilder().callTimeout(timeoutMs, TimeUnit.MILLISECONDS).build() }
         }
 
@@ -348,12 +394,25 @@ class SubtitleFiles(
     }
 }
 
-/** The app's lumanest.tv extras client and its device copies of subtitle files. */
+/** The app's lumanest.tv extras client, its trailer prefetches and its device copies of subtitle files. */
 object Extras {
     /** Off in Robolectric tests, so screens never call the live site; tests put a client with a fake network here. */
     @Volatile var client = ExtrasClient(enabled = android.os.Build.FINGERPRINT != "robolectric")
     @Volatile var files: SubtitleFiles? = null
         private set
+
+    /**
+     * Trailer lookups started from Home, Library, Discover and Search before a details page opens. Always asks the
+     * current [client] (tests replace it); used on the main thread only. A client that is off asks nothing, so it has
+     * nothing to start (and spends none of the focus lookups' budget).
+     */
+    val prefetch: TrailerPrefetcher by lazy {
+        TrailerPrefetcher(
+            CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+            lookup = { client.trailer(it) },
+            known = { !client.enabled || client.cachedTrailer(it) != null },
+        )
+    }
 
     fun init(context: Context) {
         if (files == null) files = SubtitleFiles(File(context.cacheDir, "subtitles"), fetch = { client.file(it) })

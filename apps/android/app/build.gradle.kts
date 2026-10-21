@@ -46,8 +46,8 @@ android {
         applicationId = if (storeBuild) "app.tunertv" else "tv.lumanest.tuner"
         minSdk = 23
         targetSdk = 35
-        versionCode = 21
-        versionName = "1.8.0"
+        versionCode = 22
+        versionName = "1.8.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("boolean", "STORE_BUILD", storeBuild.toString())
         // Store edition: Android TV only on Google Play, and no picture-in-picture (Play's TV rules allow it only for
@@ -122,6 +122,7 @@ dependencies {
     implementation("com.google.zxing:core:3.5.4")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     testImplementation("org.robolectric:robolectric:4.14.1")

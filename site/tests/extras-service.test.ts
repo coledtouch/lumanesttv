@@ -10,7 +10,11 @@ import {
   BUDGET_LOW_SHARE, COUNT_RETRY_S, FILE_MAX_BYTES, LIMITS, LOGIN_TTL_MS, MEMORY_MAX, PURGE_EVERY_MS, RETRY_MS, STALE_MAX_MS, createExtras, optionsAnswer, withoutBody,
   type D1Like, type D1StatementLike, type ExtrasEnv, type R2Like, type RateLimitLike,
 } from '../lib/extras-service.ts';
-import {CLIENT_DAILY_DOWNLOADS, CREDIT, DAILY_DOWNLOADS, NETWORK_DAILY_DOWNLOADS, parseSrt, toSrt, toVtt} from '../lib/extras.ts';
+import {
+  CLIENT_DAILY_DOWNLOADS, CREDIT, DAILY_DOWNLOADS, NETWORK_DAILY_DOWNLOADS, edgeCachePath, edgeCacheTags, parseSrt, parseSubtitleQuery, parseTrailerQuery,
+  resolveKeys, toSrt, toVtt, type LookupQuery,
+} from '../lib/extras.ts';
+import type {CacheLike} from '../lib/catalog.ts';
 import {mac} from '../lib/player-crypto.ts';
 import {qrRows} from '../lib/qr.ts';
 
@@ -49,6 +53,35 @@ class FakeR2 implements R2Like {
     return {};
   }
   json(key: string) {const value = this.objects.get(key); return value === undefined ? undefined : JSON.parse(value);}
+}
+
+/**
+ * The Workers Cache API (caches.default) as the Worker sees it: shared by every isolate in one location, keyed by URL.
+ * Like Cloudflare's, it refuses (413) an answer whose Cache-Control says not to keep it. It never evicts on its own,
+ * so an entry past its max-age is still found here: the service must not serve it.
+ */
+class FakeCache implements CacheLike {
+  entries = new Map<string, {status: number; headers: [string, string][]; body: string}>();
+  matches: string[] = [];
+  puts: string[] = [];
+  /** 'throw': every call fails; 'hang': match never answers. */
+  failing: '' | 'throw' | 'hang' = '';
+  async match(key: string) {
+    this.matches.push(key);
+    if (this.failing === 'throw') throw new Error('cache down');
+    if (this.failing === 'hang') return new Promise<undefined>(() => {});
+    const entry = this.entries.get(key);
+    return entry ? new Response(entry.body, {status: entry.status, headers: entry.headers}) : undefined;
+  }
+  async put(key: string, response: Response) {
+    if (this.failing) throw new Error('cache down');
+    if (/no-store|private|no-cache/.test(response.headers.get('Cache-Control') || '') || response.headers.has('Set-Cookie')) throw new Error('413');
+    this.puts.push(key);
+    this.entries.set(key, {status: response.status, headers: [...response.headers], body: await response.text()});
+  }
+  async delete(key: string) {return this.entries.delete(key);}
+  headers(key: string) {return new Headers(this.entries.get(key)?.headers);}
+  json(key: string) {const entry = this.entries.get(key); return entry && JSON.parse(entry.body);}
 }
 
 // Node prints that node:sqlite is experimental the first time it's used (a moment later): here, before any test
@@ -124,7 +157,9 @@ const VIDEOS: Record<string, unknown[]> = {
   13: [{iso_639_1: 'en', name: 'Clip', key: 'clip0000001', site: 'YouTube', type: 'Clip', official: true}],
 };
 
-function harness(t: TestContext, options: {env?: Partial<ExtrasEnv>; bucket?: FakeR2 | null; db?: FakeD1 | null; timing?: {requestMs?: number; linkMs?: number}; waitUntil?: (job: Promise<unknown>) => void} = {}) {
+function harness(t: TestContext, options: {
+  env?: Partial<ExtrasEnv>; bucket?: FakeR2 | null; db?: FakeD1 | null; cache?: FakeCache | null; timing?: {requestMs?: number; linkMs?: number}; waitUntil?: (job: Promise<unknown>) => void;
+} = {}) {
   const calls: Call[] = [];
   const logs: string[] = [];
   const texts: string[] = [];
@@ -196,17 +231,22 @@ function harness(t: TestContext, options: {env?: Partial<ExtrasEnv>; bucket?: Fa
   }) as typeof fetch;
   const env: ExtrasEnv = {OPENSUBTITLES_API_KEY: OS_KEY, PLAYER_COOKIE_KEY: PLAYER_KEY, TMDB_API_KEY: TMDB_V3, BUCKET: bucket, DB: db, ...options.env};
   let instance = createExtras();
-  const deps = () => ({env, fetch: send, now: () => state.clock, waitUntil: options.waitUntil, timing: {requestMs: 300, linkMs: 300, retryDelayMs: 5, storeMs: 300, ...options.timing}});
-  const request = (path: string, init: RequestInit = {}) => new Request('https://lumanest.tv' + path, {...init, headers: {'CF-Connecting-IP': IP, ...(init.headers as Record<string, string> || {})}});
+  const cache = options.cache ?? null;
+  const deps = () => ({env, fetch: send, now: () => state.clock, waitUntil: options.waitUntil, cache, timing: {requestMs: 300, linkMs: 300, retryDelayMs: 5, storeMs: 300, ...options.timing}});
+  let origin = 'https://lumanest.tv';
+  const request = (path: string, init: RequestInit = {}) => new Request(origin + path, {...init, headers: {'CF-Connecting-IP': IP, ...(init.headers as Record<string, string> || {})}});
   async function keep(response: Response): Promise<Answer> {
     const copy = response.clone();
     texts.push(JSON.stringify([...copy.headers]) + '\n' + await copy.text());
     return response as Answer;
   }
   const h = {
-    calls, logs, state, bucket, db, handlers, env,
+    calls, logs, state, bucket, db, handlers, env, cache,
     get clock() {return state.clock;},
     set clock(value: number) {state.clock = value;},
+    /** The origin requests come to (https://lumanest.tv). */
+    get origin() {return origin;},
+    set origin(value: string) {origin = value;},
     /** A new isolate: fresh memory, the same R2. */
     newIsolate() {instance = createExtras();},
     subtitles: async (query: string, init?: RequestInit) => keep(await instance.subtitles(request('/api/extras/subtitles?' + query, init), deps())),
@@ -1304,4 +1344,287 @@ test('an older plain SHA-256 of refused secrets is ignored (one more login); the
   // Under another PLAYER_COOKIE_KEY the same secrets give another value: nothing to compare across sites.
   assert.notEqual(await mac('extras-cred-v1\n' + OS_USER + '\n' + OS_PASSWORD, 'd'.repeat(64), 'extras-credential'),
     await mac('extras-cred-v1\n' + OS_USER + '\n' + OS_PASSWORD, PLAYER_KEY, 'extras-credential'));
+});
+
+// ------------------------------------------------------------------ the edge cache (the location's Cache API)
+
+const EDGE = 'https://lumanest.tv/__lumanest-cache/extras-v1/';
+/** The id of PLAYER_COOKIE_KEY that subtitle entries are kept under. */
+const edgeKeyId = async (key = PLAYER_KEY) => (await mac('extras-edge-v1', key, 'extras-edge')).slice(0, 16);
+const nameHash = (name: string, year: string) => {const {key, whole} = resolveKeys(name); return sha256(key + '\n' + whole + '\n' + year);};
+const SHARED_HEADERS = ['Content-Type', 'Cache-Control', 'Access-Control-Allow-Origin', 'Access-Control-Allow-Methods', 'Access-Control-Max-Age', 'X-Content-Type-Options'];
+
+test('edge cache keys come from the parsed query: equivalent requests share one, and the tags name the title', async () => {
+  const trailer = (query: string) => parseTrailerQuery(new URLSearchParams(query)) as LookupQuery;
+  const subtitles = (query: string) => parseSubtitleQuery(new URLSearchParams(query)) as LookupQuery;
+  const base = '/__lumanest-cache/extras-v1/';
+  for (const query of ['v=1&type=movie&tmdb=603', 'tmdb=603&type=movie', 'type=movie&tmdb=603&tmdb=604&name=Heat&year=1995&lang=de&x=1']) {
+    assert.equal(edgeCachePath('trailer', trailer(query), 'unused', 'unused'), base + 'trailer/movie/603', query);
+  }
+  assert.equal(edgeCachePath('trailer', trailer('type=tv&tmdb=1399'), '', ''), base + 'trailer/tv/1399');
+  assert.equal(edgeCachePath('trailer', trailer('type=movie&name=The+Matrix&year=1999'), 'abc123', 'unused'), base + 'trailer/movie/name/abc123');
+  for (const query of ['type=episode&tmdb=1399&season=1&episode=3', 'episode=0003&season=01&tmdb=1399&type=episode&v=1&lang=en']) {
+    assert.equal(edgeCachePath('subtitles', subtitles(query), '', 'KEYID'), base + 'subtitles/KEYID/tv/1399/s1/e3/en', query);
+  }
+  assert.equal(edgeCachePath('subtitles', subtitles('type=episode&tmdb=1399&season=0&episode=1'), '', 'K'), base + 'subtitles/K/tv/1399/s0/e1/en');
+  assert.equal(edgeCachePath('subtitles', subtitles('type=movie&tmdb=603'), '', 'K'), base + 'subtitles/K/movie/603/en');
+  assert.equal(edgeCachePath('subtitles', subtitles('type=episode&name=Dark&year=2017&season=1&episode=2'), 'f00d', 'K'), base + 'subtitles/K/tv/name/f00d/s1/e2/en');
+  assert.equal(edgeCacheTags('trailer', 'movie', 603), 'extras,extras-trailer,extras-trailer-movie-603');
+  assert.equal(edgeCacheTags('subtitles', 'tv', 1399), 'extras,extras-subtitles,extras-subtitles-tv-1399');
+  assert.equal(edgeCacheTags('trailer', 'tv', null), 'extras,extras-trailer');
+  // The name variants a lookup resolves alike share the hash of their R2 resolve object.
+  assert.equal(nameHash('The Matrix', '1999'), nameHash('THE  MATRIX!', '1999'));
+  assert.notEqual(nameHash('The Matrix', '1999'), nameHash('The Matrix', '2003'));
+});
+
+test('edge cache: a trailer answer is kept for the location; a hit skips R2, TMDB and the lookup limit, with the same headers and Age in whole hours', async t => {
+  const keys: string[] = [];
+  const binding: RateLimitLike = {limit: async ({key}) => {keys.push(key); return {success: true};}};
+  const cache = new FakeCache();
+  const h = harness(t, {cache, env: {EXTRAS_LIMITER: binding}});
+  const first = await h.trailer('v=1&type=movie&tmdb=603');
+  const body = await first.json();
+  assert.equal(body.status, 'ok');
+  assert.deepEqual(keys, ['lookup:' + IP, 'upstream:tmdb']);
+  assert.equal(first.headers.get('Age'), null);
+  assert.equal(first.headers.get('Cache-Tag'), null);
+  const key = EDGE + 'trailer/movie/603';
+  assert.deepEqual(cache.puts, [key]);
+  const stored = cache.headers(key);
+  assert.equal(stored.get('Cache-Tag'), 'extras,extras-trailer,extras-trailer-movie-603');
+  assert.equal(stored.get('X-Extras-Stored'), String(START));
+  for (const name of SHARED_HEADERS) assert.equal(stored.get(name), first.headers.get(name), name);
+  assert.deepEqual(cache.json(key), body);
+
+  // 90 seconds later, in another isolate of the location, the same title asked for in other ways.
+  keys.length = 0;
+  h.clock += 90 * 1000;
+  h.newIsolate();
+  const gets = h.bucket!.gets, calls = h.calls.length;
+  for (const query of ['v=1&type=movie&tmdb=603', 'type=movie&tmdb=603', 'tmdb=603&v=1&type=movie', 'v=1&type=movie&tmdb=603&tmdb=604&lang=xx&utm=1', 'type=movie&tmdb=603&name=Heat&year=1995']) {
+    const hit = await h.trailer(query);
+    assert.equal(hit.status, 200, query);
+    assert.deepEqual(await hit.json(), body, query);
+    for (const name of SHARED_HEADERS) assert.equal(hit.headers.get(name), first.headers.get(name), name);
+    // Whole hours, rounded down: 90 seconds would tell when another viewer here last asked about the title.
+    assert.equal(hit.headers.get('Age'), '0');
+    assert.equal(hit.headers.get('Cache-Tag'), null);
+    assert.equal(hit.headers.get('X-Extras-Stored'), null);
+  }
+  assert.equal(h.bucket!.gets, gets, 'no R2 read');
+  assert.equal(h.calls.length, calls, 'no TMDB request');
+  assert.deepEqual(keys, [], 'no lookup token');
+  assert.deepEqual(cache.puts, [key], 'one entry');
+  // HEAD: the GET answer's status and headers from the same entry; a HEAD that misses keeps the whole GET answer.
+  const head = await withoutBody(await h.trailer('v=1&type=movie&tmdb=603', {method: 'HEAD'}));
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), '');
+  for (const name of SHARED_HEADERS) assert.equal(head.headers.get(name), first.headers.get(name), name);
+  assert.equal(head.headers.get('Age'), '0');
+  const tvHead = await withoutBody(await h.trailer('v=1&type=tv&tmdb=1399', {method: 'HEAD'}));
+  assert.equal(tvHead.status, 200);
+  assert.equal(cache.json(EDGE + 'trailer/tv/1399').trailer.key, 'BpJYNVhGf1s');
+  assert.equal(cache.headers(EDGE + 'trailer/tv/1399').get('Cache-Tag'), 'extras,extras-trailer,extras-trailer-tv-1399');
+  // A movie and a series with the same id are different titles.
+  const tmdb = h.tmdbCalls();
+  assert.equal((await h.trailer('v=1&type=movie&tmdb=1399')).headers.get('Age'), null);
+  assert.equal(h.tmdbCalls(), tmdb + 1);
+  assert.deepEqual(cache.puts, [key, EDGE + 'trailer/tv/1399', EDGE + 'trailer/movie/1399']);
+  h.checkNoSecrets();
+});
+
+test('edge cache: lookups by name share one entry per normalized name and year, tagged with the id they found', async t => {
+  const cache = new FakeCache();
+  const h = harness(t, {cache});
+  const first = await (await h.trailer('v=1&type=movie&name=The+Matrix&year=1999')).json();
+  assert.equal(first.tmdb, 603);
+  const key = EDGE + 'trailer/movie/name/' + nameHash('The Matrix', '1999');
+  assert.deepEqual(cache.puts, [key]);
+  assert.equal(cache.headers(key).get('Cache-Tag'), 'extras,extras-trailer,extras-trailer-movie-603');
+  h.newIsolate();
+  const gets = h.bucket!.gets, tmdb = h.tmdbCalls();
+  for (const query of ['type=movie&year=1999&name=THE%20%20MATRIX!', 'v=1&type=movie&name=the.matrix&year=1999&foo=bar']) {
+    assert.deepEqual(await (await h.trailer(query)).json(), first, query);
+  }
+  assert.equal(h.bucket!.gets, gets);
+  assert.equal(h.tmdbCalls(), tmdb);
+  assert.deepEqual(cache.puts, [key]);
+  // Another year, another type: other entries. Two films named Heat in 1995: "unmatched", kept without an id tag.
+  const heat = await h.trailer('v=1&type=movie&name=Heat&year=1995');
+  assert.equal((await heat.json()).status, 'unmatched');
+  const heatKey = EDGE + 'trailer/movie/name/' + nameHash('Heat', '1995');
+  assert.equal(cache.headers(heatKey).get('Cache-Control'), 'public, max-age=21600');
+  assert.equal(cache.headers(heatKey).get('Cache-Tag'), 'extras,extras-trailer');
+  await h.trailer('v=1&type=tv&name=The+Matrix&year=1999');
+  assert.deepEqual(cache.puts, [key, heatKey, EDGE + 'trailer/tv/name/' + nameHash('The Matrix', '1999')]);
+  h.checkNoSecrets();
+});
+
+test('edge cache: only answers safe to share are kept; errors, not_configured, unavailable and stale copies never are', async t => {
+  // Without TMDB_API_KEY: "not_configured", decided before the cache is read, so removing the key takes effect at once.
+  const unset = harness(t, {cache: new FakeCache(), env: {TMDB_API_KEY: undefined}});
+  unset.cache!.entries.set(EDGE + 'trailer/movie/603', {status: 200, headers: [['Cache-Control', 'public, max-age=86400'], ['X-Extras-Stored', String(START)]], body: '{"v":1,"status":"ok"}'});
+  assert.equal((await (await unset.trailer('v=1&type=movie&tmdb=603')).json()).status, 'not_configured');
+  // A name needs TMDB: without the key, subtitles answer "unmatched", not an answer kept with the key earlier.
+  assert.equal((await (await unset.subtitles('v=1&type=movie&name=The+Matrix&year=1999')).json()).status, 'unmatched');
+  assert.deepEqual(unset.cache!.matches, []);
+  assert.deepEqual(unset.cache!.puts, []);
+  // The same for subtitles without OPENSUBTITLES_API_KEY.
+  const noKey = harness(t, {cache: new FakeCache(), env: {OPENSUBTITLES_API_KEY: undefined}});
+  noKey.cache!.entries.set(EDGE + 'subtitles/' + await edgeKeyId() + '/movie/603/en', {status: 200, headers: [['Cache-Control', 'public, max-age=86400'], ['X-Extras-Stored', String(START)]], body: '{"v":1,"status":"ok"}'});
+  assert.equal((await (await noKey.subtitles('v=1&type=movie&tmdb=603')).json()).status, 'not_configured');
+  assert.deepEqual(noKey.cache!.matches, []);
+
+  const cache = new FakeCache();
+  const h = harness(t, {cache});
+  // Bad parameters are refused before the cache is read.
+  for (const query of ['v=1&type=episode&tmdb=603', 'v=2&type=movie&tmdb=603']) assert.equal((await h.trailer(query)).status, 400);
+  assert.equal((await h.subtitles('v=1&type=movie&tmdb=0603')).status, 400);
+  assert.deepEqual(cache.matches, []);
+  // TMDB failing with no copy: 503, not kept; once it answers, the answer is kept.
+  h.handlers.videos = () => new Response('down', {status: 500});
+  assert.equal((await h.trailer('v=1&type=movie&tmdb=603')).status, 503);
+  assert.deepEqual(cache.puts, []);
+  h.handlers.videos = () => Response.json({results: VIDEOS[603]});
+  assert.equal((await h.trailer('v=1&type=movie&tmdb=603')).status, 200);
+  assert.deepEqual(cache.puts, [EDGE + 'trailer/movie/603']);
+  // A stale copy (an expired R2 object served while TMDB fails) is never kept.
+  h.bucket!.objects.set('extras/v1/trailers/movie/550.json', JSON.stringify({
+    v: 1, stored: new Date(START - 40 * DAY).toISOString(), expires: new Date(START - 10 * DAY).toISOString(), trailer: {key: 'abcdefghijk', name: 'Old'},
+  }));
+  h.handlers.videos = () => new Response('down', {status: 500});
+  const stale = await h.trailer('v=1&type=movie&tmdb=550');
+  assert.equal(stale.headers.get('Cache-Control'), 'public, max-age=300');
+  assert.equal((await stale.json()).trailer.key, 'abcdefghijk');
+  assert.equal((await h.subtitles('v=1&type=movie&tmdb=604')).status, 200);
+  h.handlers.search = () => new Response('down', {status: 500});
+  assert.equal((await h.subtitles('v=1&type=movie&tmdb=605')).status, 503);
+  // Stale subtitles, and a stale "unmatched" for a name, aren't kept either.
+  const expired = {stored: new Date(START - 40 * DAY).toISOString(), expires: new Date(START - 10 * DAY).toISOString()};
+  h.bucket!.objects.set('extras/v1/subtitles/movie/607/en.json', JSON.stringify({v: 1, ...expired, files: [{file_id: 110, hi: false}]}));
+  const staleTracks = await h.subtitles('v=1&type=movie&tmdb=607');
+  assert.equal(staleTracks.headers.get('Cache-Control'), 'public, max-age=300');
+  assert.equal((await staleTracks.json()).status, 'ok');
+  h.bucket!.objects.set('extras/v1/resolve/movie/' + nameHash('Unknown Film', '2001') + '.json', JSON.stringify({v: 1, ...expired, tmdb: null}));
+  h.handlers.tmdbSearch = () => new Response('down', {status: 500});
+  const staleName = await h.trailer('v=1&type=movie&name=Unknown+Film&year=2001');
+  assert.equal(staleName.headers.get('Cache-Control'), 'public, max-age=300');
+  assert.equal((await staleName.json()).status, 'unmatched');
+  // Over the client's uncached-lookup limit: 429, not kept.
+  const refused = harness(t, {cache, env: {SUBTITLE_FILE_LIMITER: {limit: async () => ({success: false})}}});
+  assert.equal((await refused.trailer('v=1&type=tv&tmdb=1399')).status, 429);
+  // The download quota used up: "unavailable" (no-store), not kept.
+  const quota = harness(t, {cache});
+  quota.bucket!.objects.set('extras/v1/state/opensubtitles.json', JSON.stringify({v: 1, stored: new Date(START).toISOString(), quotaUntil: new Date(START + 3600000).toISOString(), login: null}));
+  const unavailable = await quota.subtitles('v=1&type=movie&tmdb=606');
+  assert.equal((await unavailable.json()).status, 'unavailable');
+  assert.equal(unavailable.headers.get('Cache-Control'), 'no-store');
+  // Every entry is an ok, none or unmatched answer under its own Cache-Control.
+  assert.deepEqual(cache.puts, [EDGE + 'trailer/movie/603', EDGE + 'subtitles/' + await edgeKeyId() + '/movie/604/en']);
+  assert.equal(cache.json(cache.puts[1]).status, 'none');
+  assert.equal(cache.headers(cache.puts[1]).get('Cache-Control'), 'public, max-age=21600');
+  h.checkNoSecrets();
+});
+
+test('edge cache: an entry is never served at or past its own max-age; a failing or slow cache never fails a lookup', async t => {
+  const cache = new FakeCache();
+  const h = harness(t, {cache});
+  await h.trailer('v=1&type=movie&tmdb=603');
+  await h.trailer('v=1&type=movie&tmdb=13');
+  const gets = h.bucket!.gets;
+  // Age in whole hours, rounded down.
+  for (const [seconds, age] of [[3599, '0'], [3600, '3600'], [7199, '3600'], [21599, '18000']] as const) {
+    h.clock = START + seconds * 1000;
+    assert.equal((await h.trailer('v=1&type=movie&tmdb=13')).headers.get('Age'), age, String(seconds));
+  }
+  h.clock = START + 21600 * 1000;
+  const expired = await h.trailer('v=1&type=movie&tmdb=13');
+  assert.equal(expired.headers.get('Age'), null, '"none" is kept 6 hours');
+  assert.equal((await expired.json()).status, 'none');
+  assert.equal(h.bucket!.gets, gets + 1, 'read from R2 again');
+  assert.equal(cache.headers(EDGE + 'trailer/movie/13').get('X-Extras-Stored'), String(START + 21600 * 1000), 'and kept again');
+  h.clock = START + 86399 * 1000;
+  assert.equal((await h.trailer('v=1&type=movie&tmdb=603')).headers.get('Age'), '82800');
+  h.clock = START + 86400 * 1000;
+  assert.equal((await h.trailer('v=1&type=movie&tmdb=603')).headers.get('Age'), null, '"ok" is kept a day');
+  assert.equal(h.tmdbCalls(), 2, 'R2 still had both');
+  // Entries that aren't one of ours are ignored.
+  for (const headers of [[['Cache-Control', 'public, max-age=86400']], [['X-Extras-Stored', String(h.clock)]]] as [string, string][][]) {
+    cache.entries.set(EDGE + 'trailer/tv/1399', {status: 200, headers, body: '{"v":1,"status":"ok","forged":true}'});
+    assert.equal((await (await h.trailer('v=1&type=tv&tmdb=1399')).json()).forged, undefined);
+    cache.entries.delete(EDGE + 'trailer/tv/1399');
+  }
+  cache.entries.set(EDGE + 'trailer/tv/1399', {status: 503, headers: [['Cache-Control', 'public, max-age=86400'], ['X-Extras-Stored', String(h.clock)]], body: '{}'});
+  assert.equal((await (await h.trailer('v=1&type=tv&tmdb=1399')).json()).trailer.key, 'BpJYNVhGf1s');
+  // A cache that fails, or doesn't answer within storeMs: the lookup goes on without it.
+  for (const failing of ['throw', 'hang'] as const) {
+    cache.failing = failing;
+    const started = Date.now();
+    const response = await h.trailer('v=1&type=movie&tmdb=603');
+    assert.equal(response.status, 200, failing);
+    assert.equal((await response.json()).trailer.key, 'vKQi3bBA1y8');
+    assert.ok(Date.now() - started < 2000, failing);
+  }
+  assert.deepEqual(h.logs, []);
+  h.checkNoSecrets();
+});
+
+test('edge cache for subtitles: a hit skips R2 and OpenSubtitles; an isolate that knows the budget or quota is used up offers nothing; a new key, new entries', async t => {
+  const cache = new FakeCache();
+  const keys: string[] = [];
+  const h = harness(t, {cache, env: {OPENSUBTITLES_DAILY_DOWNLOADS: '1', ...fileLimiterOff, EXTRAS_LIMITER: {limit: async ({key}) => {keys.push(key); return {success: true};}}}});
+  const first = await (await h.subtitles('v=1&type=movie&tmdb=603')).json();
+  assert.equal(first.tracks.length, 3);
+  const key = EDGE + 'subtitles/' + await edgeKeyId() + '/movie/603/en';
+  assert.deepEqual(cache.puts, [key]);
+  assert.equal(cache.headers(key).get('Cache-Tag'), 'extras,extras-subtitles,extras-subtitles-movie-603');
+  h.newIsolate();
+  const gets = h.bucket!.gets;
+  for (const query of ['v=1&type=movie&tmdb=603', 'type=movie&lang=en&tmdb=603']) {
+    const hit = await h.subtitles(query);
+    assert.equal(hit.headers.get('Age'), '0');
+    assert.deepEqual(await hit.json(), first);
+  }
+  assert.equal(h.bucket!.gets, gets, 'no R2 read, not even the OpenSubtitles state');
+  assert.equal(h.searches(), 1);
+  assert.deepEqual(keys, ['lookup:' + IP, 'upstream:opensubtitles'], 'only the first lookup took tokens');
+  // Episodes: leading zeros don't make another entry; another episode does.
+  await h.subtitles('v=1&type=episode&tmdb=1399&season=1&episode=3');
+  await h.subtitles('v=1&type=episode&tmdb=1399&season=01&episode=003');
+  await h.subtitles('v=1&type=episode&tmdb=1399&season=1&episode=4');
+  assert.deepEqual(cache.puts.slice(1), [EDGE + 'subtitles/' + await edgeKeyId() + '/tv/1399/s1/e3/en', EDGE + 'subtitles/' + await edgeKeyId() + '/tv/1399/s1/e4/en']);
+  assert.equal(cache.headers(cache.puts[1]).get('Cache-Tag'), 'extras,extras-subtitles,extras-subtitles-tv-1399');
+  // The file links are on the origin the request came to, so another origin has its own entries.
+  h.origin = 'https://www.lumanest.tv';
+  const www = await (await h.subtitles('v=1&type=movie&tmdb=603')).json();
+  assert.ok(www.tracks.every((track: {vtt: string}) => track.vtt.startsWith('https://www.lumanest.tv/api/extras/subtitles/file/')));
+  assert.equal(cache.puts.at(-1), 'https://www.lumanest.tv/__lumanest-cache/extras-v1/subtitles/' + await edgeKeyId() + '/movie/603/en');
+  h.origin = 'https://lumanest.tv';
+  // The day's budget (1 here) used up, as this isolate has seen: no tracks, even with an entry at the edge.
+  assert.equal((await h.file(await filePath(110))).status, 200);
+  assert.equal((await h.file(await filePath(113))).status, 503);
+  const used = await h.subtitles('v=1&type=movie&tmdb=603');
+  assert.equal((await used.json()).status, 'unavailable');
+  assert.equal(used.headers.get('Cache-Control'), 'no-store');
+  // An isolate that hasn't seen it serves the entry; its file links then answer 503 (docs/extras.md, Edge cache).
+  h.newIsolate();
+  assert.equal((await (await h.subtitles('v=1&type=movie&tmdb=603')).json()).status, 'ok');
+  assert.equal((await h.file(await filePath(110))).status, 503);
+  assert.equal((await (await h.subtitles('v=1&type=movie&tmdb=603')).json()).status, 'unavailable');
+  // The download quota used up, once this isolate has read it: no tracks either.
+  h.newIsolate();
+  h.bucket!.objects.set('extras/v1/state/opensubtitles.json', JSON.stringify({v: 1, stored: new Date(START).toISOString(), quotaUntil: new Date(START + 3600000).toISOString(), login: null}));
+  assert.equal((await h.file(await filePath(110))).status, 503);
+  assert.equal((await (await h.subtitles('v=1&type=movie&tmdb=603')).json()).status, 'unavailable');
+  // A new PLAYER_COOKIE_KEY: new entries, with links signed by it.
+  h.bucket!.objects.delete('extras/v1/state/opensubtitles.json');
+  h.newIsolate();
+  const newKey = 'd'.repeat(64);
+  h.env.PLAYER_COOKIE_KEY = newKey;
+  const rekeyed = await (await h.subtitles('v=1&type=movie&tmdb=603')).json();
+  assert.equal(rekeyed.tracks[0].id, await token(110, newKey));
+  assert.equal(cache.puts.at(-1), EDGE + 'subtitles/' + await edgeKeyId(newKey) + '/movie/603/en');
+  assert.notEqual(await edgeKeyId(newKey), await edgeKeyId());
+  assert.equal(h.searches(), 3, 'R2 still had the search: only the edge entry is new');
+  h.checkNoSecrets();
 });

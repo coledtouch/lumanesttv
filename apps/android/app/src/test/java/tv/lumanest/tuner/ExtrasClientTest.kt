@@ -1,6 +1,9 @@
 package tv.lumanest.tuner
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -14,9 +17,12 @@ import tv.lumanest.tuner.data.ExtrasClient
 import tv.lumanest.tuner.data.ExtrasTitle
 import tv.lumanest.tuner.data.ExtrasTrack
 import tv.lumanest.tuner.data.Movie
+import tv.lumanest.tuner.data.Net
 import tv.lumanest.tuner.data.Series
 import tv.lumanest.tuner.data.SubtitleFiles
 import tv.lumanest.tuner.data.SubtitleQuery
+import tv.lumanest.tuner.data.Trailer
+import tv.lumanest.tuner.data.TrailerLookup
 import tv.lumanest.tuner.data.TrailerQuery
 import tv.lumanest.tuner.player.SubtitleChoice
 import tv.lumanest.tuner.player.SubtitleChoice.Source
@@ -136,7 +142,13 @@ class ExtrasClientTest {
 
     private class FakeNetwork(var answer: (String) -> String?) {
         val requests = mutableListOf<Triple<String, Long, Long>>()
-        suspend fun fetch(url: String, timeout: Long, max: Long): String? { requests += Triple(url, timeout, max); return answer(url) }
+        /** When set, every request waits for it. */
+        var gate: CompletableDeferred<Unit>? = null
+        suspend fun fetch(url: String, timeout: Long, max: Long): String? {
+            requests += Triple(url, timeout, max)
+            gate?.await()
+            return answer(url)
+        }
     }
 
     @Test fun everyAnswerIsKeptForTheSessionButAFailureIsNot() = runBlocking {
@@ -173,8 +185,91 @@ class ExtrasClientTest {
         val client = ExtrasClient(enabled = false, fetch = net::fetch)
         assertNull(client.subtitles(SubtitleQuery.movie(ExtrasTitle(tmdb = 603))!!))
         assertNull(client.trailer(TrailerQuery(ExtrasTitle(tmdb = 603), tv = false)))
+        assertNull(client.cachedTrailer(TrailerQuery(ExtrasTitle(tmdb = 603), tv = false)))
         assertNull(client.file("https://lumanest.tv/api/extras/subtitles/file/1-a.vtt"))
         assertEquals(0, net.requests.size)
+    }
+
+    // ------------------------------------------------------------------ one request a title, and the page's first frame
+
+    private val trailerAnswer = """{"v":1,"status":"ok","tmdb":603,"trailer":{"key":"vKQi3bBA1y8","name":"Official Trailer"}}"""
+    private val matrixTrailer = TrailerQuery(ExtrasTitle(tmdb = 603), tv = false)
+
+    @Test fun askingTheSameThingAtOnceMakesOneRequest() = runBlocking<Unit> {
+        val net = FakeNetwork { trailerAnswer }.apply { gate = CompletableDeferred() }
+        val client = ExtrasClient(fetch = net::fetch)
+        val answers = mutableListOf<Trailer?>()
+        // A card's prefetch and the page it opens, then a third ask while the request is still on its way.
+        repeat(3) { launch { answers += client.trailer(matrixTrailer) } }
+        yield()
+        assertEquals(1, net.requests.size)
+        assertNull("Nothing kept before the answer", client.cachedTrailer(matrixTrailer))
+        net.gate!!.complete(Unit)
+        yield()
+        assertEquals(List(3) { Trailer("vKQi3bBA1y8", "Official Trailer") }, answers)
+        assertEquals(Trailer("vKQi3bBA1y8", "Official Trailer"), client.cachedTrailer(matrixTrailer)!!.trailer)
+        assertEquals(Trailer("vKQi3bBA1y8", "Official Trailer"), client.trailer(matrixTrailer))
+        assertEquals(1, net.requests.size)
+        // Different titles are different requests, at once.
+        net.gate = CompletableDeferred()
+        launch { client.trailer(TrailerQuery(ExtrasTitle(tmdb = 604), tv = false)) }
+        launch { client.trailer(TrailerQuery(ExtrasTitle(tmdb = 603), tv = true)) }
+        yield()
+        assertEquals(3, net.requests.size)
+        net.gate!!.complete(Unit)
+    }
+
+    @Test fun aRequestOutlivesTheCallerThatStartedIt() = runBlocking {
+        val net = FakeNetwork { trailerAnswer }.apply { gate = CompletableDeferred() }
+        val client = ExtrasClient(fetch = net::fetch)
+        // The page that asked closes before the answer: the answer is still kept for its next opening.
+        val page = launch { client.trailer(matrixTrailer) }
+        yield()
+        page.cancel()
+        // The page has seen its cancellation before the answer arrives.
+        yield()
+        assertTrue(page.isCancelled && page.isCompleted)
+        net.gate!!.complete(Unit)
+        yield()
+        assertEquals("vKQi3bBA1y8", client.cachedTrailer(matrixTrailer)!!.trailer!!.key)
+        assertEquals("vKQi3bBA1y8", client.trailer(matrixTrailer)!!.key)
+        assertEquals(1, net.requests.size)
+    }
+
+    @Test fun theCacheReadTellsNoAnswerFromNoTrailerAndAFailureIsNotKept() = runBlocking {
+        val net = FakeNetwork { null }
+        val client = ExtrasClient(fetch = net::fetch)
+        assertNull(client.trailer(matrixTrailer))
+        assertNull(client.cachedTrailer(matrixTrailer))
+        net.answer = { """{"v":1,"status":"none","tmdb":603,"trailer":null}""" }
+        assertNull(client.trailer(matrixTrailer))
+        assertEquals(2, net.requests.size)
+        // A kept "no trailer": the page shows no button and asks nothing.
+        assertEquals(TrailerLookup(null), client.cachedTrailer(matrixTrailer))
+        assertNull(client.trailer(matrixTrailer))
+        assertEquals(2, net.requests.size)
+        // The cache read never asks.
+        assertNull(client.cachedTrailer(TrailerQuery(ExtrasTitle(tmdb = 604), tv = false)))
+        assertEquals(2, net.requests.size)
+    }
+
+    @Test fun lookupsReuseTheAppsConnectionsToLumanest() {
+        val lookups = ExtrasClient.client(ExtrasApi.LOOKUP_TIMEOUT_MS)
+        assertTrue(lookups.connectionPool === Net.client.connectionPool)
+        assertTrue(lookups.dispatcher === Net.client.dispatcher)
+        assertTrue(ExtrasClient.client(ExtrasApi.FILE_TIMEOUT_MS).connectionPool === Net.client.connectionPool)
+        assertEquals(ExtrasApi.LOOKUP_TIMEOUT_MS.toInt(), lookups.callTimeoutMillis)
+        assertTrue(lookups === ExtrasClient.client(ExtrasApi.LOOKUP_TIMEOUT_MS))
+    }
+
+    @Test fun aCardAndItsPageAskTheSameThing() {
+        assertEquals(TrailerQuery(ExtrasTitle(tmdb = 603), tv = false), TrailerQuery.movie(movie("The Matrix", tmdb = "603"), matchedTmdb = 604))
+        assertEquals(TrailerQuery(ExtrasTitle(tmdb = 604), tv = false), TrailerQuery.movie(movie("The Matrix"), matchedTmdb = 604))
+        assertEquals(TrailerQuery(ExtrasTitle(name = "Heat", year = 1995), tv = false), TrailerQuery.movie(movie("Heat", year = "1995"), 0))
+        assertNull(TrailerQuery.movie(movie("Mystery"), 0))
+        val thrones = Series("9", "Thrones", null, null, null, "1", null, "2011", null, tmdb = "1399")
+        assertEquals(TrailerQuery(ExtrasTitle(tmdb = 1399), tv = true), TrailerQuery.series(thrones, 0))
+        assertEquals(TrailerQuery(ExtrasTitle(name = "Thrones", year = 2011), tv = true), TrailerQuery.series(thrones.copy(tmdb = null), 0))
     }
 
     @Test fun filesComeOnlyFromLumanestWithTheirOwnTimeout() = runBlocking {

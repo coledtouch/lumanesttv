@@ -100,7 +100,13 @@ class StoreEditionScreensTest {
         rule.onNodeWithText("XXX and adult categories", substring = true).assertExists()
         rule.onNodeWithText("onn 4K remote").assertExists()
         rule.onNodeWithText("Xtream Codes login or M3U link").assertExists()
-        absent("Privacy policy")
+        // Since 1.8.1 both editions point to the privacy policy and YouTube's terms (trailers play in YouTube's player).
+        // The direct edition's longer list doesn't compose About until it is scrolled to.
+        rule.onNode(hasScrollAction()).performScrollToNode(hasText("Privacy policy"))
+        rule.onNodeWithText("Privacy policy").assertExists()
+        rule.onNode(hasScrollAction()).performScrollToNode(hasTestTag("setting:youtube"))
+        rule.onNodeWithTag("setting:youtube").assertExists()
+        rule.onNodeWithText("www.youtube.com/t/terms", substring = true).assertExists()
     }
 
     /** A library whose series are on Netflix (TMDB's list and a provider category named after it). */

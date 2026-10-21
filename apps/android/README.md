@@ -66,6 +66,9 @@ Guide categories begin with All Channels, Favorites, and Most Watched. Most Watc
 | Movies / episodes | Left / Right | Seek 10s (hold to go faster) |
 | Movies / episodes | OK | Play / pause |
 | Movies / episodes | Down | Audio, subtitles, next episode |
+| Trailer (movie and series pages) | OK, Play/Pause | Play / pause |
+| Trailer | Left / Right | Back or forward 10s |
+| Trailer | Back, Stop | Close it and return to the Trailer button (it also closes when the trailer ends) |
 | Multi View | OK / arrows / Menu | Reveal controls while watching |
 | Multi View | OK on a video with controls visible | Listen to that channel |
 | Multi View | Channel +/- | Change the focused channel |

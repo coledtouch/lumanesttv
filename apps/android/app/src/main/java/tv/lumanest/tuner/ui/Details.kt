@@ -35,8 +35,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -112,7 +114,7 @@ fun MovieDetailScreen(movie: Movie, state: AppState) {
     LaunchedEffect(movie.id) { requestAttachedFocus(first) }
     // Subtitles and the trailer are looked up by the film's TMDB id, else its name and year (docs/extras.md).
     val extrasTitle = remember(movie.id) { ExtrasTitle.movie(movie, Repo.matchedTmdb(BrowseTitle.movieKey(movie.id))) }
-    val trailer by rememberTrailer(extrasTitle, tv = false)
+    val trailer by rememberTrailer(remember(extrasTitle) { extrasTitle?.let { TrailerQuery(it, tv = false) } })
 
     fun play(from: Long) = state.push(
         Screen.Player(PlayRequest.Vod(movie.id, movie.name, info?.year, info?.poster ?: movie.poster, movie.url, from, streamBackups = movie.backups,
@@ -210,7 +212,10 @@ fun SeriesDetailScreen(series: Series, state: AppState) {
     var initialFocusApplied by remember(series.id) { mutableStateOf(false) }
     // Episodes look their subtitles up by the series' TMDB id (else its name and year), with their own numbers.
     val extrasTitle = remember(series.id) { ExtrasTitle.series(series, Repo.matchedTmdb(BrowseTitle.seriesKey(series.id))) }
-    val trailer by rememberTrailer(extrasTitle, tv = true)
+    val trailer by rememberTrailer(remember(extrasTitle) { extrasTitle?.let { TrailerQuery(it, tv = true) } })
+    // One Trailer button that moves between the branches below: when the episodes finish loading while its trailer
+    // plays (or its QR code shows), the player stays open and Back still brings the focus back to it.
+    val trailerButton = remember(series.id) { movableContentOf { t: Trailer? -> TrailerButton(t) } }
 
     val seasons = info?.seasons.orEmpty()
     val seasonKeys = remember(seasons) { seasons.keys.sorted() }
@@ -294,7 +299,7 @@ fun SeriesDetailScreen(series: Series, state: AppState) {
                                 }
                                 Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                     LibraryButton(BrowseTitle.seriesKey(series.id), series.name)
-                                    TrailerButton(trailer)
+                                    trailerButton(trailer)
                                 }
                             }
                             info == null -> {
@@ -303,7 +308,7 @@ fun SeriesDetailScreen(series: Series, state: AppState) {
                                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                     PillButton("Try again", { loadAttempt++ }, Modifier.focusRequester(playFocus), primary = true)
                                     LibraryButton(BrowseTitle.seriesKey(series.id), series.name)
-                                    TrailerButton(trailer)
+                                    trailerButton(trailer)
                                 }
                             }
                             allEpisodes.isEmpty() -> {
@@ -311,7 +316,7 @@ fun SeriesDetailScreen(series: Series, state: AppState) {
                                 Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                     PillButton("Back to Series", { state.pop() }, Modifier.focusRequester(playFocus))
                                     LibraryButton(BrowseTitle.seriesKey(series.id), series.name)
-                                    TrailerButton(trailer)
+                                    trailerButton(trailer)
                                 }
                             }
                             lastWatched != null -> {
@@ -323,7 +328,7 @@ fun SeriesDetailScreen(series: Series, state: AppState) {
                                         icon = { Icon(Icons.Rounded.PlayArrow, null, tint = it, modifier = Modifier.size(20.dp)) }, primary = true,
                                     )
                                     LibraryButton(BrowseTitle.seriesKey(series.id), series.name)
-                                    TrailerButton(trailer)
+                                    trailerButton(trailer)
                                 }
                                 Text((if (nextUp) "Up next" else "At ${fmtClock(lastWatched.second.positionMs)}") + " · ${lastWatched.first.title}", color = Palette.dim, fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 8.dp))
                             }
@@ -333,7 +338,7 @@ fun SeriesDetailScreen(series: Series, state: AppState) {
                                     icon = { Icon(Icons.Rounded.PlayArrow, null, tint = it, modifier = Modifier.size(20.dp)) }, primary = true,
                                 )
                                 LibraryButton(BrowseTitle.seriesKey(series.id), series.name)
-                                TrailerButton(trailer)
+                                trailerButton(trailer)
                             }
                         }
                         val plot = info?.plot ?: series.plot
@@ -414,13 +419,33 @@ private fun Episode.toRequest(series: Series, from: Long, extrasTitle: ExtrasTit
 )
 
 /**
- * The title's trailer from lumanest.tv (docs/extras.md), looked up once when the page opens (answers are kept for the
- * session); null while loading, on any failure and when there is none.
+ * The title's trailer from lumanest.tv (docs/extras.md); null while loading, on any failure and when there is none.
+ * An answer the session already has (a card's prefetch, [trailerQueryOf]) is read while the page composes, so the button
+ * is there on its first frame; otherwise the page asks once (sharing a prefetch still on its way).
  */
 @Composable
-private fun rememberTrailer(title: ExtrasTitle?, tv: Boolean) = produceState<Trailer?>(null, title, tv) {
-    value = title?.let { Extras.client.trailer(TrailerQuery(it, tv)) }
+internal fun rememberTrailer(query: TrailerQuery?): State<Trailer?> {
+    val client = Extras.client
+    val cached = remember(client, query) { query?.let(client::cachedTrailer) }
+    return produceState(cached?.trailer, client, query) {
+        value = when {
+            query == null -> null
+            cached != null -> cached.trailer
+            else -> client.trailer(query)
+        }
+    }
 }
+
+/**
+ * The trailer lookup a title's page makes, by the same ids (docs/extras.md, "Which ids an app sends"), so a card's
+ * prefetch and the page ask the same thing.
+ */
+internal fun trailerQueryOf(movie: Movie): TrailerQuery? = TrailerQuery.movie(movie, Repo.matchedTmdb(BrowseTitle.movieKey(movie.id)))
+
+internal fun trailerQueryOf(series: Series): TrailerQuery? = TrailerQuery.series(series, Repo.matchedTmdb(BrowseTitle.seriesKey(series.id)))
+
+/** The lookup of the page a card opens. */
+internal fun trailerQueryOf(title: BrowseTitle): TrailerQuery? = title.movie?.let(::trailerQueryOf) ?: title.series?.let(::trailerQueryOf)
 
 /**
  * Adds the movie or series to the Library (the check badge on its poster), or removes it. A film saved under an older

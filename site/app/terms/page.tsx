@@ -6,7 +6,7 @@ export const metadata = {title: 'Terms | LumaNest TV', description: 'The terms f
 
 export default function Terms() {
   const {support, portal} = legalSettings();
-  return <LegalPage path="/terms" updated={['2026-10-20', 'October 20, 2026']} eyebrow="THE HOUSE RULES" title={<>Terms of <em>service.</em></>} lead="These terms cover buying, renewing and using a LumaNest TV subscription. We’ve kept them short and plain. By placing an order, you agree to them.">
+  return <LegalPage path="/terms" updated={['2026-10-21', 'October 21, 2026']} eyebrow="THE HOUSE RULES" title={<>Terms of <em>service.</em></>} lead="These terms cover buying, renewing and using a LumaNest TV subscription. We’ve kept them short and plain. By placing an order, you agree to them.">
     <h2>What you’re buying</h2>
     <p>A LumaNest TV subscription gives you access to live channels, movies and series for a set number of simultaneous screens and a set period. Plans are {plans.map(plan => plan.name + ' (' + plan.devices + (plan.devices === 1 ? ' screen' : ' screens') + ')').join(', ')}, for {periods.join(', ').replace(/, (\d+)$/, ' or $1')} months. Current prices are shown in USD on our <a href="/#plans">plans section</a>.</p>
     <h2>Payment</h2>
@@ -30,7 +30,7 @@ export default function Terms() {
     <h2>Refunds</h2>
     <p>See our <a href="/refunds">refund policy</a> for how refund requests are handled.</p>
     <h2>Trailers and YouTube</h2>
-    <p>Trailers in the web player, and in the Tuner apps for Samsung and LG TVs, play in YouTube’s embedded player, a YouTube API Service. By using the web player or those apps, you agree to be bound by the <a href="https://www.youtube.com/t/terms" rel="noopener noreferrer">YouTube Terms of Service</a>. YouTube serves the trailers and may show its own ads in its player.</p>
+    <p>Trailers in the web player, and in the Tuner apps for Android TV, Google TV, Fire TV, Samsung and LG TVs, play in YouTube’s embedded player, a YouTube API Service. By using the web player or those apps, you agree to be bound by the <a href="https://www.youtube.com/t/terms" rel="noopener noreferrer">YouTube Terms of Service</a>. YouTube serves the trailers and may show its own ads in its player.</p>
     <h2>Privacy</h2>
     <p>Our <a href="/privacy">privacy policy</a> explains what we collect and why.</p>
     <h2>Changes to these terms</h2>

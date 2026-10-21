@@ -357,13 +357,16 @@ fun SettingsScreen(state: AppState, store: Boolean = Edition.STORE) {
                 )
             }
             // Focusable rows, so the D-pad brings them into view like every other row. Selecting the privacy row only
-            // says where to read the policy: TV apps on Google Play must not open a web browser.
+            // says where to read the policy: TV apps on Google Play must not open a web browser. Both editions show it
+            // since 1.8.1: trailers play in YouTube's embedded player, and YouTube's API terms ask the app to point to
+            // its privacy policy and to YouTube's terms.
             header("About")
-            if (store) {
-                item(key = "privacy") {
-                    SettingRow("Privacy policy", Edition.PRIVACY_URL,
-                        onClick = { Toasts.show("Read it on your phone or computer at ${Edition.PRIVACY_URL}") })
-                }
+            item(key = "privacy") {
+                SettingRow("Privacy policy", Edition.PRIVACY_URL,
+                    onClick = { Toasts.show("Read it on your phone or computer at ${Edition.PRIVACY_URL}") })
+            }
+            item(key = "youtube") {
+                NoticeRow("Trailers", YOUTUBE_NOTICE, Modifier.testTag("setting:youtube"))
             }
             // TMDB's terms ask for this notice wherever its data is used; only while the lists come from TMDB.
             if (catalogRows.usesTmdb) {
@@ -454,6 +457,10 @@ fun SettingsScreen(state: AppState, store: Boolean = Edition.STORE) {
 
 /** The attribution TMDB requires, shown in Settings > About while the popularity lists come from TMDB. */
 internal const val TMDB_NOTICE = "This product uses the TMDB API but is not endorsed or certified by TMDB."
+
+/** Trailers play in YouTube's embedded player (YouTube API Services): its terms and Google's privacy policy apply. */
+internal const val YOUTUBE_NOTICE = "Trailers play in YouTube's player (YouTube API Services). YouTube Terms of Service: " +
+    "www.youtube.com/t/terms · Google Privacy Policy: policies.google.com/privacy"
 
 /** A focusable row whose text may wrap, for notices the remote must be able to scroll to. */
 @Composable

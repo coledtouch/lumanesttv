@@ -55,6 +55,21 @@ class TrailerTest {
         assertEquals(6, refusing.tried.size)
     }
 
+    @Test fun aLinkFollowedInThePlayerOpensOnlyInAYouTubeAppNeverABrowser() {
+        val link = "https://www.youtube.com/channel/UCxyz"
+        val packages = listOf("com.google.android.youtube.tv", "com.amazon.firetv.youtube", "com.amazon.firetv.youtube.tv",
+            "com.google.android.youtube.googletv", "com.google.android.youtube")
+        // No YouTube app: nothing opens it, not even an intent without a package (a browser would take that).
+        val nothing = Tv(installed = setOf(null))
+        assertFalse(TrailerLauncher.openLink(nothing, link))
+        assertEquals(packages, nothing.tried.map { it.`package` })
+        assertTrue(nothing.tried.all { it.action == Intent.ACTION_VIEW && it.dataString == link })
+        assertTrue(nothing.tried.all { it.flags and Intent.FLAG_ACTIVITY_NEW_TASK != 0 })
+        val fireTv = Tv(installed = setOf("com.amazon.firetv.youtube"), refused = setOf("com.google.android.youtube.tv"))
+        assertTrue(TrailerLauncher.openLink(fireTv, link))
+        assertEquals(packages.take(2), fireTv.tried.map { it.`package` })
+    }
+
     @Test fun aKeyThatIsntAYouTubeKeyOpensNothing() {
         listOf("", "vKQi3bBA1y", "vKQi3bBA1y8&list=x", "../../x/abc", "vKQi3bBA1y8 ").forEach { bad ->
             val tv = Tv(installed = setOf(null))
