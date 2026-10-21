@@ -8,6 +8,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Display
 import android.view.View
+import android.view.ViewGroup
 
 /**
  * The trailer player's log, so a TV where a trailer doesn't show can say why (docs/extras.md, "Per platform", Android):
@@ -58,7 +59,15 @@ internal object TrailerLog {
 
     /** A view's drawing and size, for the WebView's attach, detach and load lines. */
     fun view(view: View): String =
-        "hw=" + view.isHardwareAccelerated + " layer=" + layerName(view.layerType) + " size=" + view.width + "x" + view.height
+        "hw=" + view.isHardwareAccelerated + " layer=" + layerName(view.layerType) + " size=" + view.width + "x" + view.height +
+            " lp=" + (view.layoutParams?.let { dimension(it.width) + "x" + dimension(it.height) } ?: "none")
+
+    /** A layout params dimension: "match", "wrap" or the pixels. */
+    fun dimension(value: Int): String = when (value) {
+        ViewGroup.LayoutParams.MATCH_PARENT -> "match"
+        ViewGroup.LayoutParams.WRAP_CONTENT -> "wrap"
+        else -> value.toString()
+    }
 
     fun layerName(type: Int): String = when (type) {
         View.LAYER_TYPE_NONE -> "none"

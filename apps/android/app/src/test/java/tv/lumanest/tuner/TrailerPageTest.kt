@@ -49,7 +49,7 @@ class TrailerPageTest {
             "autoplay:0", "playsinline:1", "rel:0", "controls:1", "enablejsapi:1", "fs:0",
             "origin:\"$origin\"", "s.src=\"https://www.youtube.com/iframe_api\"",
             "<meta name=\"referrer\" content=\"strict-origin-when-cross-origin\">",
-            "onReady:function(e){send(\"ready\");snap(\"ready\")}",
+            "onReady:function(e){fit();send(\"ready\");snap(\"ready\")}",
             "onStateChange:function(e){ad=null;send(\"state:\"+e.data);snap(\"state\")}", "onError:function(e){send(\"error:\"+e.data);snap(\"error\")}",
             "s.onerror=function(){send(\"error:-1\")}",
         ).forEach { assertTrue(it, page.contains(it)) }
@@ -74,6 +74,14 @@ class TrailerPageTest {
         // ratio of 2: YouTube sees 1920 by 1080 and picks up to 1080p. 1.8.1's width=1920 made it 3840 by 2160 (4K),
         // whose frames that TV's WebView never showed: a black screen.
         assertEquals("width=device-width,initial-scale=1", TrailerPage.VIEWPORT)
+        // The player is sized in pixels from the window too, so a percentage height that comes out 0 can't hide it:
+        // on page load, once YouTube's frame replaces the placeholder, when the player is ready, and on every resize.
+        assertTrue(page.contains("function fit(){var e=document.getElementById(\"player\"),w=window.innerWidth,h=window.innerHeight;" +
+            "if(e&&w>0&&h>0){e.style.width=w+\"px\";e.style.height=h+\"px\"}}"))
+        assertTrue(page.contains("window.addEventListener(\"resize\",fit);"))
+        assertTrue(page.contains("onReady:function(e){fit();send(\"ready\")"))
+        assertTrue(page.contains("\"error:\"+e.data);snap(\"error\")}}});\n fit();\n};"))
+        assertTrue(page.contains("\n document.head.appendChild(s);\n fit();\n"))
         assertTrue(page.contains("<head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"))
         assertEquals(1, page.split("name=\"viewport\"").size - 1)
         assertFalse(page.contains("1920"))
@@ -175,7 +183,7 @@ class TrailerPageTest {
             "diag:p st=1 t=40.00 ad=", "diag:ad st=-1 t=0.00 ad=1").forEach {
             assertNull(it, TrailerEvent.parse(it))
         }
-        assertEquals(TrailerEvent.Progress(1, 12.5, 77L), TrailerEvent.progress(tick, 77L))
+        assertEquals(TrailerEvent.Progress(1, 12.5, 77L, sized = true), TrailerEvent.progress(tick, 77L))
         // The short one after 30 seconds, and one while an ad of YouTube's shows (the state is then the trailer's).
         assertEquals(TrailerEvent.Progress(1, 40.0, 9L), TrailerEvent.progress("diag:p st=1 t=40.00 ad=", 9L))
         assertEquals(TrailerEvent.Progress(-1, 0.0, 9L, ad = true), TrailerEvent.progress("diag:ad raf=3 st=-1 t=0.00 ad=1 lf=0.000", 9L))
@@ -439,6 +447,52 @@ class TrailerPageTest {
         assertEquals(TrailerStep.WAIT, stall.on(TrailerEvent.Progress(TrailerEvent.PLAYING, 6.0, 42_000L), appPaused = false))
         assertEquals(TrailerStep.WAIT, stall.on(TrailerEvent.Progress(TrailerEvent.PLAYING, 6.0, 51_999L), appPaused = false))
         assertEquals(TrailerStep.FALL_BACK, stall.on(TrailerEvent.Progress(TrailerEvent.PLAYING, 6.0, 52_000L), appPaused = false))
+    }
+
+    @Test fun aSnapshotSaysWhetherThePlayersFrameHasASize() {
+        fun sized(rect: String) = TrailerEvent.progress("diag:tick raf=9 w=960 h=540 rect=$rect st=1 t=2.55 ad= lf=0.2", 0L)?.sized
+        assertEquals(true, sized("0,0,960,540"))
+        assertEquals(true, sized("-4,-2,1,1"))
+        // The 1.8.2 black screen on an onn 4K Pro: full width, no height.
+        assertEquals(false, sized("0,0,960,0"))
+        assertEquals(false, sized("0,0,0,540"))
+        assertEquals(false, sized("0,0,0,0"))
+        // The page couldn't say: before YouTube's frame exists, or anything it doesn't write.
+        listOf("none", "", "0,0,960", "0,0,960,540,1", "0,0,9.5,540", "0,0,x,540", "0,0,960,").forEach { assertNull(it, sized(it)) }
+        // The short snapshot has no frame at all.
+        assertNull(TrailerEvent.progress("diag:p st=1 t=40.00 ad=", 0L)?.sized)
+    }
+
+    @Test fun aTrailerThatPlaysInAFrameWithNoSizeGoesToTheYouTubeApp() {
+        assertEquals(4_000L, TrailerPolicy.UNSEEN_TIMEOUT_MS)
+        // The snapshots of the 1.8.2 log on an onn 4K Pro: playing, its time moving, in a frame 960 wide and 0 high.
+        val log = listOf(
+            "diag:state raf=96 vis=visible w=960 h=540 dpr=2 rect=0,0,960,0 st=1 t=0.10 ad= lf=0.221 q=large levels=hd1080,auto",
+            "diag:tick raf=123 vis=visible w=960 h=540 dpr=2 rect=0,0,960,0 st=1 t=0.55 ad= lf=0.221 q=large levels=hd1080,auto",
+            "diag:tick raf=242 vis=visible w=960 h=540 dpr=2 rect=0,0,960,0 st=1 t=2.55 ad= lf=0.221 q=large levels=hd1080,auto",
+            "diag:tick raf=360 vis=visible w=960 h=540 dpr=2 rect=0,0,960,0 st=1 t=4.55 ad= lf=0.221 q=large levels=hd1080,auto",
+        )
+        val stall = TrailerStall()
+        val steps = log.mapIndexed { i, line -> stall.on(checkNotNull(TrailerEvent.progress(line, listOf(5_595L, 6_201L, 8_197L, 10_199L)[i])), appPaused = false) }
+        assertEquals(listOf(TrailerStep.WAIT, TrailerStep.WAIT, TrailerStep.WAIT, TrailerStep.FALL_BACK), steps)
+        fun at(state: Int, ms: Long, sized: Boolean?, ad: Boolean = false) = TrailerEvent.Progress(state, ms / 1000.0, ms, ad, sized)
+        fun fresh(paused: Boolean = false, vararg samples: TrailerEvent.Progress): List<TrailerStep> =
+            TrailerStall().let { s -> samples.map { s.on(it, appPaused = paused) } }
+        val play = TrailerEvent.PLAYING
+        // 3.999 s unseen is still waiting; buffering and an ad count too.
+        assertEquals(listOf(TrailerStep.WAIT, TrailerStep.WAIT), fresh(false, at(play, 0L, false), at(play, 3_999L, false)))
+        assertEquals(TrailerStep.FALL_BACK, fresh(false, at(TrailerEvent.BUFFERING, 0L, false), at(TrailerEvent.BUFFERING, 4_000L, false)).last())
+        assertEquals(TrailerStep.FALL_BACK, fresh(false, at(play, 0L, false, ad = true), at(play, 4_000L, false, ad = true)).last())
+        // A snapshot that can't say changes nothing; one with a size starts the count again.
+        assertEquals(TrailerStep.FALL_BACK, fresh(false, at(play, 0L, false), at(play, 2_000L, null), at(play, 4_000L, false)).last())
+        assertEquals(TrailerStep.WAIT, fresh(false, at(play, 0L, false), at(play, 2_000L, true), at(play, 4_000L, false)).last())
+        assertEquals(TrailerStep.FALL_BACK, fresh(false, at(play, 0L, false), at(play, 2_000L, true), at(play, 4_000L, false), at(play, 8_000L, false)).last())
+        // Paused (the viewer's or the app's), or before YouTube plays anything: never.
+        assertEquals(TrailerStep.WAIT, fresh(false, at(TrailerEvent.PAUSED, 0L, false), at(TrailerEvent.PAUSED, 9_000L, false)).last())
+        assertEquals(TrailerStep.WAIT, fresh(false, at(-1, 0L, false), at(-1, 9_000L, false)).last())
+        assertEquals(TrailerStep.WAIT, fresh(true, at(play, 0L, false), at(play, 9_000L, false)).last())
+        // A frame with a size never falls back for that, however long.
+        assertEquals(TrailerStep.WAIT, fresh(false, at(play, 0L, true), at(play, 2_000L, true), at(play, 60_000L, true)).last())
     }
 
     @Test fun aTrailerThatBuffersForThirtySecondsAfterItPlayedGoesToTheYouTubeApp() {

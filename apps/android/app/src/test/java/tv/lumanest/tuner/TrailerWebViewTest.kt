@@ -5,6 +5,7 @@ import android.content.pm.PackageInfo
 import android.net.Uri
 import android.os.Looper
 import android.os.SystemClock
+import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
@@ -176,6 +177,10 @@ class TrailerWebViewTest {
         }
         // Third-party cookies off: YouTube's frame (another site than the page's) keeps none.
         assertEquals(listOf("thirdParty=false"), cookieCalls)
+        // It fills its parent: a WRAP_CONTENT height (what a view added without layout params gets) makes WebView lay
+        // its page out at zero height, so the player played unseen (the 1.8.2 black screen).
+        assertEquals(ViewGroup.LayoutParams.MATCH_PARENT, web.layoutParams.width)
+        assertEquals(ViewGroup.LayoutParams.MATCH_PARENT, web.layoutParams.height)
         // The remote's keys go to the player screen, never into YouTube's frame.
         assertFalse(web.isFocusable)
         assertFalse(web.isFocusableInTouchMode)
@@ -289,7 +294,7 @@ class TrailerWebViewTest {
         shadowOf(Looper.getMainLooper()).idle()
         val now = SystemClock.elapsedRealtime()
         assertEquals(listOf(
-            TrailerEvent.Progress(1, 3.5, now), TrailerEvent.State(1), TrailerEvent.Ad(1), TrailerEvent.Progress(1, 3.5, now, ad = true),
+            TrailerEvent.Progress(1, 3.5, now, sized = true), TrailerEvent.State(1), TrailerEvent.Ad(1), TrailerEvent.Progress(1, 3.5, now, ad = true),
             TrailerEvent.Progress(1, 40.0, now),
         ), events)
         // Every message the page sent is in the log, as sent.
