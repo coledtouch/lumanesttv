@@ -6,7 +6,7 @@ Website, checkout, owner tools, web player, and TV applications for [LumaNest TV
 | --- | --- |
 | [`site/`](site/) | React/Vinext website, server APIs, PayPal checkout and renewals, owner sign-in, web player, PWA assets, D1 schema and tests |
 | [`site/cloudflare/`](site/cloudflare/) | Portal PWA support and authenticated stream relay Workers |
-| [`apps/android/`](apps/android/) | Android TV and Google TV development source, Kotlin/Compose/Media3, including tests; approved download is 1.7.1 |
+| [`apps/android/`](apps/android/) | Android TV and Google TV development source, Kotlin/Compose/Media3, including tests; approved download is 1.8.3 |
 | [`apps/tizen/`](apps/tizen/) | Tuner 1.6.1 for Samsung TVs, source, tests and packaging tools |
 | [`apps/webos/`](apps/webos/) | Tuner 1.2.1 for LG webOS TVs |
 | [`apps/roku/`](apps/roku/) | Tuner 1.1.0 for Roku (sideload for testing; Roku Channel Store submission pending) |
@@ -28,7 +28,7 @@ See [architecture and deployment](docs/deployment.md) for service boundaries and
 
 ## App downloads
 
-Installers are distributed through [LumaNest apps](https://lumanest.tv/apps), with archives on the repository's [Releases page](https://github.com/coledtouch/lumanesttv/releases). The approved Android download is **1.7.1**, served from R2 through `/api/tuner`; older APKs are kept as archives (see [releases](releases/README.md)). Android source changes and draft CI artifacts do not replace the approved release. The current LG installer is retained in the website's public downloads directory. Tags such as `android-v1.6.0` build draft releases; see [releases](releases/README.md#cutting-a-release).
+Installers are distributed through [LumaNest apps](https://lumanest.tv/apps), with archives on the repository's [Releases page](https://github.com/coledtouch/lumanesttv/releases). The approved Android download is **1.8.3**, served from R2 through `/api/tuner`; older APKs are kept as archives (see [releases](releases/README.md)). Android source changes and draft CI artifacts do not replace the approved release. The current LG installer is retained in the website's public downloads directory. Tags such as `android-v1.6.0` build draft releases; see [releases](releases/README.md#cutting-a-release).
 
 The Samsung widget included for development is unsigned. Samsung installation requires a valid business signing certificate and supported TV setup.
 
