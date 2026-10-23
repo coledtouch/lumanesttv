@@ -2,6 +2,8 @@ declare namespace Cloudflare {
   interface Env {
     DB?: D1Database;
     BUCKET?: R2Bucket;
+    /** Plain variable: "true" offers free 24-hour trial requests (/trial) once MYBUNNY_API_KEY, CUSTOMER_PORTAL_URL and PLAYER_COOKIE_KEY are set and migration 0011 is applied; anything else hides them (docs/trials.md). */
+    TRIALS_ENABLED?: string;
     /** Google Cast custom receiver app ID (public/cast/receiver.html); unset uses Google's Default Media Receiver. */
     CAST_RECEIVER_APP_ID?: string;
     /** TMDB v3 API key or v4 read access token for /api/catalog/rows; unset answers source "none". Needs TMDB's commercial terms first (docs/deployment.md). */

@@ -397,8 +397,8 @@ test('manual Safari installation help is accessible and viewing fullscreen hides
   assert.equal(widget.hidden, false);
 });
 
-test('install button stays off payment return pages and remains hidden once dismissed', async () => {
-  for (const pathname of ['/checkout/return', '/checkout/cancel', '/renew/return']) {
+test('install button stays off payment return pages and the private trial status page, and remains hidden once dismissed', async () => {
+  for (const pathname of ['/checkout/return', '/checkout/cancel', '/renew/return', '/trial/status']) {
     for (const narrow of [false, true]) {
       const ui = await installUI({pathname, narrow});
       assert.equal(ui.find('lumanest-install'), undefined);

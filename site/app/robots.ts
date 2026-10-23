@@ -2,5 +2,5 @@ import type {MetadataRoute} from 'next';
 import {SITE_URL} from './site';
 
 export default function robots(): MetadataRoute.Robots {
-  return {rules: {userAgent: '*', allow: '/', disallow: ['/manage', '/api/', '/checkout', '/renew/return']}, sitemap: SITE_URL + '/sitemap.xml'};
+  return {rules: {userAgent: '*', allow: '/', disallow: ['/manage', '/api/', '/checkout', '/renew/return', '/trial/status']}, sitemap: SITE_URL + '/sitemap.xml'};
 }

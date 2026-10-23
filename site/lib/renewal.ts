@@ -64,7 +64,8 @@ function renewableLine(value: unknown, allowIneligible = false): RenewalLine | n
 }
 
 // The existing anti-abuse table stores only a purpose-specific hash, never an IP or line login.
-async function throttle(purpose: string, subject: string, maximum: number, window = 15 * 60 * 1000, record = true) {
+// Exported for other public forms (lib/trials.ts), which pass their own purposes and re-code the 429.
+export async function throttle(purpose: string, subject: string, maximum: number, window = 15 * 60 * 1000, record = true) {
   const now = Date.now(), bucket = Math.floor(now / window);
   const id = await digest(JSON.stringify(['renewal-v1', purpose, subject, bucket]));
   try {

@@ -6,9 +6,17 @@ export const metadata = {title: 'Terms | LumaNest TV', description: 'The terms f
 
 export default function Terms() {
   const {support, portal} = legalSettings();
-  return <LegalPage path="/terms" updated={['2026-10-21', 'October 21, 2026']} eyebrow="THE HOUSE RULES" title={<>Terms of <em>service.</em></>} lead="These terms cover buying, renewing and using a LumaNest TV subscription. We’ve kept them short and plain. By placing an order, you agree to them.">
+  return <LegalPage path="/terms" updated={['2026-10-23', 'October 23, 2026']} eyebrow="THE HOUSE RULES" title={<>Terms of <em>service.</em></>} lead="These terms cover buying, renewing and using a LumaNest TV subscription, including a free trial. We’ve kept them short and plain. By requesting a trial or placing an order, you agree to them.">
     <h2>What you’re buying</h2>
     <p>A LumaNest TV subscription gives you access to live channels, movies and series for a set number of simultaneous screens and a set period. Plans are {plans.map(plan => plan.name + ' (' + plan.devices + (plan.devices === 1 ? ' screen' : ' screens') + ')').join(', ')}, for {periods.join(', ').replace(/, (\d+)$/, ' or $1')} months. Current prices are shown in USD on our <a href="/#plans">plans section</a>.</p>
+    <h2>Free trial</h2>
+    <ul>
+      <li>When free trials are offered, you can request one free 24-hour trial. It’s limited to one per person and household, and we may decline a request from a home network that has already had one.</li>
+      <li>Every request is reviewed by the site owner, who may approve or decline it. A trial isn’t guaranteed, and trials may be paused at any time.</li>
+      <li>An approved trial lasts about 24 hours from when it’s activated (your trial’s status page shows exactly when it ends), then ends automatically.</li>
+      <li>A trial is free. We don’t ask for payment details, and it never turns into a paid subscription on its own. To keep watching, choose a plan.</li>
+      <li>The same rules apply as for a subscription (see Your logins and Using your subscription).</li>
+    </ul>
     <h2>Payment</h2>
     <ul>
       <li>Payments are processed by PayPal. You review and approve the full total on PayPal before you’re charged.</li>
