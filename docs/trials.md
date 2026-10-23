@@ -1,12 +1,12 @@
 # Free 24-hour trials
 
-A new visitor can ask for a free 24-hour trial with every feature before they have a provider account or line. Each request waits for the owner. The owner approves or declines it in `/manage`. Nothing is created at the provider, and no email is sent, until the owner approves.
+A new visitor can ask for a free 24-hour trial with every feature before they have a provider account or line. Each request waits for the owner. The owner approves or declines it in `/manage`, and can be emailed a short alert when a request arrives (see [Email alerts](#email-alerts)). Nothing is created at the provider, and nothing is emailed to the requester, until the owner approves.
 
-Code: `site/lib/trials.ts`, the routes `site/app/api/trial/route.ts`, `site/app/api/trial/status/route.ts` and `site/app/api/manage/trials/route.ts`, the table `trial_requests` (migration `site/drizzle/0011_trial_requests.sql`), the clean-up steps in `site/lib/maintenance.ts`, and the tests in `site/tests/trial-runtime.test.mjs`. The pages are `/trial` (the request form), `/trial/status` (the requester's private status page) and the **Trial requests** queue in `/manage`.
+Code: `site/lib/trials.ts`, the routes `site/app/api/trial/route.ts`, `site/app/api/trial/status/route.ts` and `site/app/api/manage/trials/route.ts`, the table `trial_requests` (migration `site/drizzle/0011_trial_requests.sql`), the clean-up steps in `site/lib/maintenance.ts`, the owner's email alert in `site/lib/trial-alert.ts` and `site/lib/trial-alert-send.ts`, and the tests in `site/tests/trial-runtime.test.mjs` and `site/tests/trial-alert.test.ts`. The pages are `/trial` (the request form), `/trial/status` (the requester's private status page) and the **Trial requests** queue in `/manage`.
 
 ## Flow
 
-1. The visitor fills in `/trial`: their name, email address, the device they'll watch on, and a required agreement to the terms and privacy policy. `POST /api/trial` stores the request as `pending` and returns a private status link, `/trial/status#<token>`.
+1. The visitor fills in `/trial`: their name, email address, the device they'll watch on, and a required agreement to the terms and privacy policy. `POST /api/trial` stores the request as `pending` and returns a private status link, `/trial/status#<token>`. When [email alerts](#email-alerts) are set up, the owner is then emailed the requester's name, device and request time, with the pending count and any repeat-request counts.
 2. The status page reads the token from the link's fragment after it loads and posts it to `POST /api/trial/status`. A fragment never reaches a server log, a `Referer` header or a query string. D1 keeps only a hash of the token.
 3. The owner opens **Trial requests** in `/manage`. Pending requests come first, oldest first. Each row shows how many other requests came from the same network in the last 30 days (`same_network`) and with the same email address (`same_email`).
 4. To approve, the owner creates a 24-hour trial line in the MyBunny reseller panel just before approving, and enters its line ID. The site then:
@@ -64,7 +64,7 @@ D1 stores the requester's name, email address and device, and the request's stat
 - the network as an HMAC-SHA256 under `PLAYER_COOKIE_KEY` (purpose `trial-client`) of `trial-network-v1\n<network>`;
 - `email_key` as the same HMAC of `trial-email-v1\n<lowercased email>`, which finds repeats without comparing addresses.
 
-The IP address itself is never stored or logged. Nothing goes to the provider until the owner approves, and then only the email address and name. Logs carry fixed codes only, with no personal data: `lumanest_trial_needs_review` with `{"code"}`, `lumanest_provider_request_failed` with `{"http_status","code"}` when the provider refuses or fails a request during approval, `lumanest_unexpected_error` with the error's name only, and `lumanest_cleanup_failed`.
+The IP address itself is never stored or logged. Nothing goes to the provider until the owner approves, and then only the email address and name. The owner's [email alert](#email-alerts) carries the requester's name, device and request time, the pending count and whether other recent requests came from the same network or email address (as counts), never their email address, network or status link; it stays in the owner's mailbox until they delete it, outside clean-up. Logs carry fixed codes only, with no personal data: `lumanest_trial_needs_review` with `{"code"}`, `lumanest_provider_request_failed` with `{"http_status","code"}` when the provider refuses or fails a request during approval, `lumanest_trial_alert_failed` with `{"code"}` when an alert can't be sent, `lumanest_unexpected_error` with the error's name only, and `lumanest_cleanup_failed`.
 
 Clean-up runs when either review queue loads, from **Run cleanup**, and alongside `/api/availability`. It:
 
@@ -78,6 +78,58 @@ Until then, a request keeps its email address from asking again, and its network
 1. Apply migration `0011_trial_requests.sql` before deploying the code that uses it (see [deployment](deployment.md#free-24-hour-trials)).
 2. Check that `MYBUNNY_API_KEY`, `CUSTOMER_PORTAL_URL` and `PLAYER_COOKIE_KEY` are set, and that the provider hub can send invitation emails.
 3. Set the plain variable `TRIALS_ENABLED` to `true`. Until trials are ready, the **Trial requests** panel in `/manage` says they are off and which settings are missing. The **Try it free for 24 hours** link, the FAQ entry and the `/trial` form appear only while it is `true` and the settings above are present. To turn trials off, remove it or set any other value. Pending requests stay in the queue, and their status links keep working.
+
+## Email alerts
+
+The site can email the owner each time a request is stored, so new requests don't wait unseen in `/manage`. It sends through Cloudflare Email Routing's `send_email` Workers binding: sending to a verified destination address in the account is free on any plan. Alerts are optional. Without the binding and `TRIAL_ALERT_TO`, nothing is sent and requests work as before.
+
+Code: `site/lib/trial-alert.ts` builds the message (pure, unit-tested in `site/tests/trial-alert.test.ts`), `site/lib/trial-alert-send.ts` sends it (the only module that imports `cloudflare:email`), and `requestTrial()` in `site/lib/trials.ts` starts it once a request is stored. `site/tests/trial-runtime.test.mjs` checks the whole path in workerd, with Miniflare's own `send_email` simulator validating each message.
+
+### Setting them up
+
+1. **Email Routing on `lumanest.tv`.** The sender must be an address on a domain with Email Routing enabled; it needs no routing rule or mailbox of its own. In the Cloudflare dashboard, open **Compute > Email Service > Email Routing** for `lumanest.tv` and check that it is enabled. If it isn't, enabling it sets the domain's MX and SPF records, so first check that no other mail provider receives `lumanest.tv` mail.
+2. **Verify the owner's address.** Go to **Compute > Email Service > Email Routing > Destination addresses**, add the address the alerts should go to, and select **Verify email address** in the email Cloudflare sends. The binding sends only to verified destination addresses.
+3. **Prepare with `--trial-alerts`**, which adds `"send_email": [{"name": "TRIAL_ALERT_EMAIL"}]` to the generated configuration. No address is written into it. From `site/`:
+
+   ```
+   npm run build
+   npm run cloudflare:prepare -- --database-id 226b9f80-d3c9-471d-b5b4-c4a0c17f9e9d --production --trial-alerts
+   npm run cloudflare:deploy
+   ```
+
+   Without the flag, the generated configuration has no email binding, so the default deploy is unchanged: a `send_email` binding can fail to deploy where Email Routing isn't enabled. Once alerts are on, pass `--trial-alerts` on **every** deploy (the routine deploy in [`deployment.md`](deployment.md) has it as a commented line). A deploy without it removes the binding, and alerts stop (requests keep working): each new request then logs `lumanest_trial_alert_failed` with `{"code":"alert_binding_missing"}`, and the **Trial requests** panel in `/manage` shows `Email alerts: binding missing`.
+4. **Set `TRIAL_ALERT_TO`** to the verified address, in the dashboard (**Workers & Pages > `lumanest-tv` > Settings > Variables and Secrets > Add**, type Text or Secret) or as a secret with `npx wrangler secret put TRIAL_ALERT_TO --config dist/server/wrangler-cloudflare.json`. Optionally set `TRIAL_ALERT_FROM` to another sender on an Email Routing domain; it defaults to `alerts@lumanest.tv`. `keep_vars` keeps both across deploys. Each must be a plain address such as `owner@example.com`, not `Name <owner@example.com>`: if either isn't, no alert is sent.
+5. **Check it.** The **Trial requests** panel in `/manage` should say `Email alerts: on`. Ask for a trial at `/trial` with an address of your own, from a network that hasn't used its two trials. The alert should arrive within a minute. Then decline the test request in `/manage`; a declined request doesn't block that email address or count toward the network limit.
+
+### What the alert says
+
+A plain-text email (UTF-8, quoted-printable), `From: LumaNest TV <alerts@lumanest.tv>`, to `TRIAL_ALERT_TO`, with the subject **New free-trial request – LumaNest TV** and a new `Message-ID` on the sender's domain:
+
+```
+Someone asked for a free 24-hour trial of LumaNest TV.
+
+Name: Pat Example
+Device: Samsung TV
+Requested: Friday, October 23, 2026, 14:05 UTC (2026-10-23T14:05:09.123Z)
+Pending requests: 3
+
+This home network has made 1 other request in the last 30 days.
+This email address has made 1 other request.
+
+Review it: https://lumanest.tv/manage
+
+You get this alert because TRIAL_ALERT_TO is set for the lumanest-tv Worker. Remove it to stop these alerts.
+```
+
+The repeat lines appear only when they apply and count what the queue's `same_network` and `same_email` count: other requests from the same network in the last 30 days, and other requests with the same email address, declined ones included. The name is put on one line, without control or text-direction characters. The alert never includes the requester's email address, IP address, network hash, request ID or status link.
+
+### When it is sent, and failures
+
+- Only after a request is stored. Never for a filled honeypot, an invalid form, a refused request (409), a rate limit (429) or a full queue (503).
+- After the response, with `waitUntil`, so the requester never waits for the email and an email failure can't fail the request. If the counts can't be read, the alert goes without them.
+- A failed send (an unverified destination address, a sender outside an Email Routing domain, or an Email Routing error) isn't retried. It logs `lumanest_trial_alert_failed` with `{"code":"alert_not_sent"}`, or `{"code":"alert_not_built"}` if the message couldn't be built, with no address or name. The request is pending in `/manage` as usual, which stays the place to review requests.
+- Without `TRIAL_ALERT_TO`, or when it isn't a plain email address, alerts are off: nothing is sent and nothing is logged, and `/manage` shows `Email alerts: off`.
+- With `TRIAL_ALERT_TO` set but the deploy missing the binding (prepared without `--trial-alerts`), or with a `TRIAL_ALERT_FROM` that isn't a plain email address, nothing is sent and each stored request logs `lumanest_trial_alert_failed` with `{"code":"alert_binding_missing"}` or `{"code":"alert_sender_invalid"}`. The **Trial requests** panel in `/manage` shows the same problem (`Email alerts: binding missing` or `Email alerts: not sent`), so alerts that stopped don't go unnoticed.
 
 ## When the provider documents its trial endpoint
 

@@ -1,5 +1,5 @@
 // Free 24-hour trial requests (docs/trials.md) in workerd: the public request and status routes, the owner's queue,
-// approval against a mocked provider, and clean-up.
+// approval against a mocked provider, clean-up, and the owner's email alert for each new request.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
@@ -13,6 +13,11 @@ const HOUR = 60 * 60 * 1000, DAY = 24 * HOUR;
 const origin = 'https://lumanest.tv';
 const ownerToken = 'f'.repeat(64), ownerCookie = '__Host-lumanest_owner=' + ownerToken;
 const provider = {calls: [], account: null, lines: {}, customer: 'ok'};
+// What the TRIAL_ALERT_EMAIL binding was given (the Mailbox worker below), and what workerd logged.
+// While hold is a pending promise, the binding's send doesn't finish, as if Email Routing were slow.
+const mailbox = {sent: [], fail: false, hold: null};
+const logs = [];
+const alertWorkers = ['trial-alerts', 'trial-alerts-no-to', 'trial-alerts-bad-to', 'trial-alerts-no-binding', 'trial-alerts-bad-from'];
 
 function resetProvider() {
   provider.calls = [];
@@ -41,6 +46,33 @@ async function upstream(request) {
   return Response.json({error: {code: 'not_found', message: 'Unmocked'}}, {status: 404});
 }
 
+// The mail binding's recorder: the Mailbox worker posts each message here once Miniflare's send_email simulator accepted it.
+async function mailboxOutbound(request) {
+  if (new URL(request.url).hostname !== 'mailbox.test') return new Response('unexpected', {status: 599});
+  if (mailbox.hold) await mailbox.hold;
+  if (mailbox.fail) return new Response('refused', {status: 503});
+  mailbox.sent.push(await request.json());
+  return new Response('ok');
+}
+// Stands in for the send_email binding through RPC. Miniflare's EmailMessage (cloudflare:email) is a plain object holding
+// the raw text under 'EmailMessage::raw'. Each message is first passed to Miniflare's own send_email simulator, which
+// refuses what Cloudflare would: an unparsable message, no Message-ID, or a From header that isn't the envelope sender.
+const mailboxScript = `
+  import {WorkerEntrypoint} from 'cloudflare:workers';
+  import {EmailMessage} from 'cloudflare:email';
+  export class Mailbox extends WorkerEntrypoint {
+    async send(message) {
+      const raw = message['EmailMessage::raw'];
+      const text = typeof raw === 'string' ? raw : await new Response(raw).text();
+      await this.env.CHECK.send(new EmailMessage(message.from, message.to, text));
+      const recorded = await fetch('http://mailbox.test/sent', {method: 'POST', body: JSON.stringify({from: message.from, to: message.to, raw: text})});
+      if (!recorded.ok) throw new Error('mailbox refused the message');
+      return {messageId: 'recorded'};
+    }
+  }
+  export default {fetch() {return new Response('not found', {status: 404});}};
+`;
+
 test.before(async () => {
   const bundle = await build({
     stdin: {
@@ -66,25 +98,40 @@ test.before(async () => {
       `,
       resolveDir: fileURLToPath(new URL('../', import.meta.url)), sourcefile: 'trial-runtime-worker.ts', loader: 'ts'
     },
-    write: false, bundle: true, format: 'esm', platform: 'browser', external: ['cloudflare:workers', 'node:crypto'],
+    write: false, bundle: true, format: 'esm', platform: 'browser', external: ['cloudflare:workers', 'cloudflare:email', 'node:crypto'],
     plugins: [{name: 'mock-framework-request-context', setup(builder) {
       builder.onResolve({filter: /^next\/(headers|navigation)$/}, args => ({path: args.path, namespace: 'mock-framework'}));
       builder.onLoad({filter: /.*/, namespace: 'mock-framework'}, args => ({contents: args.path.endsWith('/headers') ? 'export async function headers(){return globalThis.__testHeaders || new Headers();}' : 'export function redirect(){throw new Error("Unexpected navigation");}', loader: 'js'}));
     }}]
   });
   const settings = {MYBUNNY_API_KEY: 'runtime-provider-secret', CUSTOMER_PORTAL_URL: 'https://portal.lumanest.tv', CUSTOMER_PORTAL_PRIMARY_URL: 'https://tv.lumanest.tv', PLAYER_COOKIE_KEY: 'b'.repeat(64)};
-  const worker = (name, bindings) => ({name, compatibilityDate: '2026-05-15', compatibilityFlags: ['nodejs_compat'], modules: true, script: bundle.outputFiles[0].text, scriptPath: fileURLToPath(new URL('../trial-runtime-worker.js', import.meta.url)), d1Databases: {DB: name + '-db'}, bindings, outboundService: upstream});
-  runtime = new Miniflare({compatibilityDate: '2026-05-15', compatibilityFlags: ['nodejs_compat'], cf: false, workers: [
-    worker('trial', {...settings, TRIALS_ENABLED: 'true'}),
-    worker('trial-off', settings),
-    worker('trial-no-key', {...settings, TRIALS_ENABLED: 'true', PLAYER_COOKIE_KEY: 'not-a-key'}),
-    // Deployed before migration 0011 was applied.
-    worker('trial-unmigrated', {...settings, TRIALS_ENABLED: 'true'})
-  ]});
+  const worker = (name, bindings, extra = {}) => ({name, compatibilityDate: '2026-05-15', compatibilityFlags: ['nodejs_compat'], modules: true, script: bundle.outputFiles[0].text, scriptPath: fileURLToPath(new URL('../trial-runtime-worker.js', import.meta.url)), d1Databases: {DB: name + '-db'}, bindings, outboundService: upstream, ...extra});
+  const mail = {serviceBindings: {TRIAL_ALERT_EMAIL: {name: 'mailbox', entrypoint: 'Mailbox'}}};
+  runtime = new Miniflare({compatibilityDate: '2026-05-15', compatibilityFlags: ['nodejs_compat'], cf: false,
+    // Kept for the alert tests, and passed on, except the send_email simulator's own note of each message.
+    handleStructuredLogs({level, message}) {
+      logs.push({level, message});
+      if (!message.includes('send_email binding called')) (level === 'error' || level === 'warn' ? console.error : console.log)(message);
+    },
+    workers: [
+      worker('trial', {...settings, TRIALS_ENABLED: 'true'}),
+      worker('trial-off', settings),
+      worker('trial-no-key', {...settings, TRIALS_ENABLED: 'true', PLAYER_COOKIE_KEY: 'not-a-key'}),
+      // Deployed before migration 0011 was applied.
+      worker('trial-unmigrated', {...settings, TRIALS_ENABLED: 'true'}),
+      // Email alerts (lib/trial-alert-send.ts): configured; the binding without TRIAL_ALERT_TO or with an invalid one;
+      // TRIAL_ALERT_TO without the binding (a deploy prepared without --trial-alerts); an invalid TRIAL_ALERT_FROM.
+      worker('trial-alerts', {...settings, TRIALS_ENABLED: 'true', TRIAL_ALERT_TO: 'owner@example.test'}, mail),
+      worker('trial-alerts-no-to', {...settings, TRIALS_ENABLED: 'true', TRIAL_ALERT_FROM: 'alerts@lumanest.tv'}, mail),
+      worker('trial-alerts-bad-to', {...settings, TRIALS_ENABLED: 'true', TRIAL_ALERT_TO: 'Owner <owner@example.test>'}, mail),
+      worker('trial-alerts-no-binding', {...settings, TRIALS_ENABLED: 'true', TRIAL_ALERT_TO: 'owner@example.test'}),
+      worker('trial-alerts-bad-from', {...settings, TRIALS_ENABLED: 'true', TRIAL_ALERT_TO: 'owner@example.test', TRIAL_ALERT_FROM: 'Alerts <alerts@lumanest.tv>'}, mail),
+      {name: 'mailbox', compatibilityDate: '2026-05-15', modules: true, script: mailboxScript, email: {send_email: [{name: 'CHECK'}]}, outboundService: mailboxOutbound}
+    ]});
   const migrations = [];
   for (const file of (await readdir(new URL('../drizzle/', import.meta.url))).filter(file => file.endsWith('.sql')).sort()) migrations.push([file, await readFile(new URL('../drizzle/' + file, import.meta.url), 'utf8')]);
   const version = 'b'.repeat(32), now = Date.now();
-  for (const name of ['trial', 'trial-off', 'trial-no-key', 'trial-unmigrated']) {
+  for (const name of ['trial', 'trial-off', 'trial-no-key', 'trial-unmigrated', ...alertWorkers]) {
     const db = await runtime.getD1Database('DB', name);
     for (const [file, migration] of migrations) if (name !== 'trial-unmigrated' || !file.startsWith('0011_')) await db.batch(migration.split('--> statement-breakpoint').map(sql => db.prepare(sql.trim())));
     // A signed-in password owner (the fixture of tests/subscriptions.test.ts).
@@ -283,12 +330,18 @@ test('the owner queue needs the owner session, and its writes a same-site Origin
   assert.equal((await owner([])).status, 400);
   const listed = await call('/api/manage/trials', {method: 'GET', cookie: ownerCookie});
   assert.equal(listed.headers.get('Cache-Control'), 'private, no-store');
-  assert.deepEqual(listed.data, {trials: [], pending_count: 0, ready: true, enabled: true});
+  assert.deepEqual(listed.data, {trials: [], pending_count: 0, ready: true, enabled: true, alerts: 'off'});
   // The panel says when visitors can't ask for a trial, and why.
   for (const [worker, flags] of [['trial-off', [false, false]], ['trial-no-key', [false, true]]]) {
     const off = await call('/api/manage/trials', {method: 'GET', cookie: ownerCookie, worker});
     assert.equal(off.status, 200, off.text);
     assert.deepEqual([off.data.ready, off.data.enabled], flags, worker);
+  }
+  // It also says whether new requests are emailed to the owner, and when alerts are set up but can't send.
+  for (const [worker, alerts] of [['trial-alerts', 'on'], ['trial-alerts-no-to', 'off'], ['trial-alerts-bad-to', 'off'], ['trial-alerts-no-binding', 'binding_missing'], ['trial-alerts-bad-from', 'sender_invalid']]) {
+    const listing = await call('/api/manage/trials', {method: 'GET', cookie: ownerCookie, worker});
+    assert.equal(listing.status, 200, listing.text);
+    assert.equal(listing.data.alerts, alerts, worker);
   }
 });
 
@@ -529,4 +582,171 @@ test('an active trial ends at its expiry, and clean-up removes old requests idem
   assert.equal(later.trial_requests_removed, 1);
   assert.equal(await row(id), null);
   assert.ok(Object.values(await cleanup(expires + 181 * DAY)).every(count => count === 0));
+});
+
+// Owner email alerts (lib/trial-alert-send.ts). They go out after the response (waitUntil), so the tests wait for them.
+async function resetAlerts() {
+  for (const name of alertWorkers) {
+    const db = await runtime.getD1Database('DB', name);
+    await db.batch([db.prepare('DELETE FROM trial_requests'), db.prepare('DELETE FROM player_login_attempts')]);
+  }
+  mailbox.sent = [];
+  mailbox.fail = false;
+  mailbox.hold = null;
+  logs.length = 0;
+}
+async function until(check, what) {
+  for (const end = Date.now() + 10000; Date.now() < end; await new Promise(resolve => setTimeout(resolve, 20))) {
+    const value = await check();
+    if (value) return value;
+  }
+  assert.fail('Timed out waiting for ' + what);
+}
+const settle = () => new Promise(resolve => setTimeout(resolve, 300));
+const alertAsk = (n, ip, extra = {}, worker = 'trial-alerts') => call('/api/trial', {body: person(n, extra), ip, worker});
+async function alertRows(worker = 'trial-alerts') {
+  return (await (await runtime.getD1Database('DB', worker)).prepare('SELECT * FROM trial_requests ORDER BY created').all()).results;
+}
+function readMail(message) {
+  const end = message.raw.indexOf('\r\n\r\n'), headers = {};
+  for (const line of message.raw.slice(0, end).replace(/\r\n[ \t]/g, '').split('\r\n')) headers[line.slice(0, line.indexOf(':'))] = line.slice(line.indexOf(':') + 2);
+  const subject = headers.Subject.replace(/=\?UTF-8\?B\?([A-Za-z0-9+/=]+)\?=/g, (_, data) => Buffer.from(data, 'base64').toString('utf8'));
+  const encoded = message.raw.slice(end + 4).replace(/=\r\n/g, ''), bytes = [];
+  for (let i = 0; i < encoded.length; i++) {
+    if (encoded[i] === '=') {bytes.push(parseInt(encoded.slice(i + 1, i + 3), 16)); i += 2;}
+    else bytes.push(encoded.charCodeAt(i));
+  }
+  return {headers, subject, body: Buffer.from(bytes).toString('utf8')};
+}
+async function mails(count) {
+  await until(() => mailbox.sent.length >= count, count + ' alert(s)');
+  await settle();
+  assert.equal(mailbox.sent.length, count, 'exactly ' + count + ' alert(s)');
+  return mailbox.sent.map(readMail);
+}
+
+test('each stored request emails the owner once, with the name and device but no email address, network or status link', async () => {
+  await resetAlerts();
+  const first = await alertAsk(1, '198.51.100.71', {name: '  Zoë Example  ', device: 'fire'});
+  assert.equal(first.status, 200, first.text);
+  assert.deepEqual(Object.keys(first.data).sort(), ['state', 'status_url'], 'the answer is unchanged');
+  let [mail] = await mails(1);
+  const [message] = mailbox.sent, [stored] = await alertRows();
+  assert.equal(message.from, 'alerts@lumanest.tv');
+  assert.equal(message.to, 'owner@example.test');
+  assert.equal(mail.headers.From, 'LumaNest TV <alerts@lumanest.tv>');
+  assert.equal(mail.headers.To, '<owner@example.test>');
+  assert.equal(mail.subject, 'New free-trial request – LumaNest TV');
+  assert.match(mail.headers['Message-ID'], /^<[0-9a-f-]{36}@lumanest\.tv>$/);
+  assert.match(mail.body, /^Name: Zoë Example$/m);
+  assert.match(mail.body, /^Device: Fire TV$/m);
+  assert.ok(mail.body.includes('(' + new Date(stored.created).toISOString() + ')'), 'the stored request time');
+  assert.match(mail.body, /^Pending requests: 1$/m);
+  assert.doesNotMatch(mail.body, /other request/, 'a first request has no repeat lines');
+  assert.match(mail.body, /^Review it: https:\/\/lumanest\.tv\/manage$/m);
+  const token = tokenOf(first);
+  for (const secret of ['person1@example.test', '@', '198.51.100', token, stored.network, stored.email_key, stored.status_hash, stored.id]) {
+    assert.ok(!mail.body.includes(secret), 'the alert body holds no ' + secret);
+  }
+  assert.equal(message.raw.split('person1').length, 1, 'the requester\'s email address is nowhere in the message');
+
+  // The same home network asks again, with another address.
+  assert.equal((await alertAsk(2, '198.51.100.71')).status, 200);
+  mail = (await mails(2))[1];
+  assert.match(mail.body, /^Name: Trial Person 2$/m);
+  assert.match(mail.body, /^Device: Samsung TV$/m);
+  assert.match(mail.body, /^Pending requests: 2$/m);
+  assert.match(mail.body, /^This home network has made 1 other request in the last 30 days\.$/m);
+  assert.doesNotMatch(mail.body, /email address has made/);
+
+  // An address whose earlier request was declined may ask again; the alert says so.
+  const owner = await runtime.getD1Database('DB', 'trial-alerts');
+  await owner.prepare("UPDATE trial_requests SET state='declined',decided=? WHERE email=?").bind(Date.now(), 'person1@example.test').run();
+  assert.equal((await alertAsk(1, '192.0.2.71')).status, 200);
+  mail = (await mails(3))[2];
+  assert.match(mail.body, /^Pending requests: 2$/m);
+  assert.match(mail.body, /^This email address has made 1 other request\.$/m);
+  assert.doesNotMatch(mail.body, /home network/);
+  assert.deepEqual(provider.calls, [], 'alerts never reach the provider');
+});
+
+test('no alert for the honeypot, an invalid form, a repeated email, a used network, the rate limit or a full queue', async () => {
+  await resetAlerts();
+  const honeypot = await alertAsk(1, '198.51.100.81', {website: 'https://spam.example'});
+  assert.equal(honeypot.status, 200);
+  assert.equal((await alertAsk(1, '198.51.100.81', {consent: false})).status, 400);
+  assert.equal((await alertAsk(2, '198.51.100.82')).status, 200, 'stored');
+  assert.equal((await alertAsk(3, '198.51.100.82')).status, 200, 'stored');
+  assert.equal((await alertAsk(4, '198.51.100.82')).data.error.code, 'trial_network_used');
+  assert.equal((await alertAsk(5, '198.51.100.82')).data.error.code, 'trial_rate_limit');
+  assert.equal((await alertAsk(2, '198.51.100.83')).data.error.code, 'trial_already_requested');
+  const owner = await runtime.getD1Database('DB', 'trial-alerts'), now = Date.now();
+  await owner.batch(Array.from({length: 48}, (_, i) => owner.prepare("INSERT INTO trial_requests (id,status_hash,email,email_key,name,device,network,state,created) VALUES (?,?,?,?,?,?,?,'pending',?)")
+    .bind('queued-' + i, 'hash-' + i, `queued${i}@example.test`, 'email-' + i, 'Queued', 'web', 'network-' + i, now)));
+  assert.equal((await alertAsk(6, '198.51.100.84')).data.error.code, 'trials_busy');
+  await owner.prepare("UPDATE trial_requests SET state='declined' WHERE id='queued-0'").run();
+  assert.equal((await alertAsk(7, '198.51.100.85')).status, 200, 'stored once the queue has room');
+  const sent = await mails(3);
+  assert.deepEqual(sent.map(mail => mail.body.match(/^Name: (.*)$/m)[1]), ['Trial Person 2', 'Trial Person 3', 'Trial Person 7'], 'one alert per stored request, in order');
+  assert.match(sent[2].body, /^Pending requests: 50$/m);
+});
+
+test('without the binding, TRIAL_ALERT_TO or plain addresses, nothing is sent, the request still succeeds, and alerts set up but unable to send are logged', async () => {
+  await resetAlerts();
+  for (const [n, worker] of [[1, 'trial-alerts-no-to'], [2, 'trial-alerts-bad-to'], [3, 'trial-alerts-no-binding'], [5, 'trial-alerts-bad-from']]) {
+    const result = await alertAsk(n, '198.51.100.9' + n, {}, worker);
+    assert.equal(result.status, 200, worker + ' ' + result.text);
+    assert.equal((await alertRows(worker)).length, 1, worker + ' stored the request');
+  }
+  // The configured worker shares the mailbox: only its request is emailed.
+  assert.equal((await alertAsk(4, '198.51.100.94')).status, 200);
+  const [mail] = await mails(1);
+  assert.match(mail.body, /^Name: Trial Person 4$/m);
+  // Alerts that aren't set up (no TRIAL_ALERT_TO, or not a plain address) log nothing. TRIAL_ALERT_TO without the
+  // binding, as after a deploy prepared without --trial-alerts, or with an invalid sender logs a fixed code, once.
+  const failures = () => logs.filter(log => log.message.includes('lumanest_trial_alert_failed')).map(log => log.message).sort();
+  await until(() => failures().length >= 2, 'the two logs');
+  assert.deepEqual(failures(), ['lumanest_trial_alert_failed {"code":"alert_binding_missing"}', 'lumanest_trial_alert_failed {"code":"alert_sender_invalid"}']);
+  for (const log of logs) assert.ok(!/owner@example\.test|person\d@|Trial Person|198\.51\.100/.test(log.message), 'no personal data in ' + log.message);
+});
+
+test('the requester\'s answer never waits for the email: it comes back while the send is unfinished, and the alert still goes', async () => {
+  await resetAlerts();
+  let release, timer;
+  mailbox.hold = new Promise(resolve => {release = resolve;});
+  try {
+    // A request that waited for the send would never answer while it is held, so it fails here instead of hanging.
+    const result = await Promise.race([alertAsk(1, '198.51.100.111'), new Promise((_, reject) => {timer = setTimeout(() => reject(new Error('the answer waited for the email')), 5000);})]);
+    assert.equal(result.status, 200, result.text);
+    assert.deepEqual(Object.keys(result.data).sort(), ['state', 'status_url']);
+    await settle();
+    assert.equal(mailbox.sent.length, 0, 'the send is still held when the answer arrives');
+  } finally {
+    clearTimeout(timer);
+    release();
+  }
+  const [mail] = await mails(1);
+  assert.match(mail.body, /^Name: Trial Person 1$/m, 'waitUntil kept the send alive after the response');
+  assert.ok(!logs.some(log => log.message.includes('lumanest_trial_alert_failed')));
+});
+
+test('a mail binding that fails never changes the requester\'s answer, and is logged with a fixed code only', async () => {
+  await resetAlerts();
+  mailbox.fail = true;
+  const result = await alertAsk(1, '198.51.100.101', {name: 'Private Name'});
+  assert.equal(result.status, 200, result.text);
+  assert.equal(result.headers.get('Cache-Control'), 'private, no-store');
+  assert.deepEqual(Object.keys(result.data).sort(), ['state', 'status_url']);
+  assert.equal((await call('/api/trial/status', {body: {token: tokenOf(result)}, worker: 'trial-alerts'})).data.state, 'pending', 'the request is stored');
+  await until(() => logs.some(log => log.message.includes('lumanest_trial_alert_failed')), 'the failure log');
+  const failures = logs.filter(log => log.message.includes('lumanest_trial_alert_failed'));
+  assert.deepEqual(failures.map(log => log.message), ['lumanest_trial_alert_failed {"code":"alert_not_sent"}']);
+  for (const log of logs) assert.ok(!/owner@example\.test|person1@|Private Name|198\.51\.100/.test(log.message), 'no personal data in ' + log.message);
+  assert.equal(mailbox.sent.length, 0);
+
+  mailbox.fail = false;
+  assert.equal((await alertAsk(2, '198.51.100.102')).status, 200);
+  const [mail] = await mails(1);
+  assert.match(mail.body, /^Name: Trial Person 2$/m);
+  assert.match(mail.body, /^Pending requests: 2$/m, 'the earlier request is still pending');
 });

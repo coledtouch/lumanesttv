@@ -4,6 +4,12 @@ declare namespace Cloudflare {
     BUCKET?: R2Bucket;
     /** Plain variable: "true" offers free 24-hour trial requests (/trial) once MYBUNNY_API_KEY, CUSTOMER_PORTAL_URL and PLAYER_COOKIE_KEY are set and migration 0011 is applied; anything else hides them (docs/trials.md). */
     TRIALS_ENABLED?: string;
+    /** Email Routing send_email binding for the owner's new-trial alerts (scripts/prepare-cloudflare.mjs --trial-alerts); optional, and nothing is sent without it (docs/trials.md, Email alerts). */
+    TRIAL_ALERT_EMAIL?: SendEmail;
+    /** The owner's verified Email Routing destination address for new-trial alerts; unset (or not an email address) sends none. */
+    TRIAL_ALERT_TO?: string;
+    /** Optional sender of new-trial alerts, an address on a domain with Email Routing enabled; unset means alerts@lumanest.tv. */
+    TRIAL_ALERT_FROM?: string;
     /** Google Cast custom receiver app ID (public/cast/receiver.html); unset uses Google's Default Media Receiver. */
     CAST_RECEIVER_APP_ID?: string;
     /** TMDB v3 API key or v4 read access token for /api/catalog/rows; unset answers source "none". Needs TMDB's commercial terms first (docs/deployment.md). */

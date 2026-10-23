@@ -11,6 +11,7 @@ import {lineExpiry, throttle, type RenewalLine} from './renewal.ts';
 import {clientNetwork, clientPrefix} from './extras.ts';
 import {portalReady, type ProviderAccount} from './provider-readiness.ts';
 import {isTrialDevice} from './trial-devices.ts';
+import {sendTrialAlertSoon} from './trial-alert-send.ts';
 
 const MINUTE = 60 * 1000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
 export const TRIAL_HOURS = 24;
@@ -144,17 +145,18 @@ export async function requestTrial(req: Request) {
   // The shared limit counts only requests that are stored, so refused attempts can't use it up for everyone else.
   const busy = 'We’re getting a lot of trial requests. Please try again later.';
   await limit('trial-shared', 'shared', 30, HOUR, busy, false);
-  const token = newToken(), now = Date.now(), since = now - NETWORK_WINDOW;
+  const id = crypto.randomUUID(), token = newToken(), now = Date.now(), since = now - NETWORK_WINDOW;
   // One statement, so two requests at once can't both pass the checks.
   const inserted = await stored(async () => db().prepare(
     "INSERT INTO trial_requests (id,status_hash,email,email_key,name,device,network,state,created) SELECT ?,?,?,?,?,?,?,'pending',? " +
     "WHERE NOT EXISTS (SELECT 1 FROM trial_requests WHERE email_key=? AND state<>'declined') " +
     "AND (SELECT COUNT(*) FROM trial_requests WHERE network=? AND state<>'declined' AND created>?)<? " +
     "AND (SELECT COUNT(*) FROM trial_requests WHERE state='pending')<?"
-  ).bind(crypto.randomUUID(), await statusHash(token), email, owner, name, device, network, now, owner, network, since, NETWORK_TRIALS, MAX_PENDING).run());
+  ).bind(id, await statusHash(token), email, owner, name, device, network, now, owner, network, since, NETWORK_TRIALS, MAX_PENDING).run());
   if (inserted.meta.changes === 1) {
     // The request is stored, so a failure to count it changes nothing for the requester.
     await limit('trial-shared', 'shared', 30, HOUR, busy).catch(() => {});
+    alertOwner({id, name, device, created: now, network, emailKey: owner});
     return {state: 'pending' as const, status_url: statusUrl(token)};
   }
   // The network is checked first: a network that has used its trials can't learn whether other addresses asked.
@@ -165,6 +167,27 @@ export async function requestTrial(req: Request) {
       return new ServiceError(409, 'trial_already_requested', 'A free trial has already been requested with this email address.');
     }
     return new ServiceError(503, 'trials_busy', busy);
+  });
+}
+
+/**
+ * Emails the owner a notice of a stored request (lib/trial-alert-send.ts), when alerts are configured: the name, device,
+ * time, pending count and the repeat counts the queue shows, never the email address, network or status link. It runs
+ * after the response, so the requester never waits for it and an email failure can't fail the request.
+ */
+function alertOwner(request: {id: string; name: string; device: string; created: number; network: string; emailKey: string}) {
+  sendTrialAlertSoon(async () => {
+    // The same counts as the queue's same_network and same_email. Without them the alert still goes, without those lines.
+    type Counts = {pending: number; same_network: number; same_email: number};
+    let counts: Counts | null = null;
+    try {
+      counts = await db().prepare(
+        "SELECT (SELECT COUNT(*) FROM trial_requests WHERE state='pending') AS pending," +
+        '(SELECT COUNT(*) FROM trial_requests WHERE network=? AND id<>? AND created>?) AS same_network,' +
+        '(SELECT COUNT(*) FROM trial_requests WHERE email_key=? AND id<>?) AS same_email'
+      ).bind(request.network, request.id, request.created - NETWORK_WINDOW, request.emailKey, request.id).first<Counts>();
+    } catch {}
+    return {name: request.name, device: request.device, requested: request.created, pending: counts?.pending, sameNetwork: counts?.same_network, sameEmail: counts?.same_email};
   });
 }
 
