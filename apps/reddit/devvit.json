@@ -1,0 +1,85 @@
+{
+  "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
+  "name": "tunertv",
+  "server": {
+    "dir": "dist/server",
+    "entry": "index.cjs"
+  },
+  "triggers": {
+    "onAppInstall": "/internal/triggers/on-app-install",
+    "onCommentSubmit": "/internal/triggers/on-comment-submit",
+    "onPostSubmit": "/internal/triggers/on-post-submit"
+  },
+  "settings": {
+    "subreddit": {
+      "helpReplyEnabled": {
+        "type": "boolean",
+        "label": "Reply to help posts with setup links and app versions",
+        "defaultValue": true
+      },
+      "helpFlairs": {
+        "type": "string",
+        "label": "Help post flairs",
+        "helpText": "Posts with one of these flairs always get the help reply. Comma-separated, not case-sensitive.",
+        "defaultValue": "Help, Support, Setup"
+      },
+      "helpKeywords": {
+        "type": "paragraph",
+        "label": "Help keywords",
+        "helpText": "Posts whose title or text contains one of these also get the help reply. One per line or comma-separated.",
+        "defaultValue": "help\nnot working\nwon't load\nwont load\ncan't log in\ncant log in\nbuffering\nerror\nhow do i\nhow to install\nsetup\nset up\ninstall\nfrozen\nblack screen"
+      },
+      "flairReminderEnabled": {
+        "type": "boolean",
+        "label": "Ask posters without a flair to add their device",
+        "defaultValue": true
+      },
+      "privateInfoFilterEnabled": {
+        "type": "boolean",
+        "label": "Remove posts and comments that share playlist links or logins",
+        "defaultValue": true
+      },
+      "versionCommandEnabled": {
+        "type": "boolean",
+        "label": "Answer !version comments with the current app versions",
+        "defaultValue": true
+      },
+      "versionAndroid": {
+        "type": "string",
+        "label": "Android TV, Google TV and Fire TV version",
+        "defaultValue": "1.8.3"
+      },
+      "versionLg": {
+        "type": "string",
+        "label": "LG webOS version",
+        "defaultValue": "1.2.1"
+      },
+      "versionSamsung": {
+        "type": "string",
+        "label": "Samsung Tizen version",
+        "defaultValue": "1.6.1"
+      },
+      "versionRoku": {
+        "type": "string",
+        "label": "Roku version",
+        "defaultValue": "1.1.0"
+      },
+      "versionAppleTv": {
+        "type": "string",
+        "label": "Apple TV version",
+        "defaultValue": "Coming soon to the App Store"
+      }
+    }
+  },
+  "scripts": {
+    "build": "npm run build",
+    "dev": "npm run build:watch"
+  },
+  "permissions": {
+    "redis": true,
+    "reddit": {
+      "enable": true,
+      "scope": "moderator"
+    }
+  }
+}

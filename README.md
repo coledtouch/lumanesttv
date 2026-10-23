@@ -11,6 +11,7 @@ Website, checkout, owner tools, web player, and TV applications for [LumaNest TV
 | [`apps/webos/`](apps/webos/) | Tuner 1.2.1 for LG webOS TVs |
 | [`apps/roku/`](apps/roku/) | Tuner 1.1.0 for Roku (sideload for testing; Roku Channel Store submission pending) |
 | [`apps/tvos/`](apps/tvos/) | Tuner for Apple TV (tvOS 17+, SwiftUI + TunerCore), App Store submission pending |
+| [`apps/reddit/`](apps/reddit/) | Reddit mod app (Devvit) for r/TunerTVapp: help replies, device flair reminders, playlist and login removal, `!version` |
 | [`releases/`](releases/) | Installer versions, checksums and release information |
 | [`.github/workflows/`](.github/workflows/) | Website and TV app build checks, nightly Android emulator tests and tag-driven draft releases |
 
