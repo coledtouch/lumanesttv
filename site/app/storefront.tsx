@@ -1,6 +1,6 @@
 'use client';
 
-import {useEffect, useRef, useState, type FormEvent, type KeyboardEvent} from 'react';
+import {useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode} from 'react';
 import {plans, periods} from '../lib/plans';
 import LoginExplainer from './login-explainer';
 import {SiteFooter, SiteHeader} from './site-chrome';
@@ -30,15 +30,17 @@ const worksOn: [string, string, keyof typeof icon, string][] = [
 ];
 const included = ['Live channels, with your channel choices', 'Movies and series to browse', 'The web player in your browser', 'TV app setup for Android TV, Google TV, Fire TV, LG webOS and Roku', 'Online renewals and subscription management'];
 
-const questions = [
+const questions: [string, ReactNode][] = [
   ['What are simultaneous screens?', 'A screen is any device watching at the same time. For example, a TV, a phone and a laptop watching at once count as three screens. ' + plans.map(item => item.name + ' allows ' + ['one', 'two', 'three', 'four'][item.devices - 1]).join(', ').replace(/, ([^,]*)$/, ' and $1') + '.'],
   ['How do I renew?', 'Open Renew subscription and sign in with your line username and password. Choose 3, 6 or 12 months and pay once on PayPal. When available for your line, you can also choose optional auto-renew and explicitly enroll on PayPal. Your existing line is extended after each confirmed payment. You can turn off future automatic payments in your renewal settings or PayPal.'],
   ['How do I set up my TV app?', 'Your customer hub provides the server address, line username, and setup details. Choose your device on our setup page for installation help. Keep your line credentials private.'],
   ['Is the price monthly?', 'No. You pay the total for the selected 3, 6 or 12 month period, in USD. The monthly figure on each plan is shown for comparison only. New plans and pay-once renewals have one payment. Optional auto-renew charges the displayed total every selected period and requires your separate PayPal agreement.'],
   ['Can I add more screens?', 'Device upgrades are available up to four screens. Their price depends on your line and remaining time; request a quote from your customer hub before paying.'],
 ];
+// Shown only while free trials are switched on (see trialsReady in lib/trials.ts).
+const trialQuestion: [string, ReactNode] = ['Can I try LumaNest before I buy?', <>Yes. You can <a href="/trial" style={{color: '#6b2dd6', textDecoration: 'underline', textUnderlineOffset: 3}}>request a free, full-feature 24-hour trial</a>. We review every request by hand as soon as we can, and offer one trial per person and household. No payment details are needed, and the trial simply ends after 24 hours, with nothing to cancel.</>];
 
-export default function Storefront({portal, ready, support}: {portal: string; ready: boolean; support: string}) {
+export default function Storefront({portal, ready, support, trial = false}: {portal: string; ready: boolean; support: string; trial?: boolean}) {
   const [period, setPeriod] = useState(0);
   const [selected, setSelected] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
@@ -141,7 +143,7 @@ export default function Storefront({portal, ready, support}: {portal: string; re
           <h1 id="hero-title">Make yourself<br/>at <em>home.</em></h1>
           <p className="intro">Live channels, movies and series on your TV app or right in your browser — from <strong>{money(starter.prices[0])}</strong> for {periods[0]} months.</p>
           <p className="hero-detail">Pay once with PayPal. As soon as your line is ready, your customer hub shows your line login, so you can press play in the web player or connect your TV.</p>
-          <div className="actions"><a className="button primary" href="#plans">Find your plan <span aria-hidden="true">↗</span></a><a href="/watch" className="text-link">Already a customer? Watch now <span aria-hidden="true">↗</span></a></div>
+          <div className="actions"><a className="button primary" href="#plans">Find your plan <span aria-hidden="true">↗</span></a>{trial && <a className="button secondary" href="/trial">Try it free for 24 hours <span aria-hidden="true">↗</span></a>}<a href="/watch" className="text-link">Already a customer? Watch now <span aria-hidden="true">↗</span></a></div>
           <div className="hero-note"><span>1–4 simultaneous screens</span><span>About {monthly(starter.prices[0], periods[0])}/mo on {starter.name}</span></div>
         </div>
         <picture>
@@ -190,9 +192,9 @@ export default function Storefront({portal, ready, support}: {portal: string; re
         <p className="access-help">Your customer account and your line login may use different passwords. <a href="#logins">Which login goes where?</a></p>
       </section>
 
-      <LoginExplainer portal={portal}/>
+      <LoginExplainer portal={portal} trial={trial}/>
 
-      <section className="faq section" id="faq" aria-labelledby="faq-title"><div><p className="eyebrow">GOOD TO KNOW</p><h2 id="faq-title">A few things<br/>before you settle in.</h2><a className="text-link faq-support" href={'mailto:' + supportEmail}>Need a hand? Contact support <span aria-hidden="true">↗</span></a></div><div>{questions.map(([question, answer]) => <details key={question}><summary>{question}<span aria-hidden="true">+</span></summary><p>{answer}</p></details>)}</div></section>
+      <section className="faq section" id="faq" aria-labelledby="faq-title"><div><p className="eyebrow">GOOD TO KNOW</p><h2 id="faq-title">A few things<br/>before you settle in.</h2><a className="text-link faq-support" href={'mailto:' + supportEmail}>Need a hand? Contact support <span aria-hidden="true">↗</span></a></div><div>{(trial ? [trialQuestion, ...questions] : questions).map(([question, answer]) => <details key={question}><summary>{question}<span aria-hidden="true">+</span></summary><p>{answer}</p></details>)}</div></section>
     </main>
     <SiteFooter portal={portal} support={supportEmail}/>
 

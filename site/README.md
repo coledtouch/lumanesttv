@@ -48,9 +48,10 @@ The following environment variable names describe the runtime contract. Supply r
 | `MYBUNNY_API_KEY` | Server-side upstream reseller API access. |
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_MODE`, `PAYPAL_WEBHOOK_ID` | PayPal account, environment, and verified payment events. |
 | `CHECKOUT_ENABLED` | Explicit gate for customer payment checkout. |
+| `TRIALS_ENABLED` | Explicit gate for free 24-hour trial requests (`/trial`): `true` offers them once `MYBUNNY_API_KEY`, `CUSTOMER_PORTAL_URL` and `PLAYER_COOKIE_KEY` are set. Apply migration `0011_trial_requests.sql` first. Each request waits for the owner's approval in `/manage`. See [`docs/trials.md`](../docs/trials.md). |
 | `CUSTOMER_PORTAL_URL`, `CUSTOMER_PORTAL_PRIMARY_URL` | Public hub and primary provider connection. |
 | `SUPPORT_EMAIL` | Customer support destination displayed by the application. |
-| `PLAYER_COOKIE_KEY` | Root secret for player sessions, media tokens, renewal sessions and renewal quotes; requires 64 lowercase hexadecimal characters. Each token type uses its own HKDF-derived AES-GCM key and authenticated purpose label. |
+| `PLAYER_COOKIE_KEY` | Root secret for player sessions, media tokens, renewal sessions and renewal quotes, and the keyed hashes of trial requesters' emails and networks; requires 64 lowercase hexadecimal characters. Each token type uses its own HKDF-derived AES-GCM key and authenticated purpose label. |
 | `PLAYER_ALLOWED_HOSTS`, `PLAYER_ALLOWED_HTTP_HOSTS`, `PLAYER_STREAM_ORIGIN_MAP` | Restricted provider stream origins and optional approved origin aliases. |
 | `PLAYER_STREAM_RELAY_URL`, `PLAYER_STREAM_RELAY_KEY` | First-party stream bridge endpoint and shared authentication secret. |
 | `STREAM_RELAY_KEY` | Matching shared secret on the separate relay Worker; requires 64 lowercase hexadecimal characters. |
@@ -106,7 +107,7 @@ The owner console lists orders and auto-renew agreements that need review. **Re-
 
 An order whose provider activation was already attempted is never charged against the wallet again. Check the line, then mark the order resolved with a required note. PayPal webhooks are deduplicated by event ID. Business conflicts during webhook processing are recorded for review and acknowledged so PayPal does not keep retrying them.
 
-Cleanup is idempotent and does not depend on cron triggers. It removes expired owner sessions, rate-limit rows, revoked player sessions, billing locks and webhook IDs older than 30 days. It also closes checkouts and enrollments that stayed in `creating` for over an hour without a PayPal ID. It runs when the review queue loads, from **Run cleanup**, and at most every 15 minutes per isolate alongside `/api/availability`.
+Cleanup is idempotent and does not depend on cron triggers. It removes expired owner sessions, rate-limit rows, revoked player sessions, billing locks and webhook IDs older than 30 days. It also closes checkouts and enrollments that stayed in `creating` for over an hour without a PayPal ID. It records free trials past their expiry as ended, and deletes declined and resolved trial requests 30 days after the decision and ended trials 180 days after they ended (see [`docs/trials.md`](../docs/trials.md)). It runs when the review queue or the trial queue loads, from **Run cleanup**, and at most every 15 minutes per isolate alongside `/api/availability`.
 
 ## Database schema changes
 

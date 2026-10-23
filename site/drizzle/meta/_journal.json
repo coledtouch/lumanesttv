@@ -78,6 +78,13 @@
       "when": 1792468112511,
       "tag": "0010_extras_download_counts",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1792717672592,
+      "tag": "0011_trial_requests",
+      "breakpoints": true
     }
   ]
 }

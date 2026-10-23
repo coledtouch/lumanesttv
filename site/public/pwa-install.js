@@ -5,7 +5,7 @@
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js', {scope: '/'}).catch(() => {});
   const standalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
   let installed = standalone();
-  if (standalone() || location.pathname.startsWith('/checkout') || location.pathname.startsWith('/renew/return') || location.pathname.startsWith('/renew/cancel')) return;
+  if (standalone() || location.pathname.startsWith('/checkout') || location.pathname.startsWith('/renew/return') || location.pathname.startsWith('/renew/cancel') || location.pathname.startsWith('/trial/status')) return;
   const DISMISSED = 'lumanest-install-dismissed';
   let dismissed = false;
   try {dismissed = localStorage.getItem(DISMISSED) === '1';} catch {}

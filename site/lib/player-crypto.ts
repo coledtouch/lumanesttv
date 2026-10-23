@@ -13,8 +13,9 @@ export async function digest(value:string){return base64url(new Uint8Array(await
 // 'extras-subtitle' signs the subtitle file tokens a lookup hands out, 'extras-client' names a client's network in the
 // daily download count and the limits without keeping its address, 'extras-credential' marks OpenSubtitles login
 // secrets that were refused without keeping a crackable hash of them, and 'extras-edge' names the key that signed the
-// subtitle links in the lookups' edge cache keys (docs/extras.md).
-export type MacPurpose='player-line'|'player-cache'|'player-iv'|'extras-subtitle'|'extras-client'|'extras-credential'|'extras-edge';
+// subtitle links in the lookups' edge cache keys (docs/extras.md), and 'trial-client' names a free-trial requester's
+// email and network, so one trial per person and household is enforced without keeping the address (docs/trials.md).
+export type MacPurpose='player-line'|'player-cache'|'player-iv'|'extras-subtitle'|'extras-client'|'extras-credential'|'extras-edge'|'trial-client';
 const macKeys=new Map<string,Promise<CryptoKey>>();
 function macKey(value:string,purpose:MacPurpose){if(!/^[a-f0-9]{64}$/.test(value))throw new Error('The webplayer is being configured.');const id=purpose+':'+value;let derived=macKeys.get(id);if(!derived){if(macKeys.size>=8)macKeys.clear();derived=crypto.subtle.importKey('raw',Uint8Array.from(value.match(/../g)!,h=>parseInt(h,16)),'HKDF',false,['deriveKey']).then(base=>crypto.subtle.deriveKey({name:'HKDF',hash:'SHA-256',salt:text('lumanest-token-keys-v2'),info:text('lumanest-mac-v2:'+purpose)},base,{name:'HMAC',hash:'SHA-256',length:256},false,['sign']));macKeys.set(id,derived);derived.catch(()=>macKeys.delete(id))}return derived}
 export async function mac(value:string,secret:string,purpose:MacPurpose){return base64url(new Uint8Array(await crypto.subtle.sign('HMAC',await macKey(secret,purpose),text(value))))}
