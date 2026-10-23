@@ -23,12 +23,15 @@ Run the normal build, then `npm run cloudflare:prepare -- --database-id 226b9f80
 ```
 npm ci
 npm run build
+# Once trial email alerts are set up (docs/trials.md#email-alerts), run the commented line instead: without
+# --trial-alerts the deploy removes their binding, and /manage shows "Email alerts: binding missing".
 npm run cloudflare:prepare -- --database-id 226b9f80-d3c9-471d-b5b4-c4a0c17f9e9d --production
+# npm run cloudflare:prepare -- --database-id 226b9f80-d3c9-471d-b5b4-c4a0c17f9e9d --production --trial-alerts
 npx wrangler d1 migrations apply lumanest-tv-production --remote --config dist/server/wrangler-cloudflare.json
 npm run cloudflare:deploy
 ```
 
-Always pass `--production` for a live deploy: without it the generated config enables the `workers.dev` address. Apply migrations only when the list shows new files from this checkout. On Windows on ARM, run these with x64 Node 22, because `workerd` has no Windows ARM build.
+Always pass `--production` for a live deploy: without it the generated config enables the `workers.dev` address. Once the owner's [trial email alerts](trials.md#email-alerts) are set up, also pass `--trial-alerts` whenever you prepare a deploy, including the migration steps below: without it the `TRIAL_ALERT_EMAIL` binding is left out and the alerts stop (trial requests keep working). The Worker then logs `lumanest_trial_alert_failed` with `{"code":"alert_binding_missing"}` for each new request, and the **Trial requests** panel in `/manage` shows `Email alerts: binding missing`. Apply migrations only when the list shows new files from this checkout. On Windows on ARM, run these with x64 Node 22, because `workerd` has no Windows ARM build.
 
 Existing customer/order records and owner password hashes live in D1. App downloads may live in R2. Neither is included in this repository. Any production data move needs a private backup, restore and verification process. Do not put database exports, payment details or credentials into GitHub.
 
@@ -83,8 +86,11 @@ The list it shows before applying must be exactly `0011_trial_requests.sql`. Cle
 | --- | --- | --- |
 | `TRIALS_ENABLED` | plain variable, optional (not a secret) | `true` shows the trial link, the FAQ entry and the `/trial` form, once `MYBUNNY_API_KEY`, `CUSTOMER_PORTAL_URL` and `PLAYER_COOKIE_KEY` are set. Anything else hides them and refuses new requests with 503 `trials_unavailable`. Status links keep working. Set it in the Cloudflare dashboard (Workers & Pages → `lumanest-tv` → Settings → Variables and Secrets → Add, type Text); `keep_vars` keeps it across deploys. |
 | `PLAYER_COOKIE_KEY` | secret (exists) | Keys the hashes of a requester's email address and network (purpose `trial-client`). Changing it lets each email address and network ask once more. |
+| `TRIAL_ALERT_EMAIL` | `send_email` binding, optional | Emails the owner when a request is stored. Added only by `npm run cloudflare:prepare -- … --production --trial-alerts`, because it needs Email Routing enabled on `lumanest.tv`; without it no alert is sent. |
+| `TRIAL_ALERT_TO` | plain variable or secret, optional | The owner's alert address. It must be a verified Email Routing destination address (Compute > Email Service > Email Routing > Destination addresses). Unset, or not a plain email address, sends no alert. |
+| `TRIAL_ALERT_FROM` | plain variable, optional | The alert's sender, an address on a domain with Email Routing enabled. Unset means `alerts@lumanest.tv`. |
 
-Turn trials on only after the migration is applied and the provider hub can send invitation emails (`site.email_ready`). Until it can, approvals answer `invitations_not_ready` and change nothing. No new binding, secret or cron trigger is needed.
+Turn trials on only after the migration is applied and the provider hub can send invitation emails (`site.email_ready`). Until it can, approvals answer `invitations_not_ready` and change nothing. Trials need no new binding, secret or cron trigger. The owner's email alert is optional and needs Email Routing, a verified destination address, the `--trial-alerts` preparation flag and `TRIAL_ALERT_TO`; the steps are in [`trials.md`](trials.md#email-alerts). The alert carries the requester's name, device and request time, the pending count and any repeat-request counts (other recent requests from the same network or email address), never their email address, network or status link. It is sent after the response, and a failed send never affects the request (it logs `lumanest_trial_alert_failed` with a fixed code). The **Trial requests** panel in `/manage` shows whether alerts are on, off, or set up but not sending.
 
 ## TV applications
 

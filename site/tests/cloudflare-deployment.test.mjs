@@ -49,8 +49,29 @@ test('Cloudflare preparation starts without production routes, cron or copied va
   assert.equal(config.observability.logs.invocation_logs, false);
   assert.equal(config.observability.traces.enabled, false);
   assert.equal(config.unsafe, undefined);
+  assert.equal(config.send_email, undefined, 'no email binding unless --trial-alerts');
   const serialized = await readFile(new URL('dist/server/wrangler-cloudflare.json', root), 'utf8');
-  assert.doesNotMatch(serialized, /private-fixture-value|old\.invalid/);
+  assert.doesNotMatch(serialized, /private-fixture-value|old\.invalid|send_email/);
+});
+
+test('only the explicit trial-alerts flag adds the send_email binding, with no address in the config', async t => {
+  const root = await fixture(t);
+  assert.equal(parseOptions(['--database-id', DATABASE_ID]).trialAlerts, false);
+  for (const args of [['--trial-alerts'], ['--trial-alerts', '--production']]) {
+    const options = parseOptions(['--database-id', DATABASE_ID, ...args]);
+    assert.equal(options.trialAlerts, true);
+    const {config} = await prepareCloudflare(options, root);
+    assert.deepEqual(config.send_email, [{name: 'TRIAL_ALERT_EMAIL'}]);
+    assert.equal(config.vars, undefined);
+    assert.equal(config.keep_vars, true, 'TRIAL_ALERT_TO and TRIAL_ALERT_FROM stay dashboard settings');
+    assert.equal(config.workers_dev, !args.includes('--production'));
+    assert.deepEqual(config.ratelimits.map(limit => limit.name), ['PLAYER_LIMITER', 'EXTRAS_LIMITER', 'SUBTITLE_FILE_LIMITER'], 'every other binding unchanged');
+    const serialized = JSON.parse(await readFile(new URL('dist/server/wrangler-cloudflare.json', root), 'utf8'));
+    assert.deepEqual(serialized.send_email, [{name: 'TRIAL_ALERT_EMAIL'}]);
+    assert.doesNotMatch(JSON.stringify(serialized), /@/, 'no email address is written');
+  }
+  assert.throws(() => parseOptions(['--database-id', DATABASE_ID, '--trial-alerts', '--trial-alerts']), /Duplicate option/);
+  assert.throws(() => parseOptions(['--database-id', DATABASE_ID, '--trial-alerts=owner@example.test']), /Unknown option/);
 });
 
 test('only the explicit production flag configures the apex domain', async t => {

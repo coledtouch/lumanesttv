@@ -11,7 +11,7 @@ const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const NAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 export function parseOptions(args) {
-  const options = {...DEFAULTS, production: false};
+  const options = {...DEFAULTS, production: false, trialAlerts: false};
   const valueOptions = {
     '--database-id': 'databaseId',
     '--database-name': 'databaseName',
@@ -25,6 +25,7 @@ export function parseOptions(args) {
     if (seen.has(arg)) throw new Error(`Duplicate option: ${arg}`);
     seen.add(arg);
     if (arg === '--production') options.production = true;
+    else if (arg === '--trial-alerts') options.trialAlerts = true;
     else if (Object.hasOwn(valueOptions, arg)) {
       const value = args[++i];
       if (!value || value.startsWith('--')) throw new Error(`Missing value for ${arg}`);
@@ -72,6 +73,10 @@ export async function prepareCloudflare(options, root = new URL('../', import.me
       {name: 'EXTRAS_LIMITER', namespace_id: '1003', simple: {limit: 120, period: 60}},
       {name: 'SUBTITLE_FILE_LIMITER', namespace_id: '1004', simple: {limit: 12, period: 60}},
     ],
+    // The owner's new-trial alert (lib/trial-alert-send.ts, docs/trials.md): only with --trial-alerts, because the binding
+    // needs Email Routing on lumanest.tv and a verified destination address. No address is written here: the Worker
+    // reads TRIAL_ALERT_TO (and TRIAL_ALERT_FROM) at runtime, and sends nothing without them.
+    ...(options.trialAlerts ? {send_email: [{name: 'TRIAL_ALERT_EMAIL'}]} : {}),
     // Preserve dashboard settings without writing their values into source or this artifact.
     keep_vars: true,
     workers_dev: !options.production,
@@ -88,12 +93,14 @@ export async function prepareCloudflare(options, root = new URL('../', import.me
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   if (process.argv.slice(2).includes('--help')) {
-    console.log('After npm run build: npm run cloudflare:prepare -- --database-id D1_UUID [--database-name NAME] [--account-id ID] [--worker-name NAME] [--bucket-name NAME] [--production]');
+    console.log('After npm run build: npm run cloudflare:prepare -- --database-id D1_UUID [--database-name NAME] [--account-id ID] [--worker-name NAME] [--bucket-name NAME] [--production] [--trial-alerts]');
+    console.log('--trial-alerts adds the TRIAL_ALERT_EMAIL send_email binding for new-trial email alerts. Enable Email Routing on lumanest.tv and verify the destination address first (docs/trials.md, Email alerts).');
   } else {
     try {
       const result = await prepareCloudflare(parseOptions(process.argv.slice(2)));
       console.log(`Prepared ${result.path}`);
       console.log(result.config.routes ? 'Production domain: lumanest.tv. Deploy only after the private database and runtime configuration have been transferred and verified.' : 'No production routes are configured. The existing domain is unchanged.');
+      console.log(result.config.send_email ? 'Trial alerts: TRIAL_ALERT_EMAIL send_email binding added. Set TRIAL_ALERT_TO to a verified Email Routing destination address.' : 'Trial alerts: no send_email binding (pass --trial-alerts to add one). If TRIAL_ALERT_TO is set, this deploy stops the alerts and /manage shows "Email alerts: binding missing".');
     } catch (error) {
       console.error(error instanceof Error ? error.message : 'Cloudflare preparation failed.');
       process.exitCode = 1;
